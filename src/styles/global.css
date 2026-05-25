@@ -33,8 +33,40 @@
 .diff-add { @apply bg-green-100 dark:bg-green-900/30; }
 .diff-remove { @apply bg-red-100 dark:bg-red-900/30; }
 .diff-header { @apply bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 font-mono text-xs px-2 py-0.5; }
-.diff-lineno { @apply text-gray-400 dark:text-gray-500 select-none w-12 text-right pr-2 border-r border-gray-200 dark:border-gray-700 font-mono text-xs leading-5 inline-block; }
-.diff-line { @apply font-mono text-sm leading-5 whitespace-pre; }
+.diff-lineno {
+  @apply text-gray-400 dark:text-gray-500 select-none w-12 text-right pr-2 border-r border-gray-200 dark:border-gray-700 font-mono text-xs leading-5 inline-block;
+  position: relative;
+}
+/* Hover affordance on diff lines: tinted row, pointer cursor, and a "+" badge
+   in the gutter so it's obvious clicking will start a comment. */
+.diff-line {
+  @apply font-mono text-sm leading-5 whitespace-pre cursor-pointer;
+}
+.diff-line:hover {
+  @apply bg-blue-50 dark:bg-blue-900/20;
+}
+.diff-line:hover .diff-lineno::after {
+  content: "+";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+  margin-top: 2px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  color: white;
+  background: rgb(37 99 235); /* blue-600 */
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+/* The dimmed-while-viewed style shouldn't fight the hover affordance. */
+.diff-line.diff-viewed:hover { @apply bg-gray-100 dark:bg-gray-800/40; }
+/* Lines that are already selected (during drag or while the popup is open)
+   shouldn't keep flashing the "+" badge on hover. */
+.diff-line--selected:hover .diff-lineno::after { content: none; }
 .diff-sign { @apply select-none text-gray-400 dark:text-gray-500 font-mono text-xs; }
 .diff-content { }
 .diff-conflict { @apply bg-orange-100 dark:bg-orange-900/30 border-l-4 border-orange-500; }
@@ -47,6 +79,35 @@
   @apply px-2 py-0.5 rounded hover:bg-blue-100 dark:hover:bg-blue-800/40 cursor-pointer select-none;
 }
 .diff-expander-all { @apply flex-1 text-center; }
+/* Inline-comment selection highlight. Stronger than the row hover so the
+   user can clearly see the lines they've selected before submitting. */
+.diff-line--selected {
+  @apply bg-blue-100 dark:bg-blue-900/40;
+}
+.diff-line--selected .diff-lineno {
+  @apply text-blue-700 dark:text-blue-300;
+}
+/* Disable native text selection inside the diff content so the drag-to-select
+   gesture isn't visually competing with the browser's text selection. */
+.diff-container {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ===== Side-by-side (split) diff ===== */
+.diff-split .diff-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.diff-split .diff-cell {
+  @apply whitespace-pre overflow-x-hidden border-r border-gray-200 dark:border-gray-800;
+  min-width: 0;
+}
+.diff-split .diff-cell:last-child { border-right: 0; }
+.diff-cell--empty { @apply bg-gray-50 dark:bg-gray-900/40; }
+.diff-row--selected { @apply bg-blue-100 dark:bg-blue-900/40; }
+.diff-row--selected .diff-cell .diff-lineno { @apply text-blue-700 dark:text-blue-300; }
+.diff-expander--split { grid-column: 1 / -1; }
 
 /* ===== File tree ===== */
 .file-tree-item { @apply flex items-center gap-1.5 px-2 py-1 text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded; }

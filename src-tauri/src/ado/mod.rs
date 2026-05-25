@@ -291,6 +291,7 @@ impl AdoClient {
         pr_id: i64,
         file_path: &str,
         iteration: i32,
+        view: crate::diff::engine::DiffView,
     ) -> Result<DiffResult, AppError> {
         // Diff the iteration HEAD (sourceRefCommit) against the PR merge base (commonRefCommit),
         // not the latest source-branch commit's parent (which would give per-commit diffs).
@@ -320,7 +321,8 @@ impl AdoClient {
         };
 
         // Compute diff + syntax highlight
-        let mut html = crate::diff::engine::highlighted_diff(&old_content, &new_content, file_path);
+        let mut html =
+            crate::diff::engine::highlighted_diff_view(&old_content, &new_content, file_path, view);
 
         // Only show the "couldn't fetch" diagnostic when we actually couldn't
         // tell what's at one or both sides. An empty `__init__.py` (Present(""))

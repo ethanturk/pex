@@ -6,6 +6,7 @@ import { PRList } from "@/components/PRList";
 import { PRDetail } from "@/components/PRDetail";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { AiSettings } from "@/components/AiSettings";
+import { DiffViewToggle } from "@/components/DiffViewToggle";
 import { useEffectOnce } from "@/lib/hooks";
 import { getSavedOrgs, activateOrg } from "@/lib/api";
 import { activeOrg, savedOrgs } from "@/lib/signals";
@@ -75,6 +76,7 @@ export function App() {
               {activeOrg.value.name}
             </button>
           )}
+          <DiffViewToggle />
           <ThemeToggle />
         </div>
       </header>

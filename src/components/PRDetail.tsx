@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths } from "@/lib/signals";
 import {
   getPrFiles,
   getViewedFiles,
@@ -65,7 +65,7 @@ export function PRDetail({ prId }: Props) {
     if (!projectId || !repoId) return;
     setLoading(true);
     try {
-      const d = await getFileDiff(projectId, repoId, prId, path, currentIteration.value);
+      const d = await getFileDiff(projectId, repoId, prId, path, currentIteration.value, diffView.value);
       setDiffHtml(d.html);
       setDiffPath(d.path);
       setSourceCommit(d.sourceCommit);
@@ -101,7 +101,10 @@ export function PRDetail({ prId }: Props) {
       loadFiles();
       if (selectedFile.value) loadDiff(selectedFile.value);
     });
-    return () => { unsub1(); unsub2(); };
+    const unsub3 = diffView.subscribe(() => {
+      if (selectedFile.value) loadDiff(selectedFile.value);
+    });
+    return () => { unsub1(); unsub2(); unsub3(); };
   }, [loadDiff, loadFiles]);
 
   const handleToggleViewed = async (path: string, viewed: boolean) => {
@@ -115,8 +118,21 @@ export function PRDetail({ prId }: Props) {
     currentView.value = { kind: "pr-list" };
   };
 
-  const handlePostComment = async (filePath: string, line: number, content: string) => {
-    const thread = await postComment(projectId, repoId, prId, filePath, line, content);
+  const handlePostComment = async (
+    filePath: string,
+    lineStart: number,
+    lineEnd: number,
+    content: string,
+  ) => {
+    const thread = await postComment(
+      projectId,
+      repoId,
+      prId,
+      filePath,
+      lineStart,
+      lineEnd,
+      content,
+    );
     setThreads([...threads, thread]);
   };
 
@@ -128,16 +144,18 @@ export function PRDetail({ prId }: Props) {
 
       if (key === "j") {
         e.preventDefault();
-        const idx = prFiles.value.findIndex((f) => f.path === selectedFile.value);
-        if (idx < prFiles.value.length - 1) {
-          selectedFile.value = prFiles.value[idx + 1].path;
-        }
+        const order = visibleFilePaths.value;
+        if (order.length === 0) return;
+        const idx = order.indexOf(selectedFile.value ?? "");
+        const next = idx < 0 ? order[0] : idx < order.length - 1 ? order[idx + 1] : null;
+        if (next) selectedFile.value = next;
       } else if (key === "k") {
         e.preventDefault();
-        const idx = prFiles.value.findIndex((f) => f.path === selectedFile.value);
-        if (idx > 0) {
-          selectedFile.value = prFiles.value[idx - 1].path;
-        }
+        const order = visibleFilePaths.value;
+        if (order.length === 0) return;
+        const idx = order.indexOf(selectedFile.value ?? "");
+        const prev = idx < 0 ? order[order.length - 1] : idx > 0 ? order[idx - 1] : null;
+        if (prev) selectedFile.value = prev;
       } else if (key === "v") {
         e.preventDefault();
         const file = prFiles.value.find((f) => f.path === selectedFile.value);
@@ -210,6 +228,7 @@ export function PRDetail({ prId }: Props) {
                 repoId={repoId!}
                 sourceCommit={sourceCommit}
                 baseCommit={baseCommit}
+                view={diffView.value}
               />
               <ExplainDiff
                 filePath={diffPath}

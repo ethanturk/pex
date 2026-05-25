@@ -44,12 +44,32 @@ pub async fn get_file_diff(
     pr_id: i64,
     file_path: String,
     iteration: i32,
+    view: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let client = get_client(&state)?;
-    let diff = client
-        .get_file_diff(&project_id, &repo_id, pr_id, &file_path, iteration)
-        .await
-        .map_err(|e| e.to_string())?;
+    let view_str = view.as_deref().unwrap_or("inline").to_string();
+    let view_enum = crate::diff::engine::DiffView::from_str(&view_str);
+
+    let cache_key = crate::cache::diff_cache::DiffCacheKey {
+        org_url: client.org_url.clone(),
+        project_id: project_id.clone(),
+        repo_id: repo_id.clone(),
+        pr_id,
+        file_path: file_path.clone(),
+        view: view_str,
+        iteration,
+    };
+
+    let diff = if let Some(hit) = state.diff_cache.get(&cache_key) {
+        hit
+    } else {
+        let fresh = client
+            .get_file_diff(&project_id, &repo_id, pr_id, &file_path, iteration, view_enum)
+            .await
+            .map_err(|e| e.to_string())?;
+        state.diff_cache.put(cache_key, fresh.clone());
+        fresh
+    };
 
     Ok(serde_json::json!({
         "html": diff.html,

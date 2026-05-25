@@ -1,6 +1,8 @@
 use crate::AppError;
 use rusqlite::Connection;
 
+pub mod diff_cache;
+
 /// Initialize the SQLite database and return a connection.
 pub fn init_db() -> Result<Connection, AppError> {
     let db_path = dirs_db_path()?;

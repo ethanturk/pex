@@ -150,8 +150,9 @@ export async function getFileDiff(
   prId: number,
   filePath: string,
   iteration: number,
+  view: "inline" | "split" = "inline",
 ): Promise<FileDiff> {
-  return invoke<FileDiff>("get_file_diff", { projectId, repoId, prId, filePath, iteration });
+  return invoke<FileDiff>("get_file_diff", { projectId, repoId, prId, filePath, iteration, view });
 }
 
 export async function getFileLines(
@@ -205,7 +206,8 @@ export async function postComment(
   repoId: string,
   prId: number,
   filePath: string,
-  line: number,
+  lineStart: number,
+  lineEnd: number,
   content: string,
 ): Promise<CommentThread> {
   return invoke<CommentThread>("post_comment", {
@@ -213,7 +215,8 @@ export async function postComment(
     repoId,
     prId,
     filePath,
-    line,
+    lineStart,
+    lineEnd,
     content,
   });
 }

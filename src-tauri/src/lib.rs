@@ -41,6 +41,7 @@ pub struct AppState {
     pub ado_client: std::sync::Mutex<Option<ado::AdoClient>>,
     pub ai_manager: std::sync::Mutex<Option<ai::AiManager>>,
     pub purist_pid: std::sync::Arc<std::sync::Mutex<Option<u32>>>,
+    pub diff_cache: cache::diff_cache::DiffCache,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -71,6 +72,7 @@ pub fn run() {
             ado_client: std::sync::Mutex::new(None),
             ai_manager: std::sync::Mutex::new(None),
             purist_pid: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            diff_cache: cache::diff_cache::DiffCache::new(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth::login_pat,

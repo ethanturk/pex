@@ -2,6 +2,29 @@ use similar::{ChangeTag, TextDiff};
 
 const CONTEXT_LINES: usize = 3;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffView {
+    Inline,
+    Split,
+}
+
+impl DiffView {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "split" => DiffView::Split,
+            _ => DiffView::Inline,
+        }
+    }
+}
+
+/// Render a diff in the requested view.
+pub fn highlighted_diff_view(old: &str, new: &str, file_path: &str, view: DiffView) -> String {
+    match view {
+        DiffView::Inline => highlighted_diff(old, new, file_path),
+        DiffView::Split => split_diff_html(old, new, file_path),
+    }
+}
+
 /// Compute a unified diff between old and new content, with syntax-aware HTML output.
 /// Returns HTML with diff markers, line numbers, conflict detection, and syntax highlighting.
 /// Between (and around) hunks, emits `<div class="diff-expander">` markers carrying the
@@ -99,6 +122,170 @@ pub fn highlighted_diff(old: &str, new: &str, file_path: &str) -> String {
     html
 }
 
+/// Side-by-side renderer. Emits `.diff-row` rows with paired old/new cells.
+/// Only the new-side cell carries `data-line`, so the existing selection /
+/// comment flow continues to target new-side lines.
+pub fn split_diff_html(old: &str, new: &str, file_path: &str) -> String {
+    let _highlighted_old = super::highlight::highlight_code(old, file_path);
+    let _highlighted_new = super::highlight::highlight_code(new, file_path);
+
+    let diff = TextDiff::from_lines(old, new);
+    let groups = diff.grouped_ops(CONTEXT_LINES);
+    let old_total = old.lines().count();
+    let new_total = new.lines().count();
+
+    let mut html =
+        String::from("<div class=\"diff-container diff-split font-mono text-[13px] leading-5\">");
+
+    let mut prev_old: usize = 0;
+    let mut prev_new: usize = 0;
+
+    for group in &groups {
+        let first = group.first().unwrap();
+        let last = group.last().unwrap();
+        let hunk_old_start = first.old_range().start + 1;
+        let hunk_new_start = first.new_range().start + 1;
+        let hunk_old_end = last.old_range().end;
+        let hunk_new_end = last.new_range().end;
+
+        let gap_old_start = prev_old + 1;
+        let gap_old_end = hunk_old_start.saturating_sub(1);
+        let gap_new_start = prev_new + 1;
+        let gap_new_end = hunk_new_start.saturating_sub(1);
+        if gap_old_end >= gap_old_start || gap_new_end >= gap_new_start {
+            html.push_str(&expander_html_split(
+                gap_old_start,
+                gap_old_end,
+                gap_new_start,
+                gap_new_end,
+            ));
+        }
+
+        // Collect deletes + inserts + equals as a linear stream of (tag, old_n, new_n, content),
+        // then pair contiguous del/ins runs to render side-by-side rows.
+        let mut pending_del: Vec<(usize, String)> = Vec::new();
+        let mut pending_ins: Vec<(usize, String)> = Vec::new();
+
+        let flush = |html: &mut String,
+                     dels: &mut Vec<(usize, String)>,
+                     inss: &mut Vec<(usize, String)>| {
+            let n = dels.len().max(inss.len());
+            for i in 0..n {
+                let old_cell = dels
+                    .get(i)
+                    .map(|(ln, c)| render_cell(Some(*ln), "-", c, "diff-remove", false))
+                    .unwrap_or_else(empty_cell);
+                let new_cell = inss
+                    .get(i)
+                    .map(|(ln, c)| render_cell(Some(*ln), "+", c, "diff-add", true))
+                    .unwrap_or_else(empty_cell);
+                html.push_str(&format!(
+                    "<div class=\"diff-row\">{old_cell}{new_cell}</div>"
+                ));
+            }
+            dels.clear();
+            inss.clear();
+        };
+
+        for op in group {
+            for change in diff.iter_changes(op) {
+                let content = change.value().to_string();
+                match change.tag() {
+                    ChangeTag::Delete => {
+                        let n = change.old_index().map(|i| i + 1).unwrap_or(0);
+                        pending_del.push((n, content));
+                    }
+                    ChangeTag::Insert => {
+                        let n = change.new_index().map(|i| i + 1).unwrap_or(0);
+                        pending_ins.push((n, content));
+                    }
+                    ChangeTag::Equal => {
+                        flush(&mut html, &mut pending_del, &mut pending_ins);
+                        let old_n = change.old_index().map(|i| i + 1).unwrap_or(0);
+                        let new_n = change.new_index().map(|i| i + 1).unwrap_or(0);
+                        let old_cell = render_cell(Some(old_n), " ", &content, "", false);
+                        let new_cell = render_cell(Some(new_n), " ", &content, "", true);
+                        html.push_str(&format!(
+                            "<div class=\"diff-row\">{old_cell}{new_cell}</div>"
+                        ));
+                    }
+                }
+            }
+        }
+        flush(&mut html, &mut pending_del, &mut pending_ins);
+
+        prev_old = hunk_old_end;
+        prev_new = hunk_new_end;
+    }
+
+    let tail_old_start = prev_old + 1;
+    let tail_new_start = prev_new + 1;
+    if tail_old_start <= old_total || tail_new_start <= new_total {
+        html.push_str(&expander_html_split(
+            tail_old_start,
+            old_total,
+            tail_new_start,
+            new_total,
+        ));
+    }
+
+    html.push_str("</div>");
+    html
+}
+
+fn render_cell(
+    line_num: Option<usize>,
+    sign: &str,
+    content: &str,
+    css_class: &str,
+    is_new_side: bool,
+) -> String {
+    let conflict_class = if content.starts_with("<<<<<<<")
+        || content.starts_with("=======")
+        || content.starts_with(">>>>>>>")
+    {
+        " diff-conflict"
+    } else {
+        ""
+    };
+    let escaped = escape_html(content);
+    let ln_text = line_num.map(|n| n.to_string()).unwrap_or_default();
+    let data_line_attr = if is_new_side {
+        format!(" data-line=\"{}\"", line_num.unwrap_or(0))
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<div class="diff-cell diff-line {css_class}{conflict_class}"{data_line_attr}><span class="diff-lineno">{ln_text}</span><span class="diff-sign">{sign} </span><span class="diff-content">{escaped}</span></div>"#,
+    )
+}
+
+fn empty_cell() -> String {
+    r#"<div class="diff-cell diff-cell--empty"></div>"#.to_string()
+}
+
+fn expander_html_split(
+    old_start: usize,
+    old_end: usize,
+    new_start: usize,
+    new_end: usize,
+) -> String {
+    let new_count = new_end.saturating_sub(new_start.saturating_sub(1));
+    let old_count = old_end.saturating_sub(old_start.saturating_sub(1));
+    let count = new_count.max(old_count);
+    if count == 0 {
+        return String::new();
+    }
+    let label = if count == 1 {
+        "1 hidden line".to_string()
+    } else {
+        format!("{} hidden lines", count)
+    };
+    format!(
+        r#"<div class="diff-expander diff-expander--split" data-old-start="{old_start}" data-old-end="{old_end}" data-new-start="{new_start}" data-new-end="{new_end}"><button class="diff-expander-btn" data-action="up" title="Show 10 more lines from the top of this gap">↑ 10</button><button class="diff-expander-btn diff-expander-all" data-action="all" title="Show all hidden lines">{label}</button><button class="diff-expander-btn" data-action="down" title="Show 10 more lines from the bottom of this gap">↓ 10</button></div>"#,
+    )
+}
+
 /// Render an expander control. `old_*` / `new_*` are 1-based inclusive ranges of hidden lines.
 /// When a side has zero hidden lines (e.g. file added → no old side), pass start > end.
 fn expander_html(
@@ -119,7 +306,7 @@ fn expander_html(
         format!("{} hidden lines", count)
     };
     format!(
-        r#"<div class="diff-expander" data-old-start="{old_start}" data-old-end="{old_end}" data-new-start="{new_start}" data-new-end="{new_end}"><button class="diff-expander-btn" data-action="up" title="Show 10 lines above hunk below">↑ 10</button><button class="diff-expander-btn diff-expander-all" data-action="all" title="Show all hidden lines">{label}</button><button class="diff-expander-btn" data-action="down" title="Show 10 lines below hunk above">↓ 10</button></div>"#,
+        r#"<div class="diff-expander" data-old-start="{old_start}" data-old-end="{old_end}" data-new-start="{new_start}" data-new-end="{new_end}"><button class="diff-expander-btn" data-action="up" title="Show 10 more lines from the top of this gap">↑ 10</button><button class="diff-expander-btn diff-expander-all" data-action="all" title="Show all hidden lines">{label}</button><button class="diff-expander-btn" data-action="down" title="Show 10 more lines from the bottom of this gap">↓ 10</button></div>"#,
     )
 }
 
@@ -324,6 +511,28 @@ class EmbeddingReliabilityEvaluator:
         let new = "before\n<<<<<<< ours\nmiddle\n=======\ntheirs\n>>>>>>> theirs\n";
         let html = highlighted_diff(old, new, ".txt");
         assert!(html.contains("diff-conflict"));
+    }
+
+    #[test]
+    fn test_split_diff_pairs_insert_delete() {
+        let old = "alpha\nbeta\n";
+        let new = "alpha\nBETA\n";
+        let html = split_diff_html(old, new, ".txt");
+        assert!(html.contains("diff-split"), "container has diff-split class");
+        assert!(html.contains("diff-row"), "emits diff-row wrappers");
+        assert!(html.contains("diff-remove") && html.contains("beta"));
+        assert!(html.contains("diff-add") && html.contains("BETA"));
+        // The new-side cell should carry data-line.
+        assert!(html.contains("data-line=\"2\""));
+    }
+
+    #[test]
+    fn test_split_diff_pure_insert_has_empty_old_cell() {
+        let old = "line1\n";
+        let new = "line1\nline2\n";
+        let html = split_diff_html(old, new, ".txt");
+        assert!(html.contains("diff-cell--empty"), "added line gets empty old cell");
+        assert!(html.contains("diff-add"));
     }
 
     #[test]
