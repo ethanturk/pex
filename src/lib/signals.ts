@@ -52,8 +52,35 @@ export type View =
 export const currentView = signal<View>({ kind: "auth" });
 
 // ---- PR Selection Context (project/repo carried from PRList → PRDetail) ----
+// Persisted per-org in localStorage so the project/repo from the last session is
+// restored on app launch once the org is reactivated.
 export const selectedProject = signal<string>("");
 export const selectedRepo = signal<string>("");
+
+const projectKey = (orgUrl: string) => `pex-last-project:${orgUrl}`;
+const repoKey = (orgUrl: string) => `pex-last-repo:${orgUrl}`;
+
+// Hydrate on org activation, then persist on subsequent edits. Switching orgs
+// loads that org's last selection (or "" if none was saved).
+activeOrg.subscribe((org) => {
+  if (!org) return;
+  selectedProject.value = localStorage.getItem(projectKey(org.orgUrl)) ?? "";
+  selectedRepo.value = localStorage.getItem(repoKey(org.orgUrl)) ?? "";
+});
+
+selectedProject.subscribe((v) => {
+  const org = activeOrg.value;
+  if (!org) return;
+  if (v) localStorage.setItem(projectKey(org.orgUrl), v);
+  else localStorage.removeItem(projectKey(org.orgUrl));
+});
+
+selectedRepo.subscribe((v) => {
+  const org = activeOrg.value;
+  if (!org) return;
+  if (v) localStorage.setItem(repoKey(org.orgUrl), v);
+  else localStorage.removeItem(repoKey(org.orgUrl));
+});
 
 // ---- PR Review State (per-PR) ----
 export interface FileEntry {
@@ -69,3 +96,8 @@ export const currentIteration = signal<number>(1);
 // view mode and folder-collapse state. Used for j/k navigation so it matches
 // what the user actually sees.
 export const visibleFilePaths = signal<string[]>([]);
+
+// ---- Purist config revision ----
+// Bumped whenever the Purist path is saved so consumers (e.g. ReviewPR button)
+// can re-verify readiness without depending on a parent re-mount.
+export const puristConfigRevision = signal<number>(0);

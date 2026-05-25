@@ -77,6 +77,8 @@ pub async fn get_file_diff(
         "status": diff.status,
         "sourceCommit": diff.source_commit,
         "baseCommit": diff.base_commit,
+        "oldContent": diff.old_content,
+        "newContent": diff.new_content,
     }))
 }
 

@@ -42,6 +42,7 @@ pub struct AppState {
     pub ai_manager: std::sync::Mutex<Option<ai::AiManager>>,
     pub purist_pid: std::sync::Arc<std::sync::Mutex<Option<u32>>>,
     pub diff_cache: cache::diff_cache::DiffCache,
+    pub standards_cache: cache::standards_cache::StandardsCache,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -73,6 +74,7 @@ pub fn run() {
             ai_manager: std::sync::Mutex::new(None),
             purist_pid: std::sync::Arc::new(std::sync::Mutex::new(None)),
             diff_cache: cache::diff_cache::DiffCache::new(),
+            standards_cache: cache::standards_cache::StandardsCache::new(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth::login_pat,
@@ -96,10 +98,16 @@ pub fn run() {
             commands::comments::update_reviewer_status,
             commands::ai::get_ai_settings,
             commands::ai::save_ai_settings,
-            commands::ai::explain_diff,
+            commands::ai::explain_hunk,
+            commands::ai::get_ai_prompts,
+            commands::ai::save_ai_prompt,
+            commands::ai::reset_ai_prompt,
             commands::ai::check_purist,
             commands::ai::get_purist_path,
             commands::ai::save_purist_path,
+            commands::ai::get_purist_config,
+            commands::ai::save_purist_config,
+            commands::ai::set_purist_config_path,
             commands::ai::review_pr_dry_run,
             commands::ai::review_pr_post,
             commands::ai::cancel_review,

@@ -1,6 +1,7 @@
 pub mod anthropic;
 pub mod openai;
 pub mod prompts;
+pub mod standards;
 
 use crate::AppError;
 
@@ -65,6 +66,21 @@ pub trait AiProvider: Send + Sync {
     async fn chat(&self, messages: &[ChatMessage]) -> Result<String, AppError>;
 }
 
+/// Default request timeout in seconds when none is configured.
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 120;
+
+/// Default number of hunks that can be reviewed in parallel.
+pub const DEFAULT_HUNK_CONCURRENCY: u32 = 1;
+/// Hard cap to keep users from accidentally hammering the LLM.
+pub const MAX_HUNK_CONCURRENCY: u32 = 16;
+
+/// Default per-file size cap (characters) for AGENTS.md / STYLE.md content
+/// injected into Review prompts. Large enough for typical convention files,
+/// small enough to leave room for the actual hunk.
+pub const DEFAULT_STANDARDS_MAX_CHARS: u32 = 8000;
+pub const MIN_STANDARDS_MAX_CHARS: u32 = 500;
+pub const MAX_STANDARDS_MAX_CHARS: u32 = 65535;
+
 /// AI settings stored in SQLite + keyring.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiSettings {
@@ -76,10 +92,44 @@ pub struct AiSettings {
 
 /// Settings stored in SQLite (no API key).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AiSettingsNoKey {
     pub provider: String,
     pub endpoint: String,
     pub model: String,
+    pub request_timeout_secs: u64,
+    pub hunk_concurrency: u32,
+    pub standards_max_chars: u32,
+}
+
+/// Read the configured request timeout (seconds) from SQLite, falling back to the default
+/// if missing or unparseable. Treats 0 as "use default" rather than "no timeout".
+pub fn read_request_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_request_timeout_secs")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS))
+}
+
+/// Read the configured hunk concurrency (max parallel hunk reviews), clamped to a sane range.
+pub fn read_hunk_concurrency(conn: &rusqlite::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_hunk_concurrency")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|n| *n >= 1)
+        .map(|n| n.min(MAX_HUNK_CONCURRENCY))
+        .unwrap_or(DEFAULT_HUNK_CONCURRENCY))
+}
+
+/// Read the configured per-file size cap for injected AGENTS.md / STYLE.md content.
+pub fn read_standards_max_chars(conn: &rusqlite::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_standards_max_chars")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|n| *n >= MIN_STANDARDS_MAX_CHARS)
+        .map(|n| n.min(MAX_STANDARDS_MAX_CHARS))
+        .unwrap_or(DEFAULT_STANDARDS_MAX_CHARS))
 }
 
 /// Manages the active AI provider, constructed lazily from stored settings.
@@ -99,6 +149,7 @@ impl AiManager {
         endpoint: &str,
         model: &str,
         api_key: &str,
+        request_timeout_secs: u64,
     ) {
         self.provider = Some(match kind {
             AiProviderKind::OpenAI => {
@@ -106,6 +157,7 @@ impl AiManager {
                     endpoint.to_string(),
                     model.to_string(),
                     api_key.to_string(),
+                    request_timeout_secs,
                 );
                 std::sync::Arc::new(p) as std::sync::Arc<dyn AiProvider>
             }
@@ -114,6 +166,7 @@ impl AiManager {
                     endpoint.to_string(),
                     model.to_string(),
                     api_key.to_string(),
+                    request_timeout_secs,
                 );
                 std::sync::Arc::new(p) as std::sync::Arc<dyn AiProvider>
             }
@@ -128,6 +181,7 @@ impl AiManager {
         let provider_str = crate::cache::get_setting(conn, "ai_provider")?;
         let endpoint = crate::cache::get_setting(conn, "ai_endpoint")?;
         let model = crate::cache::get_setting(conn, "ai_model")?;
+        let timeout = read_request_timeout(conn)?;
 
         let (Some(provider_str), Some(endpoint), Some(model)) = (provider_str, endpoint, model) else {
             return Ok(false);
@@ -147,7 +201,7 @@ impl AiManager {
             return Ok(false);
         };
 
-        self.configure(kind, &endpoint, &model, &api_key);
+        self.configure(kind, &endpoint, &model, &api_key, timeout);
         Ok(true)
     }
 

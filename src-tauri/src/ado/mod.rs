@@ -633,6 +633,26 @@ impl AdoClient {
             .await?;
         Ok(())
     }
+
+    /// Public wrapper around the private `get_file_content` that returns a flat
+    /// `Option<String>` — `None` for both missing files and inconclusive lookups.
+    /// Used by the standards-context resolver, which prefers a conservative "absent"
+    /// answer over surfacing a partial result that might mislead the model.
+    pub async fn get_file_at_commit(
+        &self,
+        project: &str,
+        repo_id: &str,
+        commit_id: &str,
+        file_path: &str,
+    ) -> Result<Option<String>, AppError> {
+        match self
+            .get_file_content(project, repo_id, file_path, commit_id)
+            .await?
+        {
+            FileSnapshot::Present(s) => Ok(Some(s)),
+            FileSnapshot::Missing | FileSnapshot::Inconclusive => Ok(None),
+        }
+    }
 }
 
 /// Simple percent-encode for URL path segments

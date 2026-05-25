@@ -2,6 +2,7 @@ use crate::AppError;
 use rusqlite::Connection;
 
 pub mod diff_cache;
+pub mod standards_cache;
 
 /// Initialize the SQLite database and return a connection.
 pub fn init_db() -> Result<Connection, AppError> {
@@ -163,5 +164,10 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), AppE
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         rusqlite::params![key, value],
     )?;
+    Ok(())
+}
+
+pub fn delete_setting(conn: &Connection, key: &str) -> Result<(), AppError> {
+    conn.execute("DELETE FROM settings WHERE key=?1", rusqlite::params![key])?;
     Ok(())
 }

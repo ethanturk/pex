@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef } from "preact/hooks";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { reviewPrDryRun, reviewPrPost, cancelReview } from "@/lib/api";
+import {
+  reviewPrDryRun,
+  reviewPrPost,
+  cancelReview,
+  getPuristPath,
+  checkPurist,
+} from "@/lib/api";
+import { puristConfigRevision } from "@/lib/signals";
 
 interface Props {
   orgUrl: string;
@@ -16,7 +23,55 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
   const [output, setOutput] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showOutput, setShowOutput] = useState(false);
+  const [puristReady, setPuristReady] = useState<boolean | null>(null);
+  const [puristMessage, setPuristMessage] = useState<string>("Checking Purist configuration...");
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // Check Purist configuration so the Review PR button reflects readiness.
+  // Re-runs whenever AiSettings bumps `puristConfigRevision` after a successful save,
+  // so updating the path while the diff is open re-enables the button immediately.
+  useEffect(() => {
+    let cancelled = false;
+    const verify = async () => {
+      setPuristReady(null);
+      setPuristMessage("Checking Purist configuration...");
+      try {
+        const path = await getPuristPath();
+        if (cancelled) return;
+        if (!path) {
+          setPuristReady(false);
+          setPuristMessage(
+            "Purist is not configured. Set the Purist path in AI Settings to enable PR review.",
+          );
+          return;
+        }
+        const result = await checkPurist(path);
+        if (cancelled) return;
+        setPuristReady(result.ok);
+        setPuristMessage(
+          result.ok
+            ? "Run Purist to review this PR"
+            : `Purist is not available at the configured path: ${result.message}. Update the path in AI Settings.`,
+        );
+      } catch (e: any) {
+        if (cancelled) return;
+        setPuristReady(false);
+        setPuristMessage(
+          `Failed to verify Purist: ${String(e)}. Check AI Settings.`,
+        );
+      }
+    };
+
+    // preact signals fire `subscribe` synchronously with the current value,
+    // so this handles both the initial check and subsequent saves.
+    const unsubscribe = puristConfigRevision.subscribe(() => {
+      verify();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   // Auto-scroll panel
   useEffect(() => {
@@ -111,8 +166,9 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
       {/* Trigger button */}
       <button
         onClick={startReview}
-        disabled={state === "running" || state === "posting"}
-        class="px-3 py-1.5 bg-accent hover:bg-accent-hover text-white rounded-lg text-xs font-medium disabled:opacity-50 flex items-center gap-1.5"
+        disabled={state === "running" || state === "posting" || puristReady !== true}
+        title={puristReady === true ? undefined : puristMessage}
+        class="px-3 py-1.5 bg-accent hover:bg-accent-hover text-white rounded-lg text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
       >
         {state === "running" ? (
           <>

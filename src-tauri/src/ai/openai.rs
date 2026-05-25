@@ -12,16 +12,23 @@ use async_openai::types::chat::{
 pub struct OpenAiProvider {
     client: async_openai::Client<async_openai::config::OpenAIConfig>,
     model: String,
+    request_timeout: std::time::Duration,
 }
 
 impl OpenAiProvider {
-    pub fn new(endpoint: String, model: String, api_key: String) -> Self {
+    pub fn new(endpoint: String, model: String, api_key: String, request_timeout_secs: u64) -> Self {
         let config = async_openai::config::OpenAIConfig::default()
             .with_api_base(endpoint)
             .with_api_key(api_key);
 
         let client = async_openai::Client::with_config(config);
-        Self { client, model }
+        Self {
+            client,
+            model,
+            // async-openai pins its own reqwest version, so we can't inject a
+            // timeout-configured client. Enforce the timeout at the call boundary instead.
+            request_timeout: std::time::Duration::from_secs(request_timeout_secs),
+        }
     }
 }
 
@@ -49,12 +56,18 @@ impl AiProvider for OpenAiProvider {
             .build()
             .map_err(|e| AppError::Ai(format!("Failed to build request: {}", e)))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| AppError::Ai(format!("OpenAI request failed: {}", e)))?;
+        let response = tokio::time::timeout(
+            self.request_timeout,
+            self.client.chat().create(request),
+        )
+        .await
+        .map_err(|_| {
+            AppError::Ai(format!(
+                "OpenAI request timed out after {}s",
+                self.request_timeout.as_secs()
+            ))
+        })?
+        .map_err(|e| AppError::Ai(format!("OpenAI request failed: {}", e)))?;
 
         let content = response
             .choices

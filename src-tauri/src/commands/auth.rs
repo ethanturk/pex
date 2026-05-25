@@ -76,6 +76,22 @@ pub async fn activate_org(
     };
 
     *state.ado_client.lock().unwrap() = Some(client);
+
+    // Pre-warm the AI manager so the AI API key's keychain prompt fires here, alongside
+    // the ADO PAT prompt above, rather than later when the user first clicks Explain/Review.
+    // macOS will still show one OS dialog per keychain item — they just appear back-to-back
+    // during the same startup gesture. Errors are non-fatal: AI may simply be unconfigured.
+    {
+        let db = state.db.lock().unwrap();
+        let mut ai_mgr_lock = state.ai_manager.lock().unwrap();
+        if ai_mgr_lock.is_none() {
+            let mut mgr = crate::ai::AiManager::new();
+            if let Ok(true) = mgr.try_configure_from_db(&db) {
+                *ai_mgr_lock = Some(mgr);
+            }
+        }
+    }
+
     Ok(true)
 }
 

@@ -248,6 +248,9 @@ export interface AiSettingsNoKey {
   provider: string;
   endpoint: string;
   model: string;
+  requestTimeoutSecs: number;
+  hunkConcurrency: number;
+  standardsMaxChars: number;
 }
 
 export interface PuristCheckResult {
@@ -264,16 +267,56 @@ export async function saveAiSettings(
   endpoint: string,
   model: string,
   apiKey: string,
+  requestTimeoutSecs: number,
+  hunkConcurrency: number,
+  standardsMaxChars: number,
 ): Promise<void> {
-  return invoke("save_ai_settings", { provider, endpoint, model, apiKey });
+  return invoke("save_ai_settings", {
+    provider,
+    endpoint,
+    model,
+    apiKey,
+    requestTimeoutSecs,
+    hunkConcurrency,
+    standardsMaxChars,
+  });
 }
 
-export async function explainDiff(
+export interface ReviewHunkContext {
+  orgUrl: string;
+  projectId: string;
+  repoId: string;
+  sourceCommit: string;
+}
+
+export interface AiPromptInfo {
+  key: string;
+  label: string;
+  description: string;
+  value: string;
+  defaultValue: string;
+  isCustomized: boolean;
+}
+
+export async function getAiPrompts(): Promise<AiPromptInfo[]> {
+  return invoke<AiPromptInfo[]>("get_ai_prompts");
+}
+
+export async function saveAiPrompt(key: string, value: string): Promise<void> {
+  return invoke("save_ai_prompt", { key, value });
+}
+
+export async function resetAiPrompt(key: string): Promise<void> {
+  return invoke("reset_ai_prompt", { key });
+}
+
+export async function explainHunk(
   filePath: string,
   oldContent: string,
   newContent: string,
+  hunkIndex: number,
 ): Promise<string> {
-  return invoke<string>("explain_diff", { filePath, oldContent, newContent });
+  return invoke<string>("explain_hunk", { filePath, oldContent, newContent, hunkIndex });
 }
 
 export async function checkPurist(puristPath: string): Promise<PuristCheckResult> {
@@ -286,6 +329,25 @@ export async function getPuristPath(): Promise<string | null> {
 
 export async function savePuristPath(path: string): Promise<void> {
   return invoke("save_purist_path", { path });
+}
+
+export interface PuristConfigPayload {
+  path: string;
+  isCustomPath: boolean;
+  exists: boolean;
+  content: string;
+}
+
+export async function getPuristConfig(): Promise<PuristConfigPayload> {
+  return invoke<PuristConfigPayload>("get_purist_config");
+}
+
+export async function savePuristConfig(content: string): Promise<PuristConfigPayload> {
+  return invoke<PuristConfigPayload>("save_purist_config", { content });
+}
+
+export async function setPuristConfigPath(path: string): Promise<void> {
+  return invoke("set_purist_config_path", { path });
 }
 
 export async function testAiConnection(): Promise<string> {
@@ -343,6 +405,16 @@ export async function reviewHunk(
   oldContent: string,
   newContent: string,
   hunkIndex: number,
+  ctx?: ReviewHunkContext,
 ): Promise<string> {
-  return invoke<string>("review_hunk", { filePath, oldContent, newContent, hunkIndex });
+  return invoke<string>("review_hunk", {
+    filePath,
+    oldContent,
+    newContent,
+    hunkIndex,
+    orgUrl: ctx?.orgUrl ?? null,
+    projectId: ctx?.projectId ?? null,
+    repoId: ctx?.repoId ?? null,
+    sourceCommit: ctx?.sourceCommit ?? null,
+  });
 }

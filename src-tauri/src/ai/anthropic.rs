@@ -12,12 +12,16 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(endpoint: String, model: String, api_key: String) -> Self {
+    pub fn new(endpoint: String, model: String, api_key: String, request_timeout_secs: u64) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(request_timeout_secs))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             endpoint,
             model,
             api_key,
-            http: reqwest::Client::new(),
+            http,
         }
     }
 }

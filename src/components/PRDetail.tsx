@@ -13,7 +13,6 @@ import {
 } from "@/lib/api";
 import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
-import { ExplainDiff } from "@/components/ExplainDiff";
 import { HunkReview } from "@/components/HunkReview";
 import { ReviewPR } from "@/components/ReviewPR";
 import { ApprovalBar } from "@/components/ApprovalBar";
@@ -219,6 +218,21 @@ export function PRDetail({ prId }: Props) {
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>
           ) : diffHtml ? (
             <div>
+              <HunkReview
+                filePath={diffPath}
+                oldContent={oldContent}
+                newContent={newContent}
+                reviewContext={
+                  activeOrg.value && projectId && repoId && sourceCommit
+                    ? {
+                        orgUrl: activeOrg.value.orgUrl,
+                        projectId,
+                        repoId,
+                        sourceCommit,
+                      }
+                    : undefined
+                }
+              />
               <DiffViewer
                 html={diffHtml}
                 path={diffPath}
@@ -229,16 +243,6 @@ export function PRDetail({ prId }: Props) {
                 sourceCommit={sourceCommit}
                 baseCommit={baseCommit}
                 view={diffView.value}
-              />
-              <ExplainDiff
-                filePath={diffPath}
-                oldContent={oldContent}
-                newContent={newContent}
-              />
-              <HunkReview
-                filePath={diffPath}
-                oldContent={oldContent}
-                newContent={newContent}
               />
             </div>
           ) : (
