@@ -10,6 +10,7 @@ import { DiffViewToggle } from "@/components/DiffViewToggle";
 import { useEffectOnce } from "@/lib/hooks";
 import { getSavedOrgs, activateOrg } from "@/lib/api";
 import { activeOrg, savedOrgs } from "@/lib/signals";
+import { initReviewBus } from "@/lib/reviewBus";
 
 function viewComponent(view: View) {
   switch (view.kind) {
@@ -28,6 +29,7 @@ export function App() {
   const [showAiSettings, setShowAiSettings] = useState(false);
 
   useEffectOnce(() => {
+    initReviewBus();
     // Check if we have saved orgs — if so, go to org-select instead of auth
     getSavedOrgs().then(async (orgs) => {
       savedOrgs.value = orgs;

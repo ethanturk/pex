@@ -9,25 +9,20 @@ use tauri::{Emitter, State};
 pub async fn start_review(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
     pr_id: i64,
     pr_title: String,
 ) -> Result<ReviewOutput, String> {
     // Gather the ADO client and context
-    let (client, project_id, repo_id, org_url) = {
+    let (client, org_url) = {
         let ado = state.ado_client.lock().map_err(|e| e.to_string())?;
         let client = ado
             .as_ref()
             .ok_or_else(|| "Not logged in. Connect to an ADO org first.".to_string())?
             .clone();
         let org_url = client.org_url.clone();
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let project_id = crate::cache::get_setting(&db, "active_project")
-            .map_err(|e: crate::AppError| e.to_string())?
-            .ok_or_else(|| "No project selected.".to_string())?;
-        let repo_id = crate::cache::get_setting(&db, "active_repo")
-            .map_err(|e: crate::AppError| e.to_string())?
-            .ok_or_else(|| "No repo selected.".to_string())?;
-        (client, project_id, repo_id, org_url)
+        (client, org_url)
     };
 
     // Get the AI provider
@@ -121,25 +116,20 @@ pub async fn start_review(
 pub async fn start_review_post(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
     pr_id: i64,
     pr_title: String,
 ) -> Result<(), String> {
     // Run the review first (reuses start_review logic inline)
-    let (client, project_id, repo_id, org_url) = {
+    let (client, org_url) = {
         let ado = state.ado_client.lock().map_err(|e| e.to_string())?;
         let client = ado
             .as_ref()
             .ok_or_else(|| "Not logged in.".to_string())?
             .clone();
         let org_url = client.org_url.clone();
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let project_id = crate::cache::get_setting(&db, "active_project")
-            .map_err(|e: crate::AppError| e.to_string())?
-            .unwrap_or_default();
-        let repo_id = crate::cache::get_setting(&db, "active_repo")
-            .map_err(|e: crate::AppError| e.to_string())?
-            .unwrap_or_default();
-        (client, project_id, repo_id, org_url)
+        (client, org_url)
     };
 
     let provider = {

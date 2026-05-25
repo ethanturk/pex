@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
 import { useResizableWidth } from "@/lib/useResizableWidth";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode } from "@/lib/signals";
 import {
   getPrFiles,
   getViewedFiles,
@@ -15,6 +15,7 @@ import {
 import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
 import { HunkReview } from "@/components/HunkReview";
+import { PRReviewSidebar } from "@/components/PRReviewSidebar";
 import { ReviewPR } from "@/components/ReviewPR";
 import { ApprovalBar } from "@/components/ApprovalBar";
 
@@ -30,7 +31,6 @@ export function PRDetail({ prId }: Props) {
   const [loading, setLoading] = useState(false);
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
-  const [hunkSidebarOpen, setHunkSidebarOpen] = useState(false);
   const fileTreeResize = useResizableWidth({
     storageKey: "pex-filetree-width",
     defaultWidth: 256,
@@ -205,26 +205,30 @@ export function PRDetail({ prId }: Props) {
         </div>
         <div class="flex items-center gap-2">
           <button
-            onClick={() => setHunkSidebarOpen((v) => !v)}
+            onClick={() =>
+              (sidebarMode.value = sidebarMode.value === "hunks" ? null : "hunks")
+            }
             disabled={!diffHtml}
-            aria-pressed={hunkSidebarOpen}
+            aria-pressed={sidebarMode.value === "hunks"}
             title={
               !diffHtml
                 ? "Select a file to enable hunk review"
-                : hunkSidebarOpen
+                : sidebarMode.value === "hunks"
                   ? "Close hunk review sidebar"
                   : "Open hunk review sidebar"
             }
             class={`text-xs px-3 py-1.5 rounded-lg border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
-              hunkSidebarOpen
+              sidebarMode.value === "hunks"
                 ? "border-accent text-accent bg-accent/10"
                 : "border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
             }`}
           >
             🔍 Review hunks
           </button>
-          {activeOrg.value && (
+          {activeOrg.value && projectId && repoId && (
             <ReviewPR
+              projectId={projectId}
+              repoId={repoId}
               prId={prId}
               prTitle={`PR #${prId}`}
             />
@@ -274,7 +278,7 @@ export function PRDetail({ prId }: Props) {
           )}
         </div>
 
-        {hunkSidebarOpen && diffHtml && (
+        {sidebarMode.value === "hunks" && diffHtml && (
           <HunkReview
             key={diffPath}
             filePath={diffPath}
@@ -290,7 +294,16 @@ export function PRDetail({ prId }: Props) {
                   }
                 : undefined
             }
-            onClose={() => setHunkSidebarOpen(false)}
+            onClose={() => (sidebarMode.value = null)}
+          />
+        )}
+
+        {sidebarMode.value === "pr-review" && projectId && repoId && (
+          <PRReviewSidebar
+            projectId={projectId}
+            repoId={repoId}
+            prId={prId}
+            prTitle={`PR #${prId}`}
           />
         )}
       </div>

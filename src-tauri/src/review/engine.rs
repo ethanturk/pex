@@ -25,12 +25,44 @@ pub struct FileInput {
     pub new_content: String,
 }
 
-/// A single review finding produced by the engine.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Critical,
+    Moderate,
+    Minor,
+}
+
+/// A single review finding produced by the engine. Each finding is intended to
+/// become one ADO comment, anchored to a line range when possible.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Finding {
     pub file_path: String,
-    pub new_lineno: Option<usize>,
-    pub content: String,
+    pub severity: Severity,
+    pub line_start: Option<usize>,
+    pub line_end: Option<usize>,
+    pub comment: String,
+}
+
+/// Per-file aggregate result parsed from the file-aggregate LLM response.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAggregateResult {
+    pub summary: String,
+    pub verdict: String,
+    pub findings: Vec<FileAggregateFinding>,
+}
+
+/// Same shape as `Finding` but without `file_path` — the engine injects the
+/// path from the file being aggregated.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAggregateFinding {
+    pub severity: Severity,
+    pub line_start: Option<usize>,
+    pub line_end: Option<usize>,
+    pub comment: String,
 }
 
 /// The complete review output.
@@ -38,6 +70,31 @@ pub struct Finding {
 pub struct ReviewOutput {
     pub summary: String,
     pub findings: Vec<Finding>,
+}
+
+/// Best-effort JSON extraction from an LLM response. Strips ``` fences and
+/// trims surrounding prose; returns the parsed result or an error string.
+fn parse_file_aggregate(raw: &str) -> Result<FileAggregateResult, String> {
+    let trimmed = raw.trim();
+    // Strip leading/trailing code fences if the model ignored "no fences".
+    let inner = if let Some(stripped) = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+    {
+        stripped.trim_start_matches('\n').trim_end_matches("```").trim()
+    } else {
+        trimmed
+    };
+    // Fallback: grab the first {...} block in case the model added prose.
+    let json_str = if inner.starts_with('{') {
+        inner.to_string()
+    } else if let (Some(start), Some(end)) = (inner.find('{'), inner.rfind('}')) {
+        inner[start..=end].to_string()
+    } else {
+        return Err(format!("no JSON object found in response: {}", inner));
+    };
+    serde_json::from_str::<FileAggregateResult>(&json_str)
+        .map_err(|e| format!("JSON parse error: {} — body was: {}", e, json_str))
 }
 
 fn emit_progress(app: &tauri::AppHandle, phase: &str, detail: &str, extra: serde_json::Value) {
@@ -222,13 +279,33 @@ pub async fn run_review(
                 },
             ];
 
-            let summary = retry_once(&provider, &agg_messages).await.unwrap_or_else(|e| {
+            let raw = retry_once(&provider, &agg_messages).await.unwrap_or_else(|e| {
                 format!("[aggregate failed — {}]", e)
             });
 
-            state.completed_files.push((file.path.clone(), summary));
+            let aggregate = parse_file_aggregate(&raw).unwrap_or_else(|err| {
+                // Log to stderr so the user can see what the model produced.
+                eprintln!(
+                    "[review] file-aggregate JSON parse failed for {}: {}",
+                    file.path, err
+                );
+                FileAggregateResult {
+                    summary: format!("Aggregate parse failed; raw model output: {}", raw),
+                    verdict: "review-required".into(),
+                    findings: Vec::new(),
+                }
+            });
+
+            state.completed_files.push((file.path.clone(), aggregate));
         } else {
-            state.completed_files.push((file.path.clone(), "No issues found in this file.".into()));
+            state.completed_files.push((
+                file.path.clone(),
+                FileAggregateResult {
+                    summary: "No issues found in this file.".into(),
+                    verdict: "approve".into(),
+                    findings: Vec::new(),
+                },
+            ));
         }
 
         state.current_file_idx += 1;
@@ -251,7 +328,11 @@ pub async fn run_review(
             break;
         }
 
-        let batch_files: Vec<(String, String)> = state.completed_files[start..end].to_vec();
+        // The batch aggregate prompt only needs the per-file summary string.
+        let batch_files: Vec<(String, String)> = state.completed_files[start..end]
+            .iter()
+            .map(|(path, agg)| (path.clone(), agg.summary.clone()))
+            .collect();
 
         emit_progress(
             &app,
@@ -318,15 +399,19 @@ pub async fn run_review(
         .await
         .unwrap_or_else(|e| format!("[final synthesis failed — {}]", e));
 
+    // Flatten per-file findings into a single list, injecting the file path
+    // onto each one so the frontend can render and post them independently.
     let findings: Vec<Finding> = state
         .completed_files
         .iter()
-        .flat_map(|(file_path, summary)| {
-            vec![Finding {
+        .flat_map(|(file_path, agg)| {
+            agg.findings.iter().map(move |f| Finding {
                 file_path: file_path.clone(),
-                new_lineno: None,
-                content: summary.clone(),
-            }]
+                severity: f.severity,
+                line_start: f.line_start,
+                line_end: f.line_end,
+                comment: f.comment.clone(),
+            })
         })
         .collect();
 
@@ -390,22 +475,36 @@ pub async fn post_findings(
         .post_thread(project_id, repo_id, pr_id, &summary_thread)
         .await?;
 
-    // Post per-file findings as threaded comments
+    // Post each finding. Anchor to the source line range when the LLM
+    // supplied one; otherwise fall back to a PR-level comment with the file
+    // path bolded into the body (file-level threadContext is attempted first
+    // by the dedicated `post_review_finding` command; the batch path keeps
+    // things simple).
     for finding in findings {
-        if finding.content.trim().is_empty()
-            || finding.content == "No issues found in this file."
-            || finding.content.starts_with("[aggregate failed")
-        {
+        if finding.comment.trim().is_empty() {
             continue;
         }
 
-        let thread = serde_json::json!({
-            "comments": [{
-                "parentCommentId": 0,
-                "content": format!("**{}**\n\n{}", finding.file_path, finding.content),
-            }],
-            "status": "active",
-        });
+        let prefix = severity_prefix(finding.severity);
+        let body = format!("{} **{}**\n\n{}", prefix, finding.file_path, finding.comment);
+
+        let thread = if let (Some(lo), Some(hi)) = (finding.line_start, finding.line_end) {
+            let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+            serde_json::json!({
+                "comments": [{ "parentCommentId": 0, "content": finding.comment, "commentType": 1 }],
+                "status": 1,
+                "threadContext": {
+                    "filePath": finding.file_path,
+                    "rightFileStart": { "line": lo, "offset": 1 },
+                    "rightFileEnd":   { "line": hi, "offset": 1 },
+                },
+            })
+        } else {
+            serde_json::json!({
+                "comments": [{ "parentCommentId": 0, "content": body, "commentType": 1 }],
+                "status": 1,
+            })
+        };
 
         client
             .post_thread(project_id, repo_id, pr_id, &thread)
@@ -413,4 +512,12 @@ pub async fn post_findings(
     }
 
     Ok(())
+}
+
+fn severity_prefix(s: Severity) -> &'static str {
+    match s {
+        Severity::Critical => "🔴 CRITICAL —",
+        Severity::Moderate => "🟡 MODERATE —",
+        Severity::Minor => "⚪ MINOR —",
+    }
 }

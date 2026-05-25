@@ -86,6 +86,94 @@ pub async fn post_comment(
     }))
 }
 
+/// Post a review finding to ADO. Supports three anchoring modes:
+/// - file + line range  → thread anchored to those lines
+/// - file only          → file-level thread (no line); on ADO 400, falls back
+///                        to a PR-level comment with the file path bolded in
+/// - neither            → plain PR-level comment
+///
+/// Returns the same serde_json shape as `post_comment` so the frontend can
+/// reuse the existing thread-display path.
+#[tauri::command]
+pub async fn post_review_finding(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+    file_path: Option<String>,
+    line_start: Option<i64>,
+    line_end: Option<i64>,
+    content: String,
+) -> Result<serde_json::Value, String> {
+    let client = get_client(&state)?;
+
+    // Build the anchored payload (if we can).
+    let anchored = match (&file_path, line_start, line_end) {
+        (Some(path), Some(a), Some(b)) => {
+            let lo = a.min(b);
+            let hi = a.max(b);
+            Some(serde_json::json!({
+                "comments": [{ "parentCommentId": 0, "content": content, "commentType": 1 }],
+                "status": 1,
+                "threadContext": {
+                    "filePath": path,
+                    "rightFileStart": { "line": lo, "offset": 1 },
+                    "rightFileEnd":   { "line": hi, "offset": 1 },
+                },
+            }))
+        }
+        (Some(path), None, None) => Some(serde_json::json!({
+            "comments": [{ "parentCommentId": 0, "content": content, "commentType": 1 }],
+            "status": 1,
+            "threadContext": { "filePath": path },
+        })),
+        _ => None,
+    };
+
+    // Try the anchored payload first; on failure, fall back to PR-level with
+    // the file path prefixed into the body.
+    let thread = match anchored {
+        Some(body) => match client.post_thread(&project_id, &repo_id, pr_id, &body).await {
+            Ok(t) => t,
+            Err(err) => {
+                let fallback_body = match &file_path {
+                    Some(p) => format!("**{}**\n\n{}", p, content),
+                    None => content.clone(),
+                };
+                let pr_level = serde_json::json!({
+                    "comments": [{ "parentCommentId": 0, "content": fallback_body, "commentType": 1 }],
+                    "status": 1,
+                });
+                eprintln!("[review] anchored thread post failed ({err}); falling back to PR-level");
+                client
+                    .post_thread(&project_id, &repo_id, pr_id, &pr_level)
+                    .await
+                    .map_err(|e| e.to_string())?
+            }
+        },
+        None => {
+            let body = serde_json::json!({
+                "comments": [{ "parentCommentId": 0, "content": content, "commentType": 1 }],
+                "status": 1,
+            });
+            client
+                .post_thread(&project_id, &repo_id, pr_id, &body)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+    };
+
+    Ok(serde_json::json!({
+        "id": thread.id,
+        "status": thread.status,
+        "comments": thread.comments.iter().map(|c| serde_json::json!({
+            "id": c.id,
+            "author": c.author.as_ref().map(|a| a.display_name.clone()).unwrap_or_default(),
+            "content": c.content
+        })).collect::<Vec<_>>()
+    }))
+}
+
 #[tauri::command]
 pub async fn post_reply(
     state: State<'_, AppState>,

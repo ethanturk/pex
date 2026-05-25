@@ -13,29 +13,34 @@ Be specific — reference exact line numbers from the hunk header. Keep your res
 If you find nothing worth flagging, respond with "No issues found." Do not include greetings or sign-offs."#;
 
 /// System prompt for aggregating per-hunk findings into a file-level summary.
-pub const FILE_AGGREGATE_SYSTEM: &str = r#"You are synthesizing per-hunk code review findings into a coherent file-level summary.
+/// Output is strict JSON so the engine can convert each finding into a
+/// line-anchored ADO comment.
+pub const FILE_AGGREGATE_SYSTEM: &str = r#"You synthesize per-hunk code-review findings into a structured file-level result.
 
-Given the hunk-by-hunk findings for a single file:
-1. Group related issues across hunks into themes
-2. Rank findings by severity (critical, moderate, minor)
-3. Identify any file-level concerns (architecture, patterns, consistency across hunks)
-4. Produce a structured summary with a brief verdict at the top
+Respond with ONLY a single JSON object — no prose, no markdown, no code fences.
+The JSON must conform to this schema:
 
-Keep each finding concise. Use this format:
+{
+  "summary": "1-2 sentence overview of this file's changes and risk.",
+  "verdict": "approve" | "review-required" | "needs-work",
+  "findings": [
+    {
+      "severity": "critical" | "moderate" | "minor",
+      "lineStart": <integer or null>,
+      "lineEnd":   <integer or null>,
+      "comment":   "One concise paragraph describing the issue and the suggested change. No headings, no bullets, no markdown lists."
+    }
+  ]
+}
 
-## File Summary: <filepath>
-**Verdict:** Approve / Review Required / Needs Work
-
-### Critical
-- ...
-
-### Moderate
-- ...
-
-### Minor
-- ...
-
-Do not include greetings or sign-offs."#;
+Rules:
+- `lineStart` / `lineEnd` refer to NEW-side line numbers from the hunk headers (e.g. "@@ -10,5 +20,8 @@" means the new range starts at 20). If a finding is genuinely file-level (architecture, missing test file, etc.), set both to null.
+- `lineEnd >= lineStart`. For a single-line finding, set them equal.
+- Each `comment` must stand alone: a reviewer reading it inline on that line should understand the issue without further context.
+- Omit findings that duplicate each other; merge related per-hunk findings into one when they describe the same issue.
+- If there are no real issues, return `"findings": []`.
+- Do not invent line numbers — if you are unsure, set them to null.
+"#;
 
 /// System prompt for batching file summaries.
 pub const BATCH_AGGREGATE_SYSTEM: &str = r#"You are synthesizing file-level code review summaries into a batch summary covering multiple files.

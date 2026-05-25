@@ -92,6 +92,7 @@ pub fn run() {
             commands::files::get_viewed_files,
             commands::comments::get_threads,
             commands::comments::post_comment,
+            commands::comments::post_review_finding,
             commands::comments::post_reply,
             commands::comments::update_reviewer_status,
             commands::ai::get_ai_settings,

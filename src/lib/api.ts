@@ -320,10 +320,34 @@ export async function testAiConnection(): Promise<string> {
 
 // ---- Native PR Review ----
 
+export type Severity = "critical" | "moderate" | "minor";
+
 export interface ReviewFinding {
   filePath: string;
-  newLineno: number | null;
-  content: string;
+  severity: Severity;
+  lineStart: number | null;
+  lineEnd: number | null;
+  comment: string;
+}
+
+export async function postReviewFinding(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  filePath: string | null,
+  lineStart: number | null,
+  lineEnd: number | null,
+  content: string,
+): Promise<CommentThread> {
+  return invoke<CommentThread>("post_review_finding", {
+    projectId,
+    repoId,
+    prId,
+    filePath,
+    lineStart,
+    lineEnd,
+    content,
+  });
 }
 
 export interface ReviewOutput {
@@ -331,12 +355,22 @@ export interface ReviewOutput {
   findings: ReviewFinding[];
 }
 
-export async function startReview(prId: number, prTitle: string): Promise<ReviewOutput> {
-  return invoke<ReviewOutput>("start_review", { prId, prTitle });
+export async function startReview(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  prTitle: string,
+): Promise<ReviewOutput> {
+  return invoke<ReviewOutput>("start_review", { projectId, repoId, prId, prTitle });
 }
 
-export async function startReviewPost(prId: number, prTitle: string): Promise<void> {
-  return invoke("start_review_post", { prId, prTitle });
+export async function startReviewPost(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  prTitle: string,
+): Promise<void> {
+  return invoke("start_review_post", { projectId, repoId, prId, prTitle });
 }
 
 export async function cancelReview(): Promise<void> {

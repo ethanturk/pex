@@ -1,4 +1,5 @@
 use crate::AppError;
+use crate::review::engine::FileAggregateResult;
 use serde::{Deserialize, Serialize};
 
 /// Serializable progress state for resumable PR reviews.
@@ -19,8 +20,8 @@ pub struct ReviewState {
     pub current_hunk: usize,
     /// Collected hunk findings for the current file: (hunk_num, finding_text)
     pub current_file_findings: Vec<(usize, String)>,
-    /// Completed file summaries: (file_path, summary)
-    pub completed_files: Vec<(String, String)>,
+    /// Completed file results: (file_path, parsed aggregate)
+    pub completed_files: Vec<(String, FileAggregateResult)>,
     /// Batch summaries from completed batches
     pub batch_summaries: Vec<String>,
     /// Current batch number (1-based)
@@ -89,11 +90,16 @@ pub fn load_state(conn: &rusqlite::Connection) -> Result<Option<ReviewState>, Ap
         .ok();
 
     match json {
-        Some(j) => {
-            let state: ReviewState = serde_json::from_str(&j)
-                .map_err(|e| AppError::Ai(format!("Failed to deserialize review state: {}", e)))?;
-            Ok(Some(state))
-        }
+        Some(j) => match serde_json::from_str::<ReviewState>(&j) {
+            Ok(state) => Ok(Some(state)),
+            // Schema drift: discard the saved state instead of erroring out so
+            // the user can start a fresh review. Old multi-section markdown
+            // summaries won't fit the new completed_files shape.
+            Err(_) => {
+                let _ = clear_state(conn);
+                Ok(None)
+            }
+        },
         None => Ok(None),
     }
 }

@@ -96,3 +96,65 @@ export const currentIteration = signal<number>(1);
 // view mode and folder-collapse state. Used for j/k navigation so it matches
 // what the user actually sees.
 export const visibleFilePaths = signal<string[]>([]);
+
+// ---- PR Review (background, per-PR) ----
+// The Rust engine runs a review serially (one resumable state at a time), so we
+// track a single "active" PR — but each PR keeps its last result so a user can
+// navigate away mid-review and come back to it, or revisit a finished review.
+export interface ReviewProgress {
+  phase: string;
+  detail: string;
+  fileNum?: number;
+  totalFiles?: number;
+  hunk?: number;
+  totalHunks?: number;
+  batch?: number;
+  totalBatches?: number;
+  fileCount?: number;
+}
+
+export type PRReviewStatus = "running" | "done" | "posting" | "posted" | "error";
+
+export interface PRReviewRun {
+  projectId: string;
+  repoId: string;
+  prTitle: string;
+  status: PRReviewStatus;
+  progress: ReviewProgress | null;
+  // Output of the latest completed run; preserved across "posting" so the
+  // sidebar can keep showing the summary while we post to ADO.
+  output: {
+    summary: string;
+    findings: {
+      filePath: string;
+      severity: "critical" | "moderate" | "minor";
+      lineStart: number | null;
+      lineEnd: number | null;
+      comment: string;
+    }[];
+  } | null;
+  error: string | null;
+}
+
+export const reviewRuns = signal<Map<number, PRReviewRun>>(new Map());
+
+// PR currently being processed by the Rust engine. Used to route global
+// `review-progress` / `review-done` events to the right run, and to disable
+// "Review PR" on other PRs while one is in flight.
+export const activeReviewPrId = signal<number | null>(null);
+
+// Which right-side sidebar is open in the PR detail view. Hunk review and PR
+// review share the slot.
+export type SidebarMode = "hunks" | "pr-review" | null;
+export const sidebarMode = signal<SidebarMode>(null);
+
+export function updateReviewRun(prId: number, patch: Partial<PRReviewRun> | ((prev: PRReviewRun | undefined) => PRReviewRun)) {
+  const next = new Map(reviewRuns.value);
+  const prev = next.get(prId);
+  if (typeof patch === "function") {
+    next.set(prId, patch(prev));
+  } else if (prev) {
+    next.set(prId, { ...prev, ...patch });
+  }
+  reviewRuns.value = next;
+}
