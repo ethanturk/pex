@@ -5,22 +5,14 @@ interface Props {
 }
 
 const ACTIONS = [
-  { label: "Approve", vote: 10, class: "bg-green-600 hover:bg-green-700 text-white", confirm: false },
-  { label: "Approve w/ Suggestions", vote: 5, class: "bg-green-500 hover:bg-green-600 text-white", confirm: false },
-  { label: "Wait for Author", vote: -5, class: "bg-yellow-500 hover:bg-yellow-600 text-white", confirm: true },
-  { label: "Reject", vote: -10, class: "bg-red-600 hover:bg-red-700 text-white", confirm: true },
+  { label: "Approve", vote: 10, class: "bg-green-600 hover:bg-green-700 text-white", prompt: "Approve this PR?" },
+  { label: "Approve w/ Suggestions", vote: 5, class: "bg-green-500 hover:bg-green-600 text-white", prompt: "Approve with suggestions?" },
+  { label: "Wait for Author", vote: -5, class: "bg-yellow-500 hover:bg-yellow-600 text-white", prompt: "Wait for author?" },
+  { label: "Reject", vote: -10, class: "bg-red-600 hover:bg-red-700 text-white", prompt: "Reject this PR?" },
 ];
 
 export function ApprovalBar({ onVote }: Props) {
   const [confirming, setConfirming] = useState<number | null>(null);
-
-  const handleClick = (vote: number, needsConfirm: boolean) => {
-    if (needsConfirm) {
-      setConfirming(vote);
-    } else {
-      onVote(vote);
-    }
-  };
 
   const handleConfirm = () => {
     if (confirming !== null) {
@@ -29,16 +21,16 @@ export function ApprovalBar({ onVote }: Props) {
     }
   };
 
+  const pending = confirming !== null ? ACTIONS.find((a) => a.vote === confirming) : null;
+
   return (
     <div class="flex items-center gap-1.5">
-      {confirming !== null ? (
+      {pending ? (
         <div class="flex items-center gap-1.5">
-          <span class="text-xs text-gray-500">
-            {confirming === -5 ? "Wait for author?" : "Reject this PR?"}
-          </span>
+          <span class="text-xs text-gray-500">{pending.prompt}</span>
           <button
             onClick={handleConfirm}
-            class={`px-3 py-1 rounded text-xs font-medium ${confirming === -5 ? "bg-yellow-500 hover:bg-yellow-600" : "bg-red-600 hover:bg-red-700"} text-white`}
+            class={`px-3 py-1 rounded text-xs font-medium ${pending.class}`}
           >
             Confirm
           </button>
@@ -53,7 +45,7 @@ export function ApprovalBar({ onVote }: Props) {
         ACTIONS.map((a) => (
           <button
             key={a.vote}
-            onClick={() => handleClick(a.vote, a.confirm)}
+            onClick={() => setConfirming(a.vote)}
             class={`px-3 py-1 rounded text-xs font-medium ${a.class}`}
           >
             {a.label}
