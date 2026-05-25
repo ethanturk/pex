@@ -14,6 +14,7 @@ import {
 import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
 import { ExplainDiff } from "@/components/ExplainDiff";
+import { HunkReview } from "@/components/HunkReview";
 import { ReviewPR } from "@/components/ReviewPR";
 import { ApprovalBar } from "@/components/ApprovalBar";
 
@@ -211,6 +212,11 @@ export function PRDetail({ prId }: Props) {
                 baseCommit={baseCommit}
               />
               <ExplainDiff
+                filePath={diffPath}
+                oldContent={oldContent}
+                newContent={newContent}
+              />
+              <HunkReview
                 filePath={diffPath}
                 oldContent={oldContent}
                 newContent={newContent}

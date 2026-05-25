@@ -1,4 +1,5 @@
 use crate::ai::{AiProviderKind, AiSettingsNoKey, ChatMessage, ChatRole};
+use crate::diff::engine::{extract_hunks, DiffHunk};
 use crate::AppState;
 use tauri::Emitter;
 use tauri::State;
@@ -375,4 +376,80 @@ fn gather_purist_config(
         .ok_or_else(|| format!("No credentials found for {}. Log in first.", org_url))?;
 
     Ok((purist_path, provider, endpoint, model, llm_api_key, ado_pat))
+}
+
+// ---- Hunk Review ----
+
+/// Extract structured diff hunks from old/new content for per-hunk review UI.
+#[tauri::command]
+pub fn get_diff_hunks(
+    old_content: String,
+    new_content: String,
+) -> Result<Vec<DiffHunk>, String> {
+    Ok(extract_hunks(&old_content, &new_content))
+}
+
+/// Get an AI review of a single diff hunk.
+#[tauri::command]
+pub async fn review_hunk(
+    state: State<'_, AppState>,
+    file_path: String,
+    old_content: String,
+    new_content: String,
+    hunk_index: usize,
+) -> Result<String, String> {
+    // Extract the specific hunk
+    let hunks = extract_hunks(&old_content, &new_content);
+    let hunk = hunks
+        .get(hunk_index)
+        .ok_or_else(|| format!("Hunk index {} not found ({} hunks total)", hunk_index, hunks.len()))?;
+
+    // Build hunk text: header + each line with its +/-/space prefix
+    let hunk_text: String = hunk
+        .lines
+        .iter()
+        .map(|l| format!("{}{}", l.kind, l.content))
+        .collect::<Vec<_>>()
+        .join("");
+
+    // Ensure AI manager is configured
+    {
+        let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
+        if ai_mgr_lock.is_none() {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            let mut mgr = crate::ai::AiManager::new();
+            let configured = mgr
+                .try_configure_from_db(&db)
+                .map_err(|e: crate::AppError| e.to_string())?;
+            if configured {
+                *ai_mgr_lock = Some(mgr);
+            }
+        }
+    }
+
+    let messages = vec![
+        ChatMessage {
+            role: ChatRole::System,
+            content: crate::ai::prompts::REVIEW_HUNK_SYSTEM.to_string(),
+        },
+        ChatMessage {
+            role: ChatRole::User,
+            content: crate::ai::prompts::review_hunk_user(
+                &file_path,
+                &hunk.header,
+                &hunk_text,
+            ),
+        },
+    ];
+
+    let provider = {
+        let ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
+        ai_mgr_lock
+            .as_ref()
+            .and_then(|mgr| mgr.provider_clone())
+            .ok_or_else(|| "AI not configured. Set up AI settings in Preferences.".to_string())?
+    };
+
+    let response = provider.chat(&messages).await.map_err(|e| e.to_string())?;
+    Ok(response)
 }

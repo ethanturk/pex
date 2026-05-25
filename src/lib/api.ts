@@ -310,3 +310,36 @@ export async function reviewPrPost(
 export async function cancelReview(): Promise<void> {
   return invoke("cancel_review");
 }
+
+export interface HunkLine {
+  kind: string;       // "+", "-", or " "
+  newLineno: number | null;
+  oldLineno: number | null;
+  content: string;
+}
+
+export interface DiffHunk {
+  index: number;
+  header: string;     // "@@ -1,4 +1,5 @@"
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  lines: HunkLine[];
+}
+
+export async function getDiffHunks(
+  oldContent: string,
+  newContent: string,
+): Promise<DiffHunk[]> {
+  return invoke<DiffHunk[]>("get_diff_hunks", { oldContent, newContent });
+}
+
+export async function reviewHunk(
+  filePath: string,
+  oldContent: string,
+  newContent: string,
+  hunkIndex: number,
+): Promise<string> {
+  return invoke<string>("review_hunk", { filePath, oldContent, newContent, hunkIndex });
+}

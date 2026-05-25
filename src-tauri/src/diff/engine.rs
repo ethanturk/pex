@@ -134,6 +134,115 @@ fn escape_html(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+// ---- Hunk extraction ----
+
+/// A structured diff hunk for per-hunk AI review.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DiffHunk {
+    /// 0-based hunk index
+    pub index: usize,
+    /// Unified diff header like "@@ -1,4 +1,5 @@"
+    pub header: String,
+    /// 1-based start line in old file
+    pub old_start: usize,
+    /// Number of lines in old file for this hunk
+    pub old_count: usize,
+    /// 1-based start line in new file
+    pub new_start: usize,
+    /// Number of lines in new file for this hunk
+    pub new_count: usize,
+    /// Individual lines in the hunk
+    pub lines: Vec<HunkLine>,
+}
+
+/// A single line within a diff hunk.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HunkLine {
+    /// "+"  for insert, "-" for delete, " " for context
+    pub kind: String,
+    /// Line number in the NEW file (None for deleted lines)
+    pub new_lineno: Option<usize>,
+    /// Line number in the OLD file (None for inserted lines)
+    pub old_lineno: Option<usize>,
+    /// The line content (without leading +/-/space)
+    pub content: String,
+}
+
+/// Extract structured hunks from a diff between old and new content.
+pub fn extract_hunks(old: &str, new: &str) -> Vec<DiffHunk> {
+    let diff = similar::TextDiff::from_lines(old, new);
+    let groups = diff.grouped_ops(CONTEXT_LINES);
+
+    groups
+        .iter()
+        .enumerate()
+        .map(|(hunk_idx, group)| {
+            let first = group.first().unwrap();
+            let last = group.last().unwrap();
+
+            let old_start = first.old_range().start + 1;
+            let old_end = last.old_range().end;
+            let new_start = first.new_range().start + 1;
+            let new_end = last.new_range().end;
+
+            let old_count = old_end.saturating_sub(old_start.saturating_sub(1));
+            let new_count = new_end.saturating_sub(new_start.saturating_sub(1));
+
+            let header = if old_count == 0 {
+                format!("@@ -0,0 +{},{} @@", new_start, new_count)
+            } else if new_count == 0 {
+                format!("@@ -{},{} +0,0 @@", old_start, old_count)
+            } else {
+                format!(
+                    "@@ -{},{} +{},{} @@",
+                    old_start, old_count, new_start, new_count
+                )
+            };
+
+            let lines: Vec<HunkLine> = group
+                .iter()
+                .flat_map(|op| diff.iter_changes(op))
+                .map(|change| {
+                    let (kind, old_lineno, new_lineno) = match change.tag() {
+                        similar::ChangeTag::Delete => (
+                            "-".to_string(),
+                            change.old_index().map(|i| i + 1),
+                            None,
+                        ),
+                        similar::ChangeTag::Insert => (
+                            "+".to_string(),
+                            None,
+                            change.new_index().map(|i| i + 1),
+                        ),
+                        similar::ChangeTag::Equal => (
+                            " ".to_string(),
+                            change.old_index().map(|i| i + 1),
+                            change.new_index().map(|i| i + 1),
+                        ),
+                    };
+
+                    HunkLine {
+                        kind,
+                        new_lineno,
+                        old_lineno,
+                        content: change.value().to_string(),
+                    }
+                })
+                .collect();
+
+            DiffHunk {
+                index: hunk_idx,
+                header,
+                old_start,
+                old_count,
+                new_start,
+                new_count,
+                lines,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

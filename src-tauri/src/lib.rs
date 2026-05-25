@@ -102,6 +102,8 @@ pub fn run() {
             commands::ai::review_pr_post,
             commands::ai::cancel_review,
             commands::ai::test_ai_connection,
+            commands::ai::get_diff_hunks,
+            commands::ai::review_hunk,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
