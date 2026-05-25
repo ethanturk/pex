@@ -54,8 +54,27 @@ pub async fn get_file_diff(
     Ok(serde_json::json!({
         "html": diff.html,
         "path": diff.path,
-        "status": diff.status
+        "status": diff.status,
+        "sourceCommit": diff.source_commit,
+        "baseCommit": diff.base_commit,
     }))
+}
+
+#[tauri::command]
+pub async fn get_file_lines(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    commit_id: String,
+    file_path: String,
+    start_line: usize,
+    end_line: usize,
+) -> Result<Vec<String>, String> {
+    let client = get_client(&state)?;
+    client
+        .get_file_lines(&project_id, &repo_id, &commit_id, &file_path, start_line, end_line)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

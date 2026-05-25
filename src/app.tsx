@@ -5,7 +5,7 @@ import { PRList } from "@/components/PRList";
 import { PRDetail } from "@/components/PRDetail";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useEffectOnce } from "@/lib/hooks";
-import { getSavedOrgs } from "@/lib/api";
+import { getSavedOrgs, activateOrg } from "@/lib/api";
 import { activeOrg, savedOrgs } from "@/lib/signals";
 
 function viewComponent(view: View) {
@@ -24,12 +24,19 @@ function viewComponent(view: View) {
 export function App() {
   useEffectOnce(() => {
     // Check if we have saved orgs — if so, go to org-select instead of auth
-    getSavedOrgs().then((orgs) => {
+    getSavedOrgs().then(async (orgs) => {
       savedOrgs.value = orgs;
       if (orgs.length === 1) {
-        // Single org: skip org-select, go straight to PR list
-        activeOrg.value = orgs[0];
-        currentView.value = { kind: "pr-list" };
+        // Single org: rehydrate credential, then skip org-select
+        try {
+          await activateOrg(orgs[0].orgUrl);
+          activeOrg.value = orgs[0];
+          currentView.value = { kind: "pr-list" };
+        } catch (e) {
+          console.error("Failed to activate saved org:", e);
+          // Credential missing/expired — fall through to auth screen
+          currentView.value = { kind: "auth" };
+        }
       } else if (orgs.length > 1) {
         currentView.value = { kind: "org-select" };
       }

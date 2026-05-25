@@ -25,15 +25,28 @@ Built with [Tauri](https://tauri.app) (Rust backend) and Preact.
 
 ### Quick install (recommended)
 
-```bash
-# Linux / macOS
-./install.sh
+One-liner — no clone required. The script fetches the source, checks prerequisites, builds, and installs.
 
-# Windows (PowerShell)
-.\install.ps1
+**Linux / macOS**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ethanturk/pex/master/install.sh | bash
 ```
 
-The scripts check prerequisites, build from source, and install the platform package.
+**Windows (PowerShell)**
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/ethanturk/pex/master/install.ps1 | iex
+```
+
+Or, from a cloned repo:
+
+```bash
+./install.sh        # Linux / macOS
+.\install.ps1       # Windows
+```
+
+Pin a specific tag or branch with `PEX_REF` (e.g. `PEX_REF=v0.2.0 curl … | bash`).
 
 ### Manual build
 

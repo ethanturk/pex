@@ -9,8 +9,11 @@ pub async fn login_pat(
 ) -> Result<bool, String> {
     match crate::auth::pat::validate_pat(&org_url, &pat).await {
         Ok(name) => {
-            let client = crate::ado::AdoClient::new(org_url.clone(), pat);
+            let client = crate::ado::AdoClient::new(org_url.clone(), pat.clone());
             *state.ado_client.lock().unwrap() = Some(client);
+
+            crate::auth::keyring_store::KeyringStore::save_pat(&org_url, &pat)
+                .map_err(|e| e.to_string())?;
 
             let conn = state.db.lock().unwrap();
             crate::cache::save_org(&conn, &org_url, &name, "pat").map_err(|e| e.to_string())?;
@@ -19,6 +22,61 @@ pub async fn login_pat(
         }
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Rehydrate the in-memory ADO client for a saved org by reading credentials
+/// from the keyring. Called on app startup and when switching orgs.
+#[tauri::command]
+pub async fn activate_org(
+    state: State<'_, AppState>,
+    org_url: String,
+) -> Result<bool, String> {
+    // Look up the saved org to determine token type.
+    let token_type = {
+        let conn = state.db.lock().unwrap();
+        crate::cache::list_orgs(&conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|(url, _, _)| url == &org_url)
+            .map(|(_, _, t)| t)
+            .ok_or_else(|| "Org not found in saved list".to_string())?
+    };
+
+    let client = match token_type.as_str() {
+        "pat" => {
+            let pat = crate::auth::keyring_store::KeyringStore::get_pat(&org_url)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "No saved PAT for this org. Please sign in again.".to_string())?;
+            crate::ado::AdoClient::new(org_url.clone(), pat)
+        }
+        "oauth" => {
+            // Refresh the access token using stored refresh token + client secret.
+            let (refresh_token, client_secret) =
+                crate::auth::keyring_store::KeyringStore::get_oauth(&org_url)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| {
+                        "No saved OAuth credentials for this org. Please sign in again.".to_string()
+                    })?;
+            let token = crate::auth::oauth::refresh_oauth_token(
+                &client_secret,
+                &refresh_token,
+                "http://localhost:0/callback",
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            crate::auth::keyring_store::KeyringStore::save_oauth(
+                &org_url,
+                &token.refresh_token,
+                &client_secret,
+            )
+            .map_err(|e| e.to_string())?;
+            crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token)
+        }
+        other => return Err(format!("Unknown token type: {}", other)),
+    };
+
+    *state.ado_client.lock().unwrap() = Some(client);
+    Ok(true)
 }
 
 #[tauri::command]

@@ -59,7 +59,7 @@ pub async fn list_pull_requests(
                 "sourceRefName": pr.source_ref_name,
                 "targetRefName": pr.target_ref_name,
                 "creationDate": pr.creation_date,
-                "mergeStatus": pr.merge_status,
+                "mergeStatus": pr.merge_status.unwrap_or_default(),
                 "reviewers": pr.reviewers.iter().map(|r| serde_json::json!({
                     "id": r.id,
                     "displayName": r.display_name,

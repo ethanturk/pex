@@ -20,6 +20,8 @@ interface Props { prId: number; }
 export function PRDetail({ prId }: Props) {
   const [diffHtml, setDiffHtml] = useState<string>("");
   const [diffPath, setDiffPath] = useState<string>("");
+  const [sourceCommit, setSourceCommit] = useState<string>("");
+  const [baseCommit, setBaseCommit] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
@@ -46,6 +48,9 @@ export function PRDetail({ prId }: Props) {
       const viewed = await getViewedFiles(projectId, repoId, prId);
       const viewedSet = new Set(viewed);
       prFiles.value = files.map((f) => ({ ...f, viewed: viewedSet.has(f.path) }));
+    } catch (e) {
+      console.error("Failed to load PR files:", e);
+      prFiles.value = [];
     } finally {
       setLoading(false);
     }
@@ -58,9 +63,22 @@ export function PRDetail({ prId }: Props) {
       const d = await getFileDiff(projectId, repoId, prId, path, currentIteration.value);
       setDiffHtml(d.html);
       setDiffPath(d.path);
+      setSourceCommit(d.sourceCommit);
+      setBaseCommit(d.baseCommit);
       // Load threads for this file
       const allThreads = await getThreads(projectId, repoId, prId);
       setThreads(allThreads.filter((t: any) => t.filePath === d.path));
+    } catch (e: any) {
+      const msg = typeof e === "string" ? e : e?.message ?? String(e);
+      console.error("Failed to load file diff:", e);
+      setDiffPath(path);
+      setDiffHtml(
+        `<div class="p-4 text-sm text-red-600 dark:text-red-400 break-words">Failed to load diff: ${msg
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")}</div>`
+      );
+      setThreads([]);
     } finally {
       setLoading(false);
     }
@@ -170,6 +188,10 @@ export function PRDetail({ prId }: Props) {
               path={diffPath}
               threads={threads}
               onComment={handlePostComment}
+              projectId={projectId!}
+              repoId={repoId!}
+              sourceCommit={sourceCommit}
+              baseCommit={baseCommit}
             />
           ) : (
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">

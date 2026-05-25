@@ -22,6 +22,7 @@ export function PRList() {
   const [repos, setRepos] = useState<Repository[]>([]);
   const [prs, setPrs] = useState<PullRequest[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   // Filter state
   const [statusFilter, setStatusFilter] = useState("all");
@@ -31,19 +32,31 @@ export function PRList() {
     listProjects().then(setProjects);
   }, []);
 
+  // Load the repo list whenever the selected project changes (or on remount, so
+  // returning from a PR detail still has the dropdown populated).
+  // Do NOT clear selectedRepo here — that only belongs in the project dropdown's
+  // onChange, otherwise navigating back from a PR wipes the user's selection.
   useEffect(() => {
     if (selectedProject.value) {
       listRepositories(selectedProject.value).then(setRepos);
-      selectedRepo.value = "";
-      setPrs([]);
+    } else {
+      setRepos([]);
     }
   }, [selectedProject.value]);
 
   useEffect(() => {
     if (selectedProject.value && selectedRepo.value) {
       setLoading(true);
+      setError("");
       listPullRequests(selectedProject.value, selectedRepo.value)
-        .then(setPrs)
+        .then((list) => {
+          setPrs(list);
+          setError("");
+        })
+        .catch((e) => {
+          setPrs([]);
+          setError(typeof e === "string" ? e : e?.message ?? String(e));
+        })
         .finally(() => setLoading(false));
     }
   }, [selectedRepo.value]);
@@ -76,7 +89,14 @@ export function PRList() {
       <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
         <select
           value={selectedProject.value}
-          onChange={(e) => (selectedProject.value = e.currentTarget.value)}
+          onChange={(e) => {
+            const next = e.currentTarget.value;
+            if (next !== selectedProject.value) {
+              selectedRepo.value = "";
+              setPrs([]);
+            }
+            selectedProject.value = next;
+          }}
           class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none"
         >
           <option value="">Select project...</option>
@@ -126,7 +146,12 @@ export function PRList() {
             Loading pull requests...
           </div>
         )}
-        {!loading && filteredPrs.length === 0 && selectedProject.value && selectedRepo.value && (
+        {!loading && error && (
+          <div class="mx-4 my-3 px-3 py-2 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 break-words">
+            Failed to load pull requests: {error}
+          </div>
+        )}
+        {!loading && !error && filteredPrs.length === 0 && selectedProject.value && selectedRepo.value && (
           <div class="flex items-center justify-center py-12 text-gray-400 text-sm">
             {prs.length === 0
               ? "No open pull requests found."

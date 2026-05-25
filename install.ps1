@@ -1,12 +1,48 @@
 # ──────────────────────────────────────────────
 # Pex — Azure DevOps PR Reviewer
 # Windows install script (PowerShell)
+#
+# Run either:
+#   • from a cloned repo:   .\install.ps1
+#   • piped from the web:   iwr -useb https://raw.githubusercontent.com/ethanturk/pex/master/install.ps1 | iex
+#
+# Environment overrides:
+#   $env:PEX_REPO   git URL to clone (default: https://github.com/ethanturk/pex.git)
+#   $env:PEX_REF    branch/tag/commit (default: master)
 # ──────────────────────────────────────────────
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $env:PEX_REPO) { $env:PEX_REPO = "https://github.com/ethanturk/pex.git" }
+if (-not $env:PEX_REF)  { $env:PEX_REF  = "master" }
+
+# When piped via iwr|iex, $MyInvocation.MyCommand.Path is $null. Resolve a script
+# dir locally; if it doesn't look like the Pex repo, clone the source first.
+$ScriptDir = $null
+if ($MyInvocation.MyCommand.Path) {
+  $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+
+$tauriConf = if ($ScriptDir) { Join-Path $ScriptDir "src-tauri\tauri.conf.json" } else { $null }
+if (-not $ScriptDir -or -not (Test-Path $tauriConf)) {
+  if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host "git is required to bootstrap the Pex source. Install Git for Windows and re-run." -ForegroundColor Red
+    exit 1
+  }
+  $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("pex-install-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
+  Write-Host "Fetching Pex source ($($env:PEX_REPO) @ $($env:PEX_REF))..." -ForegroundColor White
+  try {
+    & git clone --depth 1 --branch $env:PEX_REF $env:PEX_REPO $TmpDir 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      & git clone $env:PEX_REPO $TmpDir | Out-Null
+    }
+  } catch {
+    Write-Host "Failed to clone $($env:PEX_REPO): $_" -ForegroundColor Red
+    exit 1
+  }
+  $ScriptDir = $TmpDir
+}
 
 function Write-Step  { Write-Host "  → " -NoNewline -ForegroundColor DarkGray; Write-Host $args }
 function Write-OK    { Write-Host "  ✔ " -NoNewline -ForegroundColor Green;   Write-Host $args }

@@ -36,6 +36,14 @@
 .diff-content { }
 .diff-conflict { @apply bg-orange-100 dark:bg-orange-900/30 border-l-4 border-orange-500; }
 .diff-viewed { @apply line-through text-gray-400 dark:text-gray-500; }
+.diff-expander {
+  @apply flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 px-2 py-1 text-xs font-mono border-y border-blue-200 dark:border-blue-800;
+}
+.diff-expander[data-loading="1"] { @apply opacity-60 pointer-events-none; }
+.diff-expander-btn {
+  @apply px-2 py-0.5 rounded hover:bg-blue-100 dark:hover:bg-blue-800/40 cursor-pointer select-none;
+}
+.diff-expander-all { @apply flex-1 text-center; }
 
 /* ===== File tree ===== */
 .file-tree-item { @apply flex items-center gap-1.5 px-2 py-1 text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded; }

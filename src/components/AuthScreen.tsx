@@ -1,5 +1,5 @@
 import { currentView, activeOrg, savedOrgs } from "@/lib/signals";
-import { loginPat, loginOAuth, getSavedOrgs } from "@/lib/api";
+import { loginPat, loginOAuth, getSavedOrgs, activateOrg } from "@/lib/api";
 import { useState } from "preact/hooks";
 
 export function AuthScreen() {
@@ -7,6 +7,33 @@ export function AuthScreen() {
   const [pat, setPat] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [oauthOpen, setOauthOpen] = useState(false);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+
+  const handleOAuthLogin = async () => {
+    if (!orgUrl) {
+      setError("Enter your org URL above first.");
+      return;
+    }
+    if (!clientId || !clientSecret) {
+      setError("Enter both Client ID and Client Secret.");
+      return;
+    }
+    setError("");
+    setLoading(true);
+    try {
+      await loginOAuth(orgUrl, clientId, clientSecret);
+      activeOrg.value = { orgUrl, name: new URL(orgUrl).hostname, tokenType: "oauth" };
+      const orgs = await getSavedOrgs();
+      savedOrgs.value = orgs;
+      currentView.value = { kind: "pr-list" };
+    } catch (e: any) {
+      setError(e.toString());
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handlePatLogin = async () => {
     setError("");
@@ -41,8 +68,14 @@ export function AuthScreen() {
                 key={org.orgUrl}
                 class="w-full text-left px-4 py-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
                 onClick={async () => {
-                  activeOrg.value = org;
-                  currentView.value = { kind: "pr-list" };
+                  setError("");
+                  try {
+                    await activateOrg(org.orgUrl);
+                    activeOrg.value = org;
+                    currentView.value = { kind: "pr-list" };
+                  } catch (e: any) {
+                    setError(typeof e === "string" ? e : e?.message ?? String(e));
+                  }
                 }}
               >
                 <div class="font-medium text-sm">{org.name}</div>
@@ -80,27 +113,36 @@ export function AuthScreen() {
           </div>
         </div>
         <button
-          onClick={() => {
-            // OAuth flow — user provides org URL and app credentials from settings
-            const clientId = prompt("Enter your Azure AD app Client ID (from app registration):");
-            const clientSecret = prompt("Enter your Azure AD app Client Secret:");
-            if (clientId && clientSecret && orgUrl) {
-              setLoading(true);
-              setError("");
-              loginOAuth(orgUrl, clientId, clientSecret)
-                .then(() => {
-                  activeOrg.value = { orgUrl, name: new URL(orgUrl).hostname, tokenType: "oauth" };
-                  getSavedOrgs().then((orgs) => { savedOrgs.value = orgs; });
-                  currentView.value = { kind: "pr-list" };
-                })
-                .catch((e) => setError(e.toString()))
-                .finally(() => setLoading(false));
-            }
-          }}
+          onClick={() => setOauthOpen((v) => !v)}
           class="w-full py-2 px-4 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800"
         >
           Sign in with browser (OAuth)
         </button>
+        {oauthOpen && (
+          <div class="space-y-3 pt-1">
+            <input
+              type="text"
+              placeholder="Client ID (Azure AD app registration)"
+              value={clientId}
+              onInput={(e) => setClientId(e.currentTarget.value)}
+              class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+            />
+            <input
+              type="password"
+              placeholder="Client Secret"
+              value={clientSecret}
+              onInput={(e) => setClientSecret(e.currentTarget.value)}
+              class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+            />
+            <button
+              onClick={handleOAuthLogin}
+              disabled={loading || !orgUrl || !clientId || !clientSecret}
+              class="w-full py-2 px-4 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? "Opening browser..." : "Continue with OAuth"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

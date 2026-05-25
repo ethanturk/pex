@@ -4,9 +4,59 @@ set -euo pipefail
 # ──────────────────────────────────────────────
 # Pex — Azure DevOps PR Reviewer
 # Linux / macOS install script
+#
+# Run either:
+#   • from a cloned repo:   ./install.sh
+#   • piped from curl:      curl -fsSL https://raw.githubusercontent.com/ethanturk/pex/master/install.sh | bash
+#
+# Environment overrides:
+#   PEX_REPO   git URL to clone (default: https://github.com/ethanturk/pex.git)
+#   PEX_REF    branch/tag/commit (default: master)
 # ──────────────────────────────────────────────
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PEX_REPO="${PEX_REPO:-https://github.com/ethanturk/pex.git}"
+PEX_REF="${PEX_REF:-master}"
+
+# When piped from curl, BASH_SOURCE[0] is empty/"bash" and no script file exists.
+# Detect that and clone the repo into a temp dir before continuing.
+_src="${BASH_SOURCE[0]:-}"
+if [ -n "$_src" ] && [ -f "$_src" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "$_src")" && pwd)"
+else
+  SCRIPT_DIR=""
+fi
+
+if [ -z "$SCRIPT_DIR" ] || [ ! -f "$SCRIPT_DIR/src-tauri/tauri.conf.json" ]; then
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git is required to bootstrap the Pex source. Install git and re-run."
+    exit 1
+  fi
+  TMP_DIR="$(mktemp -d -t pex-install.XXXXXX)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  echo "Fetching Pex source ($PEX_REPO @ $PEX_REF)…"
+  git clone --depth 1 --branch "$PEX_REF" "$PEX_REPO" "$TMP_DIR" >/dev/null 2>&1 \
+    || git clone "$PEX_REPO" "$TMP_DIR" >/dev/null
+  SCRIPT_DIR="$TMP_DIR"
+fi
+
+# When piped from curl, stdin is the pipe and `read` would EOF immediately.
+# Read interactive prompts from /dev/tty when available.
+if [ -t 0 ]; then
+  INPUT_FD=/dev/stdin
+elif [ -e /dev/tty ]; then
+  INPUT_FD=/dev/tty
+else
+  INPUT_FD=""
+fi
+prompt_yn() {
+  # $1 = prompt; sets REPLY (defaults to "Y" if no input source)
+  if [ -n "$INPUT_FD" ]; then
+    printf "%s" "$1"
+    read -r REPLY <"$INPUT_FD" || REPLY="Y"
+  else
+    REPLY="Y"
+  fi
+}
 BOLD="$(tput bold 2>/dev/null || printf '')"
 DIM="$(tput dim 2>/dev/null || printf '')"
 GREEN="$(tput setaf 2 2>/dev/null || printf '')"
@@ -144,9 +194,8 @@ if [ "$OS" = Linux ]; then
     if [ -f "$DEB" ]; then
       step "Installing .deb package…"
       printf "\n      Requires sudo. Install %s?\n" "$(basename "$DEB")"
-      printf "      [Y/n] "
-      read -r answer
-      if [ "${answer:-Y}" = Y ] || [ "${answer:-y}" = y ]; then
+      prompt_yn "      [Y/n] "
+      if [ -z "${REPLY:-}" ] || [ "$REPLY" = Y ] || [ "$REPLY" = y ]; then
         sudo dpkg -i "$DEB"
         ok "Pex installed"
       else
@@ -161,9 +210,8 @@ if [ "$OS" = Linux ]; then
     if [ -f "$RPM" ]; then
       step "Installing .rpm package…"
       printf "\n      Requires sudo. Install %s?\n" "$(basename "$RPM")"
-      printf "      [Y/n] "
-      read -r answer
-      if [ "${answer:-Y}" = Y ] || [ "${answer:-y}" = y ]; then
+      prompt_yn "      [Y/n] "
+      if [ -z "${REPLY:-}" ] || [ "$REPLY" = Y ] || [ "$REPLY" = y ]; then
         sudo rpm -i "$RPM"
         ok "Pex installed"
       else

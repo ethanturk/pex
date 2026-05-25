@@ -28,6 +28,8 @@ export interface FileDiff {
   html: string;
   path: string;
   status: string;
+  sourceCommit: string;
+  baseCommit: string | null;
 }
 
 export interface CommentThread {
@@ -78,6 +80,10 @@ export async function getSavedOrgs(): Promise<any[]> {
 
 export async function removeOrg(orgUrl: string): Promise<void> {
   return invoke("remove_org", { orgUrl });
+}
+
+export async function activateOrg(orgUrl: string): Promise<boolean> {
+  return invoke<boolean>("activate_org", { orgUrl });
 }
 
 // ============= Projects & Repos =============
@@ -144,6 +150,24 @@ export async function getFileDiff(
   iteration: number,
 ): Promise<FileDiff> {
   return invoke<FileDiff>("get_file_diff", { projectId, repoId, prId, filePath, iteration });
+}
+
+export async function getFileLines(
+  projectId: string,
+  repoId: string,
+  commitId: string,
+  filePath: string,
+  startLine: number,
+  endLine: number,
+): Promise<string[]> {
+  return invoke<string[]>("get_file_lines", {
+    projectId,
+    repoId,
+    commitId,
+    filePath,
+    startLine,
+    endLine,
+  });
 }
 
 export async function markFileViewed(
