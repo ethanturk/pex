@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --color-accent: #0078d4;
+  --color-accent-hover: #106ebe;
+  --color-danger: #d1242f;
+  --color-success: #1a7f37;
+  --color-warning: #bf8700;
+}
+
+@theme inline {
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-danger: var(--color-danger);
+  --color-success: var(--color-success);
+  --color-warning: var(--color-warning);
+}
+
+/* ===== Diff styling ===== */
+.diff-add { @apply bg-green-100 dark:bg-green-900/30; }
+.diff-remove { @apply bg-red-100 dark:bg-red-900/30; }
+.diff-header { @apply bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 font-mono text-xs px-2 py-0.5; }
+.diff-lineno { @apply text-gray-400 dark:text-gray-500 select-none w-12 text-right pr-2 border-r border-gray-200 dark:border-gray-700 font-mono text-xs leading-5; }
+.diff-line { @apply font-mono text-sm leading-5 whitespace-pre; }
+.diff-conflict { @apply bg-orange-100 dark:bg-orange-900/30 border-l-4 border-orange-500; }
+.diff-viewed { @apply line-through text-gray-400 dark:text-gray-500; }
+
+/* ===== File tree ===== */
+.file-tree-item { @apply flex items-center gap-1.5 px-2 py-1 text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded; }
+.file-tree-item--viewed { @apply opacity-60; }
+.file-tree-item--active { @apply bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300; }
+
+/* ===== PR status badges ===== */
+.status-active { @apply bg-green-100 dark:bg-green-800/40 text-green-800 dark:text-green-300; }
+.status-draft { @apply bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400; }
+.status-completed { @apply bg-purple-100 dark:bg-purple-800/40 text-purple-800 dark:text-purple-300; }
+.status-abandoned { @apply bg-red-100 dark:bg-red-800/40 text-red-800 dark:text-red-300; }
+.status-conflict { @apply bg-orange-100 dark:bg-orange-800/40 text-orange-800 dark:text-orange-300; }
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar { @apply w-2 h-2; }
+::-webkit-scrollbar-track { @apply bg-transparent; }
+::-webkit-scrollbar-thumb { @apply bg-gray-300 dark:bg-gray-700 rounded-full; }
+::-webkit-scrollbar-thumb:hover { @apply bg-gray-400 dark:bg-gray-600; }

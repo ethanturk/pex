@@ -1,0 +1,46 @@
+use keyring::Entry;
+use crate::AppError;
+
+const SERVICE_NAME: &str = "pex-pr-reviewer";
+
+pub struct KeyringStore;
+
+impl KeyringStore {
+    /// Save a PAT (keyed by org URL).
+    pub fn save_pat(org_url: &str, pat: &str) -> Result<(), AppError> {
+        let entry = Entry::new(SERVICE_NAME, &format!("pat:{}", org_url))?;
+        entry.set_password(pat)?;
+        Ok(())
+    }
+
+    /// Retrieve a PAT for an org URL.
+    pub fn get_pat(org_url: &str) -> Result<Option<String>, AppError> {
+        let entry = Entry::new(SERVICE_NAME, &format!("pat:{}", org_url));
+        match entry {
+            Ok(e) => match e.get_password() {
+                Ok(p) => Ok(Some(p)),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(e) => Err(AppError::Keyring(e)),
+            },
+            Err(e) => Err(AppError::Keyring(e)),
+        }
+    }
+
+    /// Delete a PAT for an org URL.
+    pub fn delete_pat(org_url: &str) -> Result<(), AppError> {
+        let entry = Entry::new(SERVICE_NAME, &format!("pat:{}", org_url))?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(AppError::Keyring(e)),
+        }
+    }
+
+    /// List all saved org URLs.
+    pub fn list_orgs() -> Result<Vec<(String, String)>, AppError> {
+        // keyring doesn't support listing — fall back to search
+        // For now, we store the org list in SQLite via the cache module.
+        // This stub exists for future platform-native enumeration.
+        Ok(vec![])
+    }
+}

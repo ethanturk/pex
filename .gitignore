@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+src-tauri/target/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Pex
+pex.db
