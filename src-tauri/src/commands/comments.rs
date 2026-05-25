@@ -1,5 +1,5 @@
-use tauri::State;
 use crate::AppState;
+use tauri::State;
 
 #[tauri::command]
 pub async fn get_threads(
@@ -133,12 +133,10 @@ pub async fn update_reviewer_status(
         .or_else(|| pr.reviewers.first());
 
     match reviewer {
-        Some(r) => {
-            client
-                .update_reviewer_status(&project_id, &repo_id, pr_id, &r.id, vote)
-                .await
-                .map_err(|e| e.to_string())
-        }
+        Some(r) => client
+            .update_reviewer_status(&project_id, &repo_id, pr_id, &r.id, vote)
+            .await
+            .map_err(|e| e.to_string()),
         None => Err("Could not find your reviewer entry on this PR".to_string()),
     }
 }

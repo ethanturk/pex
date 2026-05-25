@@ -1,5 +1,5 @@
-use tauri::State;
 use crate::AppState;
+use tauri::State;
 
 #[tauri::command]
 pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {

@@ -1,5 +1,5 @@
 import { currentView, activeOrg, savedOrgs } from "@/lib/signals";
-import { loginPat, loginOAuth, getSavedOrgs, removeOrg } from "@/lib/api";
+import { loginPat, loginOAuth, getSavedOrgs } from "@/lib/api";
 import { useState } from "preact/hooks";
 
 export function AuthScreen() {

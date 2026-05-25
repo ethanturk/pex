@@ -5,7 +5,7 @@ import { PRList } from "@/components/PRList";
 import { PRDetail } from "@/components/PRDetail";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useEffectOnce } from "@/lib/hooks";
-import { getSavedOrgs, type PullRequest } from "@/lib/api";
+import { getSavedOrgs } from "@/lib/api";
 import { activeOrg, savedOrgs } from "@/lib/signals";
 
 function viewComponent(view: View) {

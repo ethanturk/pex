@@ -1,13 +1,13 @@
 use crate::AppError;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use base64::Engine;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::de::DeserializeOwned;
 
 /// Azure DevOps REST API client.
 #[derive(Clone)]
 pub struct AdoClient {
     pub org_url: String,
-    auth_value: String,  // "Basic base64" or "Bearer token"
+    auth_value: String, // "Basic base64" or "Bearer token"
     http: reqwest::Client,
     api_version: String,
 }
@@ -54,7 +54,10 @@ impl AdoClient {
             .await?;
 
         let status = resp.status();
-        let body = resp.text().await.map_err(|e| AppError::Ado(e.to_string()))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Ado(e.to_string()))?;
 
         if !status.is_success() {
             return Err(AppError::Ado(format!("ADO API {}: {}", status, body)));
@@ -63,7 +66,11 @@ impl AdoClient {
         serde_json::from_str(&body).map_err(|e| AppError::Ado(format!("Parse error: {}", e)))
     }
 
-    async fn post<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T, AppError> {
+    async fn post<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<T, AppError> {
         let url = format!("{}/{}", self.org_url, path);
         let resp = self
             .http
@@ -74,7 +81,10 @@ impl AdoClient {
             .await?;
 
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| AppError::Ado(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Ado(e.to_string()))?;
 
         if !status.is_success() {
             return Err(AppError::Ado(format!("ADO API {}: {}", status, text)));
@@ -83,7 +93,11 @@ impl AdoClient {
         serde_json::from_str(&text).map_err(|e| AppError::Ado(format!("Parse error: {}", e)))
     }
 
-    async fn patch<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T, AppError> {
+    async fn patch<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<T, AppError> {
         let url = format!("{}/{}", self.org_url, path);
         let resp = self
             .http
@@ -94,7 +108,10 @@ impl AdoClient {
             .await?;
 
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| AppError::Ado(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Ado(e.to_string()))?;
 
         if !status.is_success() {
             return Err(AppError::Ado(format!("ADO API {}: {}", status, text)));
@@ -107,21 +124,26 @@ impl AdoClient {
 
     pub async fn list_projects(&self) -> Result<Vec<ProjectSummary>, AppError> {
         #[derive(serde::Deserialize)]
-        struct Response { value: Vec<ProjectSummary> }
-        let resp: Response = self.get(&format!(
-            "_apis/projects?api-version={}",
-            self.api_version
-        )).await?;
+        struct Response {
+            value: Vec<ProjectSummary>,
+        }
+        let resp: Response = self
+            .get(&format!("_apis/projects?api-version={}", self.api_version))
+            .await?;
         Ok(resp.value)
     }
 
     pub async fn list_repositories(&self, project: &str) -> Result<Vec<RepoSummary>, AppError> {
         #[derive(serde::Deserialize)]
-        struct Response { value: Vec<RepoSummary> }
-        let resp: Response = self.get(&format!(
-            "{}/_apis/git/repositories?api-version={}",
-            project, self.api_version
-        )).await?;
+        struct Response {
+            value: Vec<RepoSummary>,
+        }
+        let resp: Response = self
+            .get(&format!(
+                "{}/_apis/git/repositories?api-version={}",
+                project, self.api_version
+            ))
+            .await?;
         Ok(resp.value)
     }
 
@@ -133,12 +155,16 @@ impl AdoClient {
         repo_id: &str,
     ) -> Result<Vec<PullRequest>, AppError> {
         #[derive(serde::Deserialize)]
-        struct Response { value: Vec<PullRequest> }
+        struct Response {
+            value: Vec<PullRequest>,
+        }
 
-        let resp: Response = self.get(&format!(
+        let resp: Response = self
+            .get(&format!(
             "{}/_apis/git/repositories/{}/pullrequests?searchCriteria.status=active&api-version={}",
             project, repo_id, self.api_version
-        )).await?;
+        ))
+            .await?;
         Ok(resp.value)
     }
 
@@ -151,7 +177,8 @@ impl AdoClient {
         self.get(&format!(
             "{}/_apis/git/repositories/{}/pullrequests/{}?api-version={}",
             project, repo_id, pr_id, self.api_version
-        )).await
+        ))
+        .await
     }
 
     pub async fn get_iterations(
@@ -161,11 +188,15 @@ impl AdoClient {
         pr_id: i64,
     ) -> Result<Vec<Iteration>, AppError> {
         #[derive(serde::Deserialize)]
-        struct Response { value: Vec<Iteration> }
-        let resp: Response = self.get(&format!(
-            "{}/_apis/git/repositories/{}/pullRequests/{}/iterations?api-version={}",
-            project, repo_id, pr_id, self.api_version
-        )).await?;
+        struct Response {
+            value: Vec<Iteration>,
+        }
+        let resp: Response = self
+            .get(&format!(
+                "{}/_apis/git/repositories/{}/pullRequests/{}/iterations?api-version={}",
+                project, repo_id, pr_id, self.api_version
+            ))
+            .await?;
         Ok(resp.value)
     }
 
@@ -186,7 +217,9 @@ impl AdoClient {
             parents: Vec<String>,
         }
         #[derive(serde::Deserialize)]
-        struct CommitsResponse { value: Vec<CommitResponse> }
+        struct CommitsResponse {
+            value: Vec<CommitResponse>,
+        }
 
         let commits: CommitsResponse = self.get(&format!(
             "{}/_apis/git/repositories/{}/pullRequests/{}/commits?$top=1&iteration={}&api-version={}",
@@ -202,12 +235,16 @@ impl AdoClient {
         let parent_commit_id = commit.parents.into_iter().next();
 
         #[derive(serde::Deserialize)]
-        struct ChangesResponse { changes: Vec<FileChange> }
+        struct ChangesResponse {
+            changes: Vec<FileChange>,
+        }
 
-        let changes: ChangesResponse = self.get(&format!(
-            "{}/_apis/git/repositories/{}/commits/{}/changes?$top=1000&api-version={}",
-            project, repo_id, commit.commit_id, self.api_version
-        )).await?;
+        let changes: ChangesResponse = self
+            .get(&format!(
+                "{}/_apis/git/repositories/{}/commits/{}/changes?$top=1000&api-version={}",
+                project, repo_id, commit.commit_id, self.api_version
+            ))
+            .await?;
 
         Ok(PrFilesResult {
             files: changes.changes,
@@ -233,32 +270,46 @@ impl AdoClient {
             parents: Vec<String>,
         }
         #[derive(serde::Deserialize)]
-        struct CommitsList { value: Vec<CommitResp> }
+        struct CommitsList {
+            value: Vec<CommitResp>,
+        }
 
         let commits: CommitsList = self.get(&format!(
             "{}/_apis/git/repositories/{}/pullRequests/{}/commits?$top=1&iteration={}&api-version={}",
             project, repo_id, pr_id, iteration, self.api_version
         )).await?;
 
-        let commit = commits.value.into_iter().next()
+        let commit = commits
+            .value
+            .into_iter()
+            .next()
             .ok_or_else(|| AppError::Ado("No commits found for iteration".into()))?;
         let parent_id = commit.parents.into_iter().next();
 
         // 2. Fetch new file content (at the iteration commit)
-        let new_content = self.get_file_content(project, repo_id, file_path, &commit.commit_id).await;
+        let new_content = self
+            .get_file_content(project, repo_id, file_path, &commit.commit_id)
+            .await;
 
         // 3. Fetch old file content (at the parent commit, or empty for new files)
         let old_content = match &parent_id {
-            Some(pid) => self.get_file_content(project, repo_id, file_path, pid).await,
+            Some(pid) => {
+                self.get_file_content(project, repo_id, file_path, pid)
+                    .await
+            }
             None => String::new(), // No parent = initial commit, all files are new
         };
 
         // 4. Compute diff + syntax highlight
         let html = crate::diff::engine::highlighted_diff(&old_content, &new_content, file_path);
 
-        let change_type = if old_content.is_empty() { "add" }
-            else if new_content.is_empty() { "delete" }
-            else { "edit" };
+        let change_type = if old_content.is_empty() {
+            "add"
+        } else if new_content.is_empty() {
+            "delete"
+        } else {
+            "edit"
+        };
 
         Ok(DiffResult {
             html,
@@ -283,10 +334,14 @@ impl AdoClient {
             self.api_version
         );
 
-        match self.http.get(&url).headers(self.auth_headers()).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                resp.text().await.unwrap_or_default()
-            }
+        match self
+            .http
+            .get(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => resp.text().await.unwrap_or_default(),
             _ => String::new(), // File doesn't exist at this version (new or deleted)
         }
     }
@@ -300,12 +355,15 @@ impl AdoClient {
         pr_id: i64,
     ) -> Result<Vec<CommentThread>, AppError> {
         #[derive(serde::Deserialize)]
-        struct _Response { value: Vec<CommentThread> }
+        struct _Response {
+            value: Vec<CommentThread>,
+        }
 
         self.get(&format!(
             "{}/_apis/git/repositories/{}/pullRequests/{}/threads?api-version={}",
             project, repo_id, pr_id, self.api_version
-        )).await
+        ))
+        .await
     }
 
     pub async fn post_thread(
@@ -315,10 +373,14 @@ impl AdoClient {
         pr_id: i64,
         thread: &serde_json::Value,
     ) -> Result<CommentThread, AppError> {
-        self.post(&format!(
-            "{}/_apis/git/repositories/{}/pullRequests/{}/threads?api-version={}",
-            project, repo_id, pr_id, self.api_version
-        ), thread).await
+        self.post(
+            &format!(
+                "{}/_apis/git/repositories/{}/pullRequests/{}/threads?api-version={}",
+                project, repo_id, pr_id, self.api_version
+            ),
+            thread,
+        )
+        .await
     }
 
     pub async fn add_comment_to_thread(
@@ -329,10 +391,14 @@ impl AdoClient {
         thread_id: i64,
         comment: &serde_json::Value,
     ) -> Result<serde_json::Value, AppError> {
-        self.post(&format!(
-            "{}/_apis/git/repositories/{}/pullRequests/{}/threads/{}/comments?api-version={}",
-            project, repo_id, pr_id, thread_id, self.api_version
-        ), comment).await
+        self.post(
+            &format!(
+                "{}/_apis/git/repositories/{}/pullRequests/{}/threads/{}/comments?api-version={}",
+                project, repo_id, pr_id, thread_id, self.api_version
+            ),
+            comment,
+        )
+        .await
     }
 
     // ---- Reviewer Status ----
@@ -346,10 +412,15 @@ impl AdoClient {
         vote: i32,
     ) -> Result<(), AppError> {
         let body = serde_json::json!({ "vote": vote });
-        let _: serde_json::Value = self.patch(&format!(
-            "{}/_apis/git/repositories/{}/pullRequests/{}/reviewers/{}?api-version={}",
-            project, repo_id, pr_id, reviewer_id, self.api_version
-        ), &body).await?;
+        let _: serde_json::Value = self
+            .patch(
+                &format!(
+                    "{}/_apis/git/repositories/{}/pullRequests/{}/reviewers/{}?api-version={}",
+                    project, repo_id, pr_id, reviewer_id, self.api_version
+                ),
+                &body,
+            )
+            .await?;
         Ok(())
     }
 }
@@ -434,8 +505,15 @@ pub struct Iteration {
 /// Used to enable future multi-provider support without rewriting the frontend.
 #[allow(dead_code)]
 pub trait GitProvider {
-    fn list_pull_requests(&self) -> impl std::future::Future<Output = Result<Vec<PullRequest>, crate::AppError>>;
-    fn get_file_diff(&self, pr_id: i64, path: &str, iteration: i32) -> impl std::future::Future<Output = Result<DiffResult, crate::AppError>>;
+    fn list_pull_requests(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<PullRequest>, crate::AppError>>;
+    fn get_file_diff(
+        &self,
+        pr_id: i64,
+        path: &str,
+        iteration: i32,
+    ) -> impl std::future::Future<Output = Result<DiffResult, crate::AppError>>;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

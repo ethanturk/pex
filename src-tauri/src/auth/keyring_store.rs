@@ -1,5 +1,5 @@
-use keyring::Entry;
 use crate::AppError;
+use keyring::Entry;
 
 const SERVICE_NAME: &str = "pex-pr-reviewer";
 
@@ -37,7 +37,11 @@ impl KeyringStore {
     }
 
     /// Save OAuth credentials (refresh token + client secret) for an org.
-    pub fn save_oauth(org_url: &str, refresh_token: &str, client_secret: &str) -> Result<(), AppError> {
+    pub fn save_oauth(
+        org_url: &str,
+        refresh_token: &str,
+        client_secret: &str,
+    ) -> Result<(), AppError> {
         let data = serde_json::json!({
             "refresh_token": refresh_token,
             "client_secret": client_secret,
@@ -57,7 +61,11 @@ impl KeyringStore {
                         .map_err(|e| AppError::Auth(format!("Invalid OAuth data: {}", e)))?;
                     let rt = data["refresh_token"].as_str().unwrap_or("").to_string();
                     let cs = data["client_secret"].as_str().unwrap_or("").to_string();
-                    if rt.is_empty() { Ok(None) } else { Ok(Some((rt, cs))) }
+                    if rt.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some((rt, cs)))
+                    }
                 }
                 Err(keyring::Error::NoEntry) => Ok(None),
                 Err(e) => Err(AppError::Keyring(e)),

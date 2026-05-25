@@ -1,5 +1,5 @@
-use tauri::State;
 use crate::AppState;
+use tauri::State;
 
 #[tauri::command]
 pub async fn get_pr_files(
@@ -23,7 +23,8 @@ pub async fn get_pr_files(
         _ => "edit",
     };
 
-    Ok(result.files
+    Ok(result
+        .files
         .into_iter()
         .map(|f| {
             serde_json::json!({
@@ -71,8 +72,16 @@ pub fn mark_file_viewed(
     let org_url = &client.org_url;
 
     let conn = state.db.lock().unwrap();
-    crate::cache::set_viewed(&conn, org_url, &project_id, &repo_id, pr_id, &file_path, viewed)
-        .map_err(|e| e.to_string())
+    crate::cache::set_viewed(
+        &conn,
+        org_url,
+        &project_id,
+        &repo_id,
+        pr_id,
+        &file_path,
+        viewed,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

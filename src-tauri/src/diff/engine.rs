@@ -20,12 +20,8 @@ pub fn highlighted_diff(old: &str, new: &str, file_path: &str) -> String {
                 };
 
                 let line_num = match change.tag() {
-                    ChangeTag::Delete => {
-                        change.old_index().map(|i| i as i64 + 1).unwrap_or(0)
-                    }
-                    ChangeTag::Insert => {
-                        change.new_index().map(|i| i as i64 + 1).unwrap_or(0)
-                    }
+                    ChangeTag::Delete => change.old_index().map(|i| i as i64 + 1).unwrap_or(0),
+                    ChangeTag::Insert => change.new_index().map(|i| i as i64 + 1).unwrap_or(0),
                     ChangeTag::Equal => 0,
                 };
 

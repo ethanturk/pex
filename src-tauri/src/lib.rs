@@ -3,8 +3,11 @@ pub mod auth;
 pub mod cache;
 pub mod commands;
 pub mod diff;
+pub mod window_state;
 
 use thiserror::Error;
+
+use tauri::Manager;
 
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -41,6 +44,22 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            let window = app.get_webview_window("main").expect("no main window");
+            #[cfg(not(target_os = "linux"))]
+            {
+                let win = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { .. } = event {
+                        window_state::save(&win);
+                    }
+                });
+                window_state::restore(&window);
+            }
+            #[cfg(target_os = "linux")]
+            let _ = &window;
+            Ok(())
+        })
         .manage(AppState {
             db: std::sync::Mutex::new(db),
             ado_client: std::sync::Mutex::new(None),

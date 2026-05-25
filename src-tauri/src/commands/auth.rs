@@ -1,5 +1,5 @@
-use tauri::State;
 use crate::AppState;
+use tauri::State;
 
 #[tauri::command]
 pub async fn login_pat(
@@ -29,18 +29,14 @@ pub async fn login_oauth(
     client_id: String,
     client_secret: String,
 ) -> Result<serde_json::Value, String> {
-    let token = crate::auth::oauth::start_oauth_flow(
-        &org_url,
-        &client_id,
-        &client_secret,
-        |url| {
-            let _ = tauri_plugin_opener::open_url(url, None::<&str>);
-        },
-    )
+    let token = crate::auth::oauth::start_oauth_flow(&org_url, &client_id, &client_secret, |url| {
+        let _ = tauri_plugin_opener::open_url(url, None::<&str>);
+    })
     .await
     .map_err(|e| e.to_string())?;
 
-    let client = crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token.clone());
+    let client =
+        crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token.clone());
     *state.ado_client.lock().unwrap() = Some(client);
 
     // Save org to cache
@@ -67,9 +63,10 @@ pub async fn refresh_oauth_token(
     org_url: String,
 ) -> Result<serde_json::Value, String> {
     // Retrieve stored refresh token and client secret
-    let (refresh_token, client_secret) = crate::auth::keyring_store::KeyringStore::get_oauth(&org_url)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "No OAuth credentials stored for this org".to_string())?;
+    let (refresh_token, client_secret) =
+        crate::auth::keyring_store::KeyringStore::get_oauth(&org_url)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "No OAuth credentials stored for this org".to_string())?;
 
     let token = crate::auth::oauth::refresh_oauth_token(
         &client_secret,
@@ -80,7 +77,8 @@ pub async fn refresh_oauth_token(
     .map_err(|e| e.to_string())?;
 
     // Update the ADO client with new token
-    let client = crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token.clone());
+    let client =
+        crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token.clone());
     *state.ado_client.lock().unwrap() = Some(client);
 
     // Store updated refresh token

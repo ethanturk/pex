@@ -37,7 +37,9 @@ pub async fn start_oauth_flow(
     let (code, returned_state) = accept_callback(&listener).await?;
 
     if returned_state != state {
-        return Err(AppError::Auth("OAuth state mismatch — possible CSRF attack".into()));
+        return Err(AppError::Auth(
+            "OAuth state mismatch — possible CSRF attack".into(),
+        ));
     }
 
     // 6. Exchange code for token
@@ -67,23 +69,25 @@ async fn accept_callback(listener: &TcpListener) -> Result<(String, String), App
     // Send a success page
     let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
         <html><body><h1>Authenticated!</h1><p>You can close this window.</p></body></html>";
-    stream.write_all(response).await.map_err(|e| AppError::Auth(e.to_string()))?;
+    stream
+        .write_all(response)
+        .await
+        .map_err(|e| AppError::Auth(e.to_string()))?;
     stream.shutdown().await.ok();
 
     // Parse the authorization code and state from the request
     let first_line = request.lines().next().unwrap_or("");
-    let path = first_line
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("");
+    let path = first_line.split_whitespace().nth(1).unwrap_or("");
 
-    let code = path.split("code=")
+    let code = path
+        .split("code=")
         .nth(1)
         .and_then(|s| s.split('&').next())
         .map(urlencoding_decode)
         .ok_or_else(|| AppError::Auth("No authorization code in callback".into()))?;
 
-    let state = path.split("state=")
+    let state = path
+        .split("state=")
         .nth(1)
         .and_then(|s| s.split('&').next().or(Some(s)))
         .map(|s| s.trim())
@@ -103,7 +107,10 @@ async fn exchange_code(
     let resp = client
         .post(TOKEN_URL)
         .form(&[
-            ("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
+            (
+                "client_assertion_type",
+                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            ),
             ("client_assertion", client_secret),
             ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
             ("assertion", code),
@@ -114,10 +121,16 @@ async fn exchange_code(
         .map_err(|e| AppError::Auth(format!("Token exchange failed: {}", e)))?;
 
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| AppError::Auth(e.to_string()))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::Auth(e.to_string()))?;
 
     if !status.is_success() {
-        return Err(AppError::Auth(format!("Token exchange HTTP {}: {}", status, body)));
+        return Err(AppError::Auth(format!(
+            "Token exchange HTTP {}: {}",
+            status, body
+        )));
     }
 
     let token: OAuthTokenResponse = serde_json::from_str(&body)
@@ -131,10 +144,7 @@ async fn exchange_code(
 }
 
 async fn validate_token(org_url: &str, token: &str) -> Result<(), AppError> {
-    let url = format!(
-        "{}/_apis/connectionData",
-        org_url.trim_end_matches('/')
-    );
+    let url = format!("{}/_apis/connectionData", org_url.trim_end_matches('/'));
     let client = reqwest::Client::new();
     let resp = client
         .get(&url)
@@ -144,7 +154,9 @@ async fn validate_token(org_url: &str, token: &str) -> Result<(), AppError> {
         .map_err(|e| AppError::Ado(format!("Token validation failed: {}", e)))?;
 
     if !resp.status().is_success() {
-        return Err(AppError::Auth("Token not valid for this organization".into()));
+        return Err(AppError::Auth(
+            "Token not valid for this organization".into(),
+        ));
     }
 
     Ok(())
@@ -160,7 +172,10 @@ pub async fn refresh_oauth_token(
     let resp = client
         .post(TOKEN_URL)
         .form(&[
-            ("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
+            (
+                "client_assertion_type",
+                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            ),
             ("client_assertion", client_secret),
             ("grant_type", "refresh_token"),
             ("assertion", refresh_token),
@@ -171,10 +186,16 @@ pub async fn refresh_oauth_token(
         .map_err(|e| AppError::Auth(format!("Token refresh failed: {}", e)))?;
 
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| AppError::Auth(e.to_string()))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::Auth(e.to_string()))?;
 
     if !status.is_success() {
-        return Err(AppError::Auth(format!("Token refresh HTTP {}: {}", status, body)));
+        return Err(AppError::Auth(format!(
+            "Token refresh HTTP {}: {}",
+            status, body
+        )));
     }
 
     let token: OAuthTokenResponse = serde_json::from_str(&body)

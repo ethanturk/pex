@@ -1,12 +1,13 @@
-use rusqlite::Connection;
 use crate::AppError;
+use rusqlite::Connection;
 
 /// Initialize the SQLite database and return a connection.
 pub fn init_db() -> Result<Connection, AppError> {
     let db_path = dirs_db_path()?;
     let conn = Connection::open(&db_path)?;
 
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS viewed_files (
             org_url TEXT NOT NULL,
             project_id TEXT NOT NULL,
@@ -38,14 +39,16 @@ pub fn init_db() -> Result<Connection, AppError> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
-    ")?;
+    ",
+    )?;
 
     Ok(conn)
 }
 
 fn dirs_db_path() -> Result<String, AppError> {
     let data_dir = dirs_data_dir()?;
-    std::fs::create_dir_all(&data_dir).map_err(|_e| AppError::Cache(rusqlite::Error::InvalidPath(data_dir.clone().into())))?;
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|_e| AppError::Cache(rusqlite::Error::InvalidPath(data_dir.clone().into())))?;
     Ok(format!("{}/pex.db", data_dir))
 }
 
@@ -56,16 +59,29 @@ fn dirs_data_dir() -> Result<String, AppError> {
     }
     if let Ok(home) = std::env::var("HOME") {
         #[cfg(target_os = "macos")]
-        return Ok(format!("{}/Library/Application Support/com.pex.pr-reviewer", home));
+        return Ok(format!(
+            "{}/Library/Application Support/com.pex.pr-reviewer",
+            home
+        ));
         #[cfg(target_os = "linux")]
         return Ok(format!("{}/.local/share/pex", home));
     }
-    Err(AppError::Cache(rusqlite::Error::InvalidPath("no home dir".into())))
+    Err(AppError::Cache(rusqlite::Error::InvalidPath(
+        "no home dir".into(),
+    )))
 }
 
 // ---- Viewed Files ----
 
-pub fn set_viewed(conn: &Connection, org: &str, project: &str, repo: &str, pr: i64, path: &str, viewed: bool) -> Result<(), AppError> {
+pub fn set_viewed(
+    conn: &Connection,
+    org: &str,
+    project: &str,
+    repo: &str,
+    pr: i64,
+    path: &str,
+    viewed: bool,
+) -> Result<(), AppError> {
     if viewed {
         conn.execute(
             "INSERT OR REPLACE INTO viewed_files (org_url, project_id, repo_id, pr_id, file_path) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -80,19 +96,30 @@ pub fn set_viewed(conn: &Connection, org: &str, project: &str, repo: &str, pr: i
     Ok(())
 }
 
-pub fn get_viewed(conn: &Connection, org: &str, project: &str, repo: &str, pr: i64) -> Result<Vec<String>, AppError> {
+pub fn get_viewed(
+    conn: &Connection,
+    org: &str,
+    project: &str,
+    repo: &str,
+    pr: i64,
+) -> Result<Vec<String>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT file_path FROM viewed_files WHERE org_url=?1 AND project_id=?2 AND repo_id=?3 AND pr_id=?4"
     )?;
-    let paths = stmt.query_map(rusqlite::params![org, project, repo, pr], |row| {
-        row.get(0)
-    })?.collect::<Result<Vec<String>, _>>()?;
+    let paths = stmt
+        .query_map(rusqlite::params![org, project, repo, pr], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
     Ok(paths)
 }
 
 // ---- Saved Orgs ----
 
-pub fn save_org(conn: &Connection, org_url: &str, name: &str, token_type: &str) -> Result<(), AppError> {
+pub fn save_org(
+    conn: &Connection,
+    org_url: &str,
+    name: &str,
+    token_type: &str,
+) -> Result<(), AppError> {
     conn.execute(
         "INSERT OR REPLACE INTO saved_orgs (org_url, name, token_type) VALUES (?1, ?2, ?3)",
         rusqlite::params![org_url, name, token_type],
@@ -101,15 +128,19 @@ pub fn save_org(conn: &Connection, org_url: &str, name: &str, token_type: &str) 
 }
 
 pub fn list_orgs(conn: &Connection) -> Result<Vec<(String, String, String)>, AppError> {
-    let mut stmt = conn.prepare("SELECT org_url, name, token_type FROM saved_orgs ORDER BY added_at DESC")?;
-    let orgs = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    })?.collect::<Result<Vec<_>, _>>()?;
+    let mut stmt =
+        conn.prepare("SELECT org_url, name, token_type FROM saved_orgs ORDER BY added_at DESC")?;
+    let orgs = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(orgs)
 }
 
 pub fn remove_org(conn: &Connection, org_url: &str) -> Result<(), AppError> {
-    conn.execute("DELETE FROM saved_orgs WHERE org_url=?1", rusqlite::params![org_url])?;
+    conn.execute(
+        "DELETE FROM saved_orgs WHERE org_url=?1",
+        rusqlite::params![org_url],
+    )?;
     Ok(())
 }
 
