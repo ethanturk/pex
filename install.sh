@@ -198,7 +198,9 @@ PYEOF
 )
 
   local picked
-  if ! picked="$(OS="$OS" ARCH="$ARCH" printf '%s' "$release_json" | python3 -c "$picker" 2>/dev/null)"; then
+  # Env vars must be on `python3`, not on `printf` — bash scopes inline
+  # variable assignments to the immediately-following command only.
+  if ! picked="$(printf '%s' "$release_json" | OS="$OS" ARCH="$ARCH" python3 -c "$picker" 2>/dev/null)"; then
     warn "No release asset matched OS=$OS arch=$ARCH."
     warn "Available assets:"
     printf '%s' "$release_json" | python3 -c "import json,sys; [print('   - ' + a['name']) for a in json.load(sys.stdin).get('assets',[])]" 2>/dev/null || true
