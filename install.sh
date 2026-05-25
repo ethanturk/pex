@@ -102,13 +102,13 @@ install_macos_app() {
   # Quit any running Pex so the rm-then-cp doesn't leave the user on a stale
   # binary held by the old process.
   if pgrep -x Pex >/dev/null 2>&1; then
-    step "Pex is running — quitting it…"
+    step "Pex is running — quitting it..."
     osascript -e 'tell application "Pex" to quit' >/dev/null 2>&1 || true
     sleep 1
     pgrep -x Pex >/dev/null 2>&1 && pkill -x Pex >/dev/null 2>&1 || true
   fi
 
-  step "Installing to $app_dest…"
+  step "Installing to $app_dest..."
   if ! { rm -rf "$app_dest" 2>/dev/null && cp -R "$app_src" "$app_dest" 2>/dev/null; }; then
     warn "Need elevated permissions to write to /Applications"
     sudo rm -rf "$app_dest"
@@ -219,7 +219,7 @@ PYEOF
   tmp="$(mktemp -d -t pex-bin.XXXXXX)"
   trap 'rm -rf "$tmp"' RETURN
 
-  step "Downloading $asset_name…"
+  step "Downloading $asset_name..."
   if ! curl -fL --progress-bar -o "$tmp/$asset_name" "$url"; then
     warn "Download failed."
     return 1
@@ -230,7 +230,7 @@ PYEOF
       header "Installing Pex"
       case "$asset_name" in
         *.app.tar.gz)
-          step "Extracting…"
+          step "Extracting..."
           mkdir -p "$tmp/extract"
           if ! tar -xzf "$tmp/$asset_name" -C "$tmp/extract"; then
             warn "Extract failed."
@@ -245,7 +245,7 @@ PYEOF
           install_macos_app "$app"
           ;;
         *.dmg)
-          step "Mounting .dmg…"
+          step "Mounting .dmg..."
           local mountpoint="$tmp/mount"
           mkdir -p "$mountpoint"
           if ! hdiutil attach -nobrowse -quiet -mountpoint "$mountpoint" "$tmp/$asset_name"; then
@@ -277,7 +277,7 @@ PYEOF
             warn "dpkg not found — can't install $asset_name."
             return 1
           fi
-          step "Installing .deb (requires sudo)…"
+          step "Installing .deb (requires sudo)..."
           sudo dpkg -i "$tmp/$asset_name" || sudo apt-get install -f -y
           ok "Pex installed"
           ;;
@@ -286,7 +286,7 @@ PYEOF
             warn "rpm not found — can't install $asset_name."
             return 1
           fi
-          step "Installing .rpm (requires sudo)…"
+          step "Installing .rpm (requires sudo)..."
           sudo rpm -i --replacepkgs "$tmp/$asset_name"
           ok "Pex installed"
           ;;
@@ -328,7 +328,7 @@ source_build_install() {
     local TMP_DIR
     TMP_DIR="$(mktemp -d -t pex-install.XXXXXX)"
     trap 'rm -rf "$TMP_DIR"' EXIT
-    step "Fetching Pex source ($PEX_REPO @ $PEX_REF)…"
+    step "Fetching Pex source ($PEX_REPO @ $PEX_REF)..."
     git clone --depth 1 --branch "$PEX_REF" "$PEX_REPO" "$TMP_DIR" >/dev/null 2>&1 \
       || git clone "$PEX_REPO" "$TMP_DIR" >/dev/null
     SCRIPT_DIR="$TMP_DIR"
@@ -394,7 +394,7 @@ source_build_install() {
 
   header "Building Pex"
   cd "$SCRIPT_DIR"
-  step "Installing npm dependencies…"
+  step "Installing npm dependencies..."
   npm install --silent
 
   # Disable updater artifact generation — without TAURI_SIGNING_PRIVATE_KEY,
@@ -402,7 +402,7 @@ source_build_install() {
   # builds don't ship to other users' updaters, so skip it.
   local TAURI_BUILD_ARGS=( -- --config '{"bundle":{"createUpdaterArtifacts":false}}' )
 
-  step "Running tauri build (this may take several minutes)…"
+  step "Running tauri build (this may take several minutes)..."
   npm run tauri build "${TAURI_BUILD_ARGS[@]}"
 
   header "Build complete"
@@ -413,7 +413,7 @@ source_build_install() {
       local DEB
       DEB="$(echo "$BUNDLE_DIR"/deb/*.deb | head -1)"
       if [ -f "$DEB" ]; then
-        step "Installing .deb package (requires sudo)…"
+        step "Installing .deb package (requires sudo)..."
         sudo dpkg -i "$DEB"
         ok "Pex installed"
         return 0
@@ -423,7 +423,7 @@ source_build_install() {
       local RPM
       RPM="$(echo "$BUNDLE_DIR"/rpm/*.rpm | head -1)"
       if [ -f "$RPM" ]; then
-        step "Installing .rpm package (requires sudo)…"
+        step "Installing .rpm package (requires sudo)..."
         sudo rpm -i --replacepkgs "$RPM"
         ok "Pex installed"
         return 0
