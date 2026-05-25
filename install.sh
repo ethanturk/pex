@@ -174,12 +174,19 @@ cd "$SCRIPT_DIR"
 step "Installing npm dependencies…"
 npm install --silent
 
+# Disable updater artifact generation for local installs. The .app.tar.gz
+# updater bundle requires minisign signing — without the env var
+# TAURI_SIGNING_PRIVATE_KEY set, Tauri prompts for the key path + password
+# once per artifact. End-user installs don't auto-update from a locally
+# built bundle, so skip the whole signing step.
+TAURI_BUILD_ARGS=( -- --config '{"bundle":{"createUpdaterArtifacts":false}}' )
+
 if [ "$OS" = Darwin ]; then
   step "Building for macOS (cargo tauri build)…"
-  npm run tauri build
+  npm run tauri build "${TAURI_BUILD_ARGS[@]}"
 else
   step "Building for Linux (cargo tauri build)…"
-  npm run tauri build
+  npm run tauri build "${TAURI_BUILD_ARGS[@]}"
 fi
 
 header "Build complete"
