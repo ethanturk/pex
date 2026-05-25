@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "preact/hooks";
 import type { CommentThread } from "@/lib/api";
 import { getFileLines } from "@/lib/api";
+import type { DiffView } from "@/lib/signals";
 
 interface Props {
   html: string;
@@ -16,6 +17,7 @@ interface Props {
   repoId: string;
   sourceCommit: string;
   baseCommit: string | null;
+  view: DiffView;
 }
 
 const EXPAND_CHUNK = 10;
@@ -37,11 +39,28 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
-function renderEqualLines(lines: string[], startNewLine: number): string {
+function renderEqualLinesInline(lines: string[], startNewLine: number): string {
   return lines
     .map((line, i) => {
       const ln = startNewLine + i;
       return `<div class="diff-line" data-line="${ln}"><span class="diff-lineno">${ln}</span><span class="diff-sign">  </span><span class="diff-content">${escapeHtml(line)}\n</span></div>`;
+    })
+    .join("");
+}
+
+function renderEqualLinesSplit(
+  lines: string[],
+  startNewLine: number,
+  startOldLine: number,
+): string {
+  return lines
+    .map((line, i) => {
+      const newLn = startNewLine + i;
+      const oldLn = startOldLine + i;
+      const escaped = escapeHtml(line);
+      const oldCell = `<div class="diff-cell diff-line"><span class="diff-lineno">${oldLn}</span><span class="diff-sign">  </span><span class="diff-content">${escaped}\n</span></div>`;
+      const newCell = `<div class="diff-cell diff-line" data-line="${newLn}"><span class="diff-lineno">${newLn}</span><span class="diff-sign">  </span><span class="diff-content">${escaped}\n</span></div>`;
+      return `<div class="diff-row">${oldCell}${newCell}</div>`;
     })
     .join("");
 }
@@ -59,6 +78,7 @@ export function DiffViewer({
   repoId,
   sourceCommit,
   baseCommit: _baseCommit,
+  view,
 }: Props) {
   const diffRef = useRef<HTMLDivElement>(null);
   const dragAnchorRef = useRef<number | null>(null);
@@ -77,8 +97,14 @@ export function DiffViewer({
     if (!root) return;
     root.querySelectorAll<HTMLElement>("[data-line]").forEach((el) => {
       const ln = Number(el.getAttribute("data-line"));
-      if (ln >= lo && ln <= hi) el.classList.add("diff-line--selected");
-      else el.classList.remove("diff-line--selected");
+      const row = el.closest<HTMLElement>(".diff-row");
+      if (ln >= lo && ln <= hi) {
+        el.classList.add("diff-line--selected");
+        row?.classList.add("diff-row--selected");
+      } else {
+        el.classList.remove("diff-line--selected");
+        row?.classList.remove("diff-row--selected");
+      }
     });
   }, []);
 
@@ -86,6 +112,9 @@ export function DiffViewer({
     diffRef.current
       ?.querySelectorAll<HTMLElement>(".diff-line--selected")
       .forEach((el) => el.classList.remove("diff-line--selected"));
+    diffRef.current
+      ?.querySelectorAll<HTMLElement>(".diff-row--selected")
+      .forEach((el) => el.classList.remove("diff-row--selected"));
   }, []);
 
   const closePopup = useCallback(() => {
@@ -104,8 +133,11 @@ export function DiffViewer({
       `[data-line="${range.end}"]`,
     );
     if (!last) return;
+    // In split view, [data-line] is on a cell inside .diff-row; offsetTop is
+    // relative to the row, not the diff container. Anchor to the row.
+    const anchorEl = last.closest<HTMLElement>(".diff-row") ?? last;
     setPopupPos({
-      top: last.offsetTop + last.offsetHeight,
+      top: anchorEl.offsetTop + anchorEl.offsetHeight,
       left: 32,
     });
   }, [range, html]);
@@ -191,32 +223,45 @@ export function DiffViewer({
       fetchStart = r.newStart;
       fetchEnd = r.newEnd;
     } else if (action === "up") {
-      fetchStart = Math.max(r.newStart, r.newEnd - EXPAND_CHUNK + 1);
-      fetchEnd = r.newEnd;
-    } else {
+      // Reveal the top of the hidden range (adjacent to the hunk above / file start).
       fetchStart = r.newStart;
       fetchEnd = Math.min(r.newEnd, r.newStart + EXPAND_CHUNK - 1);
+    } else {
+      // Reveal the bottom of the hidden range (adjacent to the hunk below).
+      fetchStart = Math.max(r.newStart, r.newEnd - EXPAND_CHUNK + 1);
+      fetchEnd = r.newEnd;
     }
+    // The old-side line number to start at, aligned with the new-side fetch range.
+    const fetchOldStart = r.oldStart + (fetchStart - r.newStart);
     expander.setAttribute("data-loading", "1");
     try {
       const lines = await getFileLines(projectId, repoId, sourceCommit, path, fetchStart, fetchEnd);
-      const linesHtml = renderEqualLines(lines, fetchStart);
+      const linesHtml =
+        view === "split"
+          ? renderEqualLinesSplit(lines, fetchStart, fetchOldStart)
+          : renderEqualLinesInline(lines, fetchStart);
       const consumed = fetchEnd - fetchStart + 1;
       const remainingTotal = total - consumed;
       if (remainingTotal <= 0) {
         expander.outerHTML = linesHtml;
       } else if (action === "up") {
-        expander.setAttribute("data-old-end", String(r.oldEnd - consumed));
-        expander.setAttribute("data-new-end", String(r.newEnd - consumed));
-        const allBtn = expander.querySelector(".diff-expander-all");
-        if (allBtn) allBtn.textContent = `${remainingTotal} hidden lines`;
-        expander.insertAdjacentHTML("afterend", linesHtml);
-      } else {
+        // Consumed lines were at the TOP of the gap; they sit above the
+        // expander and the remaining hidden range starts further down.
         expander.setAttribute("data-old-start", String(r.oldStart + consumed));
         expander.setAttribute("data-new-start", String(r.newStart + consumed));
         const allBtn = expander.querySelector(".diff-expander-all");
         if (allBtn) allBtn.textContent = `${remainingTotal} hidden lines`;
         expander.insertAdjacentHTML("beforebegin", linesHtml);
+        expander.removeAttribute("data-loading");
+      } else {
+        // Consumed lines were at the BOTTOM of the gap; they sit below the
+        // expander and the remaining hidden range ends further up.
+        expander.setAttribute("data-old-end", String(r.oldEnd - consumed));
+        expander.setAttribute("data-new-end", String(r.newEnd - consumed));
+        const allBtn = expander.querySelector(".diff-expander-all");
+        if (allBtn) allBtn.textContent = `${remainingTotal} hidden lines`;
+        expander.insertAdjacentHTML("afterend", linesHtml);
+        expander.removeAttribute("data-loading");
       }
     } catch (e) {
       console.error("Failed to expand context:", e);

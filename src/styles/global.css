@@ -94,6 +94,21 @@
   -webkit-user-select: none;
 }
 
+/* ===== Side-by-side (split) diff ===== */
+.diff-split .diff-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.diff-split .diff-cell {
+  @apply whitespace-pre overflow-x-hidden border-r border-gray-200 dark:border-gray-800;
+  min-width: 0;
+}
+.diff-split .diff-cell:last-child { border-right: 0; }
+.diff-cell--empty { @apply bg-gray-50 dark:bg-gray-900/40; }
+.diff-row--selected { @apply bg-blue-100 dark:bg-blue-900/40; }
+.diff-row--selected .diff-cell .diff-lineno { @apply text-blue-700 dark:text-blue-300; }
+.diff-expander--split { grid-column: 1 / -1; }
+
 /* ===== File tree ===== */
 .file-tree-item { @apply flex items-center gap-1.5 px-2 py-1 text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded; }
 .file-tree-item--viewed { @apply opacity-60; }

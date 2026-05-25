@@ -20,6 +20,20 @@ export function applyTheme(t: Theme) {
 applyTheme(theme.value);
 theme.subscribe(applyTheme);
 
+// ---- Diff view (inline vs side-by-side) ----
+export type DiffView = "inline" | "split";
+export const diffView = signal<DiffView>(
+  (localStorage.getItem("pex-diff-view") as DiffView) || "inline",
+);
+diffView.subscribe((v) => localStorage.setItem("pex-diff-view", v));
+
+// ---- File tree view (flat list vs nested folders) ----
+export type FileTreeMode = "flat" | "tree";
+export const fileTreeMode = signal<FileTreeMode>(
+  (localStorage.getItem("pex-file-tree-mode") as FileTreeMode) || "flat",
+);
+fileTreeMode.subscribe((v) => localStorage.setItem("pex-file-tree-mode", v));
+
 // ---- Auth ----
 export interface OrgCredential {
   orgUrl: string;
@@ -50,3 +64,8 @@ export interface FileEntry {
 export const prFiles = signal<FileEntry[]>([]);
 export const selectedFile = signal<string | null>(null);
 export const currentIteration = signal<number>(1);
+
+// Paths in the order they appear in the file tree pane, respecting current
+// view mode and folder-collapse state. Used for j/k navigation so it matches
+// what the user actually sees.
+export const visibleFilePaths = signal<string[]>([]);

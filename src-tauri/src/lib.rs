@@ -35,6 +35,7 @@ impl serde::Serialize for AppError {
 pub struct AppState {
     pub db: std::sync::Mutex<rusqlite::Connection>,
     pub ado_client: std::sync::Mutex<Option<ado::AdoClient>>,
+    pub diff_cache: cache::diff_cache::DiffCache,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -63,6 +64,7 @@ pub fn run() {
         .manage(AppState {
             db: std::sync::Mutex::new(db),
             ado_client: std::sync::Mutex::new(None),
+            diff_cache: cache::diff_cache::DiffCache::new(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth::login_pat,

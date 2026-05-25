@@ -148,8 +148,9 @@ export async function getFileDiff(
   prId: number,
   filePath: string,
   iteration: number,
+  view: "inline" | "split" = "inline",
 ): Promise<FileDiff> {
-  return invoke<FileDiff>("get_file_diff", { projectId, repoId, prId, filePath, iteration });
+  return invoke<FileDiff>("get_file_diff", { projectId, repoId, prId, filePath, iteration, view });
 }
 
 export async function getFileLines(

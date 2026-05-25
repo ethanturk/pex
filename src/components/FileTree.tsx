@@ -1,4 +1,5 @@
-import { selectedFile } from "@/lib/signals";
+import { useState, useMemo, useEffect } from "preact/hooks";
+import { selectedFile, fileTreeMode, visibleFilePaths } from "@/lib/signals";
 import type { FileEntry } from "@/lib/signals";
 
 interface Props {
@@ -20,44 +21,259 @@ const STATUS_COLOR: Record<string, string> = {
   rename: "text-blue-500",
 };
 
-export function FileTree({ files, onToggleViewed }: Props) {
-  if (files.length === 0) {
-    return <div class="p-3 text-xs text-gray-400">No files changed.</div>;
-  }
+interface FolderNode {
+  kind: "folder";
+  name: string;
+  path: string; // folder path, "/"-joined, no leading slash
+  children: TreeNode[];
+}
+interface FileNode {
+  kind: "file";
+  name: string;
+  file: FileEntry;
+}
+type TreeNode = FolderNode | FileNode;
 
+function buildTree(files: FileEntry[]): FolderNode {
+  const root: FolderNode = { kind: "folder", name: "", path: "", children: [] };
+  for (const file of files) {
+    const parts = file.path.split("/").filter((p) => p.length > 0);
+    let cursor = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const segment = parts[i];
+      const folderPath = parts.slice(0, i + 1).join("/");
+      let next = cursor.children.find(
+        (c): c is FolderNode => c.kind === "folder" && c.name === segment,
+      );
+      if (!next) {
+        next = { kind: "folder", name: segment, path: folderPath, children: [] };
+        cursor.children.push(next);
+      }
+      cursor = next;
+    }
+    cursor.children.push({ kind: "file", name: parts[parts.length - 1] ?? file.path, file });
+  }
+  // Sort: folders first, then files; alphabetical within each group.
+  const sort = (node: FolderNode) => {
+    node.children.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const child of node.children) if (child.kind === "folder") sort(child);
+  };
+  sort(root);
+  return root;
+}
+
+function FileRow({
+  file,
+  depth,
+  showFullPath,
+  onToggleViewed,
+}: {
+  file: FileEntry;
+  depth: number;
+  showFullPath: boolean;
+  onToggleViewed: Props["onToggleViewed"];
+}) {
   const activeFile = selectedFile.value;
+  const label = showFullPath ? file.path : file.path.split("/").pop() || file.path;
+  return (
+    <div
+      class={`file-tree-item ${file.viewed ? "file-tree-item--viewed" : ""} ${activeFile === file.path ? "file-tree-item--active" : ""}`}
+      style={{ paddingLeft: `${depth * 12 + 8}px` }}
+    >
+      <span
+        class={`text-xs font-mono w-4 text-center shrink-0 ${STATUS_COLOR[file.status] || ""}`}
+        title={file.status}
+      >
+        {STATUS_ICON[file.status] || "?"}
+      </span>
+      <button
+        class="flex-1 text-left truncate text-[13px]"
+        onClick={() => (selectedFile.value = file.path)}
+        title={file.path}
+      >
+        {label}
+      </button>
+      <button
+        class="shrink-0 text-xs px-1 text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleViewed(file.path, !file.viewed);
+        }}
+        title={file.viewed ? "Mark unviewed" : "Mark viewed"}
+      >
+        {file.viewed ? "👁" : "◌"}
+      </button>
+    </div>
+  );
+}
+
+function TreeNodes({
+  nodes,
+  depth,
+  collapsed,
+  toggleFolder,
+  onToggleViewed,
+}: {
+  nodes: TreeNode[];
+  depth: number;
+  collapsed: Set<string>;
+  toggleFolder: (path: string) => void;
+  onToggleViewed: Props["onToggleViewed"];
+}) {
+  return (
+    <>
+      {nodes.map((node) =>
+        node.kind === "folder" ? (
+          <FolderRow
+            key={`d:${node.path}`}
+            node={node}
+            depth={depth}
+            collapsed={collapsed}
+            toggleFolder={toggleFolder}
+            onToggleViewed={onToggleViewed}
+          />
+        ) : (
+          <FileRow
+            key={`f:${node.file.path}`}
+            file={node.file}
+            depth={depth}
+            showFullPath={false}
+            onToggleViewed={onToggleViewed}
+          />
+        ),
+      )}
+    </>
+  );
+}
+
+function FolderRow({
+  node,
+  depth,
+  collapsed,
+  toggleFolder,
+  onToggleViewed,
+}: {
+  node: FolderNode;
+  depth: number;
+  collapsed: Set<string>;
+  toggleFolder: (path: string) => void;
+  onToggleViewed: Props["onToggleViewed"];
+}) {
+  const isCollapsed = collapsed.has(node.path);
+  return (
+    <>
+      <button
+        class="file-tree-item w-full text-left"
+        style={{ paddingLeft: `${depth * 12 + 4}px` }}
+        onClick={() => toggleFolder(node.path)}
+      >
+        <span class="w-4 text-center text-xs text-gray-400 shrink-0">
+          {isCollapsed ? "▸" : "▾"}
+        </span>
+        <span class="flex-1 truncate text-[13px] text-gray-600 dark:text-gray-300">
+          {node.name}
+        </span>
+      </button>
+      {!isCollapsed && (
+        <TreeNodes
+          nodes={node.children}
+          depth={depth + 1}
+          collapsed={collapsed}
+          toggleFolder={toggleFolder}
+          onToggleViewed={onToggleViewed}
+        />
+      )}
+    </>
+  );
+}
+
+function flattenTree(nodes: TreeNode[], collapsed: Set<string>, out: string[]) {
+  for (const node of nodes) {
+    if (node.kind === "file") {
+      out.push(node.file.path);
+    } else {
+      if (!collapsed.has(node.path)) {
+        flattenTree(node.children, collapsed, out);
+      }
+    }
+  }
+}
+
+export function FileTree({ files, onToggleViewed }: Props) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const tree = useMemo(() => buildTree(files), [files]);
+
+  const toggleFolder = (path: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const mode = fileTreeMode.value;
+
+  useEffect(() => {
+    if (mode === "flat") {
+      visibleFilePaths.value = files.map((f) => f.path);
+    } else {
+      const out: string[] = [];
+      flattenTree(tree.children, collapsed, out);
+      visibleFilePaths.value = out;
+    }
+  }, [files, tree, collapsed, mode]);
 
   return (
-    <div class="py-1">
-      {files.map((f) => (
-        <div
-          key={f.path}
-          class={`file-tree-item ${f.viewed ? "file-tree-item--viewed" : ""} ${activeFile === f.path ? "file-tree-item--active" : ""}`}
+    <div class="flex flex-col">
+      <div class="flex items-center justify-between px-2 py-1 border-b border-gray-200 dark:border-gray-800 sticky top-0 bg-white dark:bg-gray-950 z-10">
+        <span class="text-[11px] uppercase tracking-wide text-gray-400">
+          Files ({files.length})
+        </span>
+        <button
+          class="text-sm px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+          onClick={() =>
+            (fileTreeMode.value = mode === "flat" ? "tree" : "flat")
+          }
+          title={
+            mode === "flat"
+              ? "View: flat list (click for folder tree)"
+              : "View: folder tree (click for flat list)"
+          }
+          aria-label="Toggle file view"
         >
-          <span
-            class={`text-xs font-mono w-4 text-center shrink-0 ${STATUS_COLOR[f.status] || ""}`}
-            title={f.status}
-          >
-            {STATUS_ICON[f.status] || "?"}
-          </span>
-          <button
-            class="flex-1 text-left truncate text-[13px]"
-            onClick={() => (selectedFile.value = f.path)}
-          >
-            {f.path}
-          </button>
-          <button
-            class="shrink-0 text-xs px-1 text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400"
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleViewed(f.path, !f.viewed);
-            }}
-            title={f.viewed ? "Mark unviewed" : "Mark viewed"}
-          >
-            {f.viewed ? "👁" : "◌"}
-          </button>
+          {mode === "flat" ? "🗂" : "📄"}
+        </button>
+      </div>
+
+      {files.length === 0 ? (
+        <div class="p-3 text-xs text-gray-400">No files changed.</div>
+      ) : mode === "flat" ? (
+        <div class="py-1">
+          {files.map((f) => (
+            <FileRow
+              key={f.path}
+              file={f}
+              depth={0}
+              showFullPath={true}
+              onToggleViewed={onToggleViewed}
+            />
+          ))}
         </div>
-      ))}
+      ) : (
+        <div class="py-1">
+          <TreeNodes
+            nodes={tree.children}
+            depth={0}
+            collapsed={collapsed}
+            toggleFolder={toggleFolder}
+            onToggleViewed={onToggleViewed}
+          />
+        </div>
+      )}
     </div>
   );
 }
