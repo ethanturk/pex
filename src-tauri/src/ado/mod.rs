@@ -739,6 +739,10 @@ pub struct PullRequest {
     pub title: String,
     pub description: Option<String>,
     pub status: String,
+    // ADO returns drafts as status="active" with a separate isDraft flag, so
+    // status alone never tells you a PR is in draft mode.
+    #[serde(rename = "isDraft", default)]
+    pub is_draft: bool,
     #[serde(rename = "createdBy")]
     pub created_by: IdentityRef,
     #[serde(rename = "sourceRefName")]

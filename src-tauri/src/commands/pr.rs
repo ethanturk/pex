@@ -52,6 +52,7 @@ pub async fn list_pull_requests(
                 "title": pr.title,
                 "description": pr.description,
                 "status": pr.status,
+                "isDraft": pr.is_draft,
                 "createdBy": {
                     "displayName": pr.created_by.display_name,
                     "id": pr.created_by.id

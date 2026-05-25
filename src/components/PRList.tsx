@@ -64,7 +64,12 @@ export function PRList() {
   // Client-side filtering
   const filteredPrs = useMemo(() => {
     let result = prs;
-    if (statusFilter !== "all") {
+    if (statusFilter === "draft") {
+      result = result.filter((pr) => pr.isDraft);
+    } else if (statusFilter === "active") {
+      // Match ADO's own UI: "Active" excludes drafts.
+      result = result.filter((pr) => pr.status === "active" && !pr.isDraft);
+    } else if (statusFilter !== "all") {
       result = result.filter((pr) => pr.status === statusFilter);
     }
     if (searchQuery.trim()) {
@@ -174,9 +179,16 @@ export function PRList() {
                 <span class="font-mono">{pr.targetRefName.replace("refs/heads/", "")}</span>
               </div>
             </div>
-            <span class={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${STATUS_CLASS[pr.status] || ""}`}>
-              {pr.status}
-            </span>
+            <div class="flex items-center gap-1.5 shrink-0">
+              {pr.isDraft && (
+                <span class={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_CLASS.draft}`}>
+                  Draft
+                </span>
+              )}
+              <span class={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_CLASS[pr.status] || ""}`}>
+                {pr.status}
+              </span>
+            </div>
           </button>
         ))}
       </div>

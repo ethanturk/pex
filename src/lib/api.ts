@@ -7,7 +7,10 @@ export interface PullRequest {
   pullRequestId: number;
   title: string;
   description: string;
-  status: "active" | "completed" | "abandoned" | "draft";
+  // ADO's `status` is never "draft" by itself — drafts come back as
+  // status="active" plus a separate isDraft flag.
+  status: "active" | "completed" | "abandoned";
+  isDraft: boolean;
   createdBy: { displayName: string; id: string };
   sourceRefName: string;
   targetRefName: string;
