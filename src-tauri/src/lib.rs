@@ -1,8 +1,10 @@
 pub mod ado;
+pub mod ai;
 pub mod auth;
 pub mod cache;
 pub mod commands;
 pub mod diff;
+pub mod purist;
 pub mod window_state;
 
 use thiserror::Error;
@@ -13,6 +15,8 @@ use tauri::Manager;
 pub enum AppError {
     #[error("ADO API error: {0}")]
     Ado(String),
+    #[error("AI error: {0}")]
+    Ai(String),
     #[error("Auth error: {0}")]
     Auth(String),
     #[error("Cache error: {0}")]
@@ -35,6 +39,8 @@ impl serde::Serialize for AppError {
 pub struct AppState {
     pub db: std::sync::Mutex<rusqlite::Connection>,
     pub ado_client: std::sync::Mutex<Option<ado::AdoClient>>,
+    pub ai_manager: std::sync::Mutex<Option<ai::AiManager>>,
+    pub purist_pid: std::sync::Arc<std::sync::Mutex<Option<u32>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -63,6 +69,8 @@ pub fn run() {
         .manage(AppState {
             db: std::sync::Mutex::new(db),
             ado_client: std::sync::Mutex::new(None),
+            ai_manager: std::sync::Mutex::new(None),
+            purist_pid: std::sync::Arc::new(std::sync::Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth::login_pat,
@@ -84,6 +92,16 @@ pub fn run() {
             commands::comments::post_comment,
             commands::comments::post_reply,
             commands::comments::update_reviewer_status,
+            commands::ai::get_ai_settings,
+            commands::ai::save_ai_settings,
+            commands::ai::explain_diff,
+            commands::ai::check_purist,
+            commands::ai::get_purist_path,
+            commands::ai::save_purist_path,
+            commands::ai::review_pr_dry_run,
+            commands::ai::review_pr_post,
+            commands::ai::cancel_review,
+            commands::ai::test_ai_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -30,6 +30,8 @@ export interface FileDiff {
   status: string;
   sourceCommit: string;
   baseCommit: string | null;
+  oldContent: string;
+  newContent: string;
 }
 
 export interface CommentThread {
@@ -235,4 +237,76 @@ export async function updateReviewerStatus(
   vote: number,
 ): Promise<void> {
   return invoke("update_reviewer_status", { projectId, repoId, prId, vote });
+}
+
+// ============= AI =============
+
+export interface AiSettingsNoKey {
+  provider: string;
+  endpoint: string;
+  model: string;
+}
+
+export interface PuristCheckResult {
+  ok: boolean;
+  message: string;
+}
+
+export async function getAiSettings(): Promise<AiSettingsNoKey> {
+  return invoke<AiSettingsNoKey>("get_ai_settings");
+}
+
+export async function saveAiSettings(
+  provider: string,
+  endpoint: string,
+  model: string,
+  apiKey: string,
+): Promise<void> {
+  return invoke("save_ai_settings", { provider, endpoint, model, apiKey });
+}
+
+export async function explainDiff(
+  filePath: string,
+  oldContent: string,
+  newContent: string,
+): Promise<string> {
+  return invoke<string>("explain_diff", { filePath, oldContent, newContent });
+}
+
+export async function checkPurist(puristPath: string): Promise<PuristCheckResult> {
+  return invoke<PuristCheckResult>("check_purist", { puristPath });
+}
+
+export async function getPuristPath(): Promise<string | null> {
+  return invoke<string | null>("get_purist_path");
+}
+
+export async function savePuristPath(path: string): Promise<void> {
+  return invoke("save_purist_path", { path });
+}
+
+export async function testAiConnection(): Promise<string> {
+  return invoke<string>("test_ai_connection");
+}
+
+export async function reviewPrDryRun(
+  orgUrl: string,
+  project: string,
+  repo: string,
+  prId: number,
+): Promise<void> {
+  return invoke("review_pr_dry_run", { orgUrl, project, repo, prId });
+}
+
+export async function reviewPrPost(
+  orgUrl: string,
+  project: string,
+  repo: string,
+  prId: number,
+): Promise<void> {
+  return invoke("review_pr_post", { orgUrl, project, repo, prId });
+}
+
+export async function cancelReview(): Promise<void> {
+  return invoke("cancel_review");
 }

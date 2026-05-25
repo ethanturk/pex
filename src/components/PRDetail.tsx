@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg } from "@/lib/signals";
 import {
   getPrFiles,
   getViewedFiles,
@@ -13,6 +13,8 @@ import {
 } from "@/lib/api";
 import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
+import { ExplainDiff } from "@/components/ExplainDiff";
+import { ReviewPR } from "@/components/ReviewPR";
 import { ApprovalBar } from "@/components/ApprovalBar";
 
 interface Props { prId: number; }
@@ -22,6 +24,8 @@ export function PRDetail({ prId }: Props) {
   const [diffPath, setDiffPath] = useState<string>("");
   const [sourceCommit, setSourceCommit] = useState<string>("");
   const [baseCommit, setBaseCommit] = useState<string | null>(null);
+  const [oldContent, setOldContent] = useState<string>("");
+  const [newContent, setNewContent] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
@@ -65,6 +69,8 @@ export function PRDetail({ prId }: Props) {
       setDiffPath(d.path);
       setSourceCommit(d.sourceCommit);
       setBaseCommit(d.baseCommit);
+      setOldContent(d.oldContent);
+      setNewContent(d.newContent);
       // Load threads for this file
       const allThreads = await getThreads(projectId, repoId, prId);
       setThreads(allThreads.filter((t: any) => t.filePath === d.path));
@@ -170,7 +176,17 @@ export function PRDetail({ prId }: Props) {
           )}
           <span class="text-xs text-gray-400 ml-2">j/k files · v toggle viewed · a approve</span>
         </div>
-        <ApprovalBar onVote={handleApprove} />
+        <div class="flex items-center gap-2">
+          {activeOrg.value && (
+            <ReviewPR
+              orgUrl={activeOrg.value.orgUrl}
+              project={selectedProject.value}
+              repo={selectedRepo.value}
+              prId={prId}
+            />
+          )}
+          <ApprovalBar onVote={handleApprove} />
+        </div>
       </div>
 
       {/* Body: File Tree + Diff */}
@@ -183,16 +199,23 @@ export function PRDetail({ prId }: Props) {
           {loading ? (
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>
           ) : diffHtml ? (
-            <DiffViewer
-              html={diffHtml}
-              path={diffPath}
-              threads={threads}
-              onComment={handlePostComment}
-              projectId={projectId!}
-              repoId={repoId!}
-              sourceCommit={sourceCommit}
-              baseCommit={baseCommit}
-            />
+            <div>
+              <DiffViewer
+                html={diffHtml}
+                path={diffPath}
+                threads={threads}
+                onComment={handlePostComment}
+                projectId={projectId!}
+                repoId={repoId!}
+                sourceCommit={sourceCommit}
+                baseCommit={baseCommit}
+              />
+              <ExplainDiff
+                filePath={diffPath}
+                oldContent={oldContent}
+                newContent={newContent}
+              />
+            </div>
           ) : (
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">
               Select a file to view its diff

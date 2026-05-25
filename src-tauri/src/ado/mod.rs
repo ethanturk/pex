@@ -366,6 +366,8 @@ impl AdoClient {
             status: change_type.to_string(),
             source_commit,
             base_commit,
+            old_content,
+            new_content,
         })
     }
 
@@ -798,6 +800,8 @@ pub struct DiffResult {
     pub source_commit: String,
     #[serde(rename = "baseCommit")]
     pub base_commit: Option<String>,
+    pub old_content: String,
+    pub new_content: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

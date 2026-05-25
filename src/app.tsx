@@ -1,9 +1,11 @@
+import { useState } from "preact/hooks";
 import { currentView, type View } from "@/lib/signals";
 import { AuthScreen } from "@/components/AuthScreen";
 import { OrgSelect } from "@/components/OrgSelect";
 import { PRList } from "@/components/PRList";
 import { PRDetail } from "@/components/PRDetail";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { AiSettings } from "@/components/AiSettings";
 import { useEffectOnce } from "@/lib/hooks";
 import { getSavedOrgs, activateOrg } from "@/lib/api";
 import { activeOrg, savedOrgs } from "@/lib/signals";
@@ -22,6 +24,8 @@ function viewComponent(view: View) {
 }
 
 export function App() {
+  const [showAiSettings, setShowAiSettings] = useState(false);
+
   useEffectOnce(() => {
     // Check if we have saved orgs — if so, go to org-select instead of auth
     getSavedOrgs().then(async (orgs) => {
@@ -56,6 +60,13 @@ export function App() {
           </span>
         </div>
         <div class="flex items-center gap-2">
+          <button
+            class="text-xs px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400"
+            onClick={() => setShowAiSettings(true)}
+            title="AI Settings"
+          >
+            ⚙
+          </button>
           {activeOrg.value && (
             <button
               class="text-xs px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400"
@@ -70,6 +81,9 @@ export function App() {
 
       {/* Main content */}
       <main class="flex-1 overflow-hidden">{viewComponent(currentView.value)}</main>
+
+      {/* AI Settings modal */}
+      <AiSettings open={showAiSettings} onClose={() => setShowAiSettings(false)} />
     </div>
   );
 }

@@ -81,4 +81,24 @@ impl KeyringStore {
         // This stub exists for future platform-native enumeration.
         Ok(vec![])
     }
+
+    /// Save a generic token by service name.
+    pub fn save_token(service: &str, token: &str) -> Result<(), AppError> {
+        let entry = Entry::new(SERVICE_NAME, service)?;
+        entry.set_password(token)?;
+        Ok(())
+    }
+
+    /// Retrieve a generic token by service name.
+    pub fn get_token(service: &str) -> Result<Option<String>, AppError> {
+        let entry = Entry::new(SERVICE_NAME, service);
+        match entry {
+            Ok(e) => match e.get_password() {
+                Ok(p) => Ok(Some(p)),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(e) => Err(AppError::Keyring(e)),
+            },
+            Err(e) => Err(AppError::Keyring(e)),
+        }
+    }
 }
