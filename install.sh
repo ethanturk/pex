@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ──────────────────────────────────────────────
+# Pex — Azure DevOps PR Reviewer
+# Linux / macOS install script
+# ──────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOLD="$(tput bold 2>/dev/null || printf '')"
+DIM="$(tput dim 2>/dev/null || printf '')"
+GREEN="$(tput setaf 2 2>/dev/null || printf '')"
+YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
+RED="$(tput setaf 1 2>/dev/null || printf '')"
+RESET="$(tput sgr0 2>/dev/null || printf '')"
+CHECK="${GREEN}✔${RESET}"
+CROSS="${RED}✘${RESET}"
+
+header()  { printf "\n%s── %s%s\n" "${BOLD}" "$1" "${RESET}"; }
+step()   { printf "  %s  %s\n" "${DIM}→${RESET}" "$1"; }
+ok()     { printf "  %s  %s\n" "${CHECK}" "$1"; }
+warn()   { printf "  %s  %s\n" "${YELLOW}⚠${RESET}"  "$1"; }
+fail()   { printf "  %s  %s\n" "${CROSS}" "$1"; }
+
+# ── OS guard ──────────────────────────────────
+OS="$(uname -s)"
+case "$OS" in
+  Linux|Darwin) ;;
+  *)
+    echo "Pex does not support $OS. Use install.ps1 on Windows."
+    exit 1
+    ;;
+esac
+
+# ── Dependency checks ─────────────────────────
+header "Checking prerequisites"
+
+# -- Rust
+if command -v rustc &>/dev/null; then
+  ok "Rust $(rustc --version | awk '{print $2}')"
+else
+  fail "Rust not found"
+  echo "       Install: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+  exit 1
+fi
+
+# -- Node.js
+if command -v node &>/dev/null; then
+  ok "Node.js $(node --version)"
+else
+  fail "Node.js not found"
+  echo "       Install: https://nodejs.org (LTS recommended)"
+  exit 1
+fi
+
+# -- npm
+if command -v npm &>/dev/null; then
+  ok "npm $(npm --version)"
+else
+  fail "npm not found — reinstall Node.js"
+  exit 1
+fi
+
+# ── System dependencies (Linux only) ──────────
+if [ "$OS" = Linux ]; then
+  header "Checking system libraries"
+
+  MISSING_DEPS=""
+
+  check_lib() {
+    local label="$1" pkgconf="$2"
+    if pkg-config --exists "$pkgconf" 2>/dev/null; then
+      ok "$label"
+    else
+      fail "$label"
+      MISSING_DEPS="$MISSING_DEPS $label"
+    fi
+  }
+
+  check_lib "webkit2gtk-4.1" "webkit2gtk-4.1"
+  check_lib "gtk4"              "gtk4"
+  check_lib "libsoup-3.0"       "libsoup-3.0"
+
+  if [ -n "$MISSING_DEPS" ]; then
+    echo ""
+    warn "Missing libraries:${MISSING_DEPS}"
+
+    if command -v dnf &>/dev/null; then
+      # Fedora / RHEL family
+      step "Detected dnf — run the following to install:"
+      echo ""
+      echo "      sudo dnf install webkit2gtk4.1-devel gtk4-devel \\"
+      echo "                       libsoup3-devel libappindicator-gtk3-devel \\"
+      echo "                       openssl-devel curl wget file"
+      echo ""
+    elif command -v apt &>/dev/null; then
+      # Debian / Ubuntu family
+      step "Detected apt — run the following to install:"
+      echo ""
+      echo "      sudo apt install libwebkit2gtk-4.1-dev libgtk-4-dev \\"
+      echo "                       libsoup-3.0-dev libappindicator3-dev \\"
+      echo "                       libssl-dev curl wget file"
+      echo ""
+    elif command -v pacman &>/dev/null; then
+      step "Detected pacman — run the following to install:"
+      echo ""
+      echo "      sudo pacman -S webkit2gtk-4.1 gtk4 libsoup3 \\"
+      echo "                       libappindicator-gtk3 base-devel curl wget file"
+      echo ""
+    else
+      warn "Unknown package manager — you'll need to install GTK+WebKit deps manually"
+    fi
+
+    printf "\nRerun %s after installing the dependencies.\n" "$0"
+    exit 1
+  fi
+fi
+
+# ── Build ─────────────────────────────────────
+header "Building Pex"
+
+cd "$SCRIPT_DIR"
+
+step "Installing npm dependencies…"
+npm install --silent
+
+if [ "$OS" = Darwin ]; then
+  step "Building for macOS (cargo tauri build)…"
+  npm run tauri build
+else
+  step "Building for Linux (cargo tauri build)…"
+  npm run tauri build
+fi
+
+header "Build complete"
+
+# ── Install ───────────────────────────────────
+if [ "$OS" = Linux ]; then
+  # Try to detect and install the built package
+  BUNDLE_DIR="$SCRIPT_DIR/src-tauri/target/release/bundle"
+
+  if [ -d "$BUNDLE_DIR/deb" ] && command -v dpkg &>/dev/null; then
+    DEB="$(echo "$BUNDLE_DIR"/deb/*.deb | head -1)"
+    if [ -f "$DEB" ]; then
+      step "Installing .deb package…"
+      printf "\n      Requires sudo. Install %s?\n" "$(basename "$DEB")"
+      printf "      [Y/n] "
+      read -r answer
+      if [ "${answer:-Y}" = Y ] || [ "${answer:-y}" = y ]; then
+        sudo dpkg -i "$DEB"
+        ok "Pex installed"
+      else
+        step "Skipped. Package at: $DEB"
+      fi
+      exit 0
+    fi
+  fi
+
+  if [ -d "$BUNDLE_DIR/rpm" ] && command -v rpm &>/dev/null; then
+    RPM="$(echo "$BUNDLE_DIR"/rpm/*.rpm | head -1)"
+    if [ -f "$RPM" ]; then
+      step "Installing .rpm package…"
+      printf "\n      Requires sudo. Install %s?\n" "$(basename "$RPM")"
+      printf "      [Y/n] "
+      read -r answer
+      if [ "${answer:-Y}" = Y ] || [ "${answer:-y}" = y ]; then
+        sudo rpm -i "$RPM"
+        ok "Pex installed"
+      else
+        step "Skipped. Package at: $RPM"
+      fi
+      exit 0
+    fi
+  fi
+
+  # Fallback — AppImage
+  if [ -d "$BUNDLE_DIR/appimage" ]; then
+    APPIMAGE="$(echo "$BUNDLE_DIR"/appimage/*.AppImage | head -1)"
+    if [ -f "$APPIMAGE" ]; then
+      chmod +x "$APPIMAGE"
+      ok "AppImage ready: $APPIMAGE"
+      exit 0
+    fi
+  fi
+
+  warn "No installable package found — check $BUNDLE_DIR"
+
+elif [ "$OS" = Darwin ]; then
+  DMG="$(echo "$SCRIPT_DIR"/src-tauri/target/release/bundle/dmg/*.dmg | head -1)"
+  if [ -f "$DMG" ]; then
+    step "Opening .dmg…"
+    open "$DMG"
+    ok "Drag Pex to /Applications"
+  else
+    warn "No .dmg found — check src-tauri/target/release/bundle/dmg/"
+  fi
+fi
