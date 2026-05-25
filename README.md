@@ -94,6 +94,39 @@ Credentials are stored in your OS keyring (Keychain on macOS, Secret Service on 
 - **Packaging** — `.deb` / `.rpm` / `.AppImage` (Linux), `.dmg` (macOS), `.msi` (Windows)
 - **Auto-updater** — tauri-plugin-updater via GitHub Releases
 
+## Releases
+
+Releases are built automatically via GitHub Actions when a `v*` tag is pushed.
+
+### One-time setup
+
+1. **Generate a signing key pair** — the updater uses this to verify that updates are authentic:
+
+   ```bash
+   cargo tauri signer generate -w ~/.tauri/pex.key
+   ```
+
+   This prints a public key (starts with `dW50cnVzdGVk...`) and saves the private key to `~/.tauri/pex.key`.
+
+2. **Set the public key** in `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`.
+
+3. **Add the private key as a GitHub Secret:**
+
+   - Go to your repo → Settings → Secrets and variables → Actions
+   - Add `TAURI_SIGNING_PRIVATE_KEY` with the content of `~/.tauri/pex.key`
+   - If you set a password, add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` as well
+
+### Cutting a release
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The GitHub Action builds for Linux, macOS, and Windows, signs everything, and creates a draft GitHub Release with all platform installers + updater artifacts.
+
+Existing installs will detect the new version via the updater plugin and prompt to update.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
