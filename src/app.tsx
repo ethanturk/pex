@@ -11,6 +11,8 @@ import { useEffectOnce } from "@/lib/hooks";
 import { getSavedOrgs, activateOrg } from "@/lib/api";
 import { activeOrg, savedOrgs } from "@/lib/signals";
 import { initReviewBus } from "@/lib/reviewBus";
+import { startUpdateCheck } from "@/lib/updater";
+import { UpdateBanner } from "@/components/UpdateBanner";
 
 function viewComponent(view: View) {
   switch (view.kind) {
@@ -30,6 +32,7 @@ export function App() {
 
   useEffectOnce(() => {
     initReviewBus();
+    startUpdateCheck();
     // Check if we have saved orgs — if so, go to org-select instead of auth
     getSavedOrgs().then(async (orgs) => {
       savedOrgs.value = orgs;
@@ -54,6 +57,7 @@ export function App() {
 
   return (
     <div class="flex flex-col h-screen">
+      <UpdateBanner />
       {/* Header */}
       <header class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 shrink-0">
         <div class="flex items-center gap-3">
