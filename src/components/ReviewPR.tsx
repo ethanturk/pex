@@ -1,76 +1,45 @@
 import { useState, useEffect, useRef } from "preact/hooks";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
-  reviewPrDryRun,
-  reviewPrPost,
+  startReview,
+  startReviewPost,
   cancelReview,
-  getPuristPath,
-  checkPurist,
+  getSavedReview,
+  clearSavedReview,
+  type ReviewOutput,
 } from "@/lib/api";
-import { puristConfigRevision } from "@/lib/signals";
 
 interface Props {
-  orgUrl: string;
-  project: string;
-  repo: string;
   prId: number;
+  prTitle: string;
 }
 
 type ReviewState = "idle" | "running" | "done" | "posting" | "posted" | "error";
 
-export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
+interface Progress {
+  phase: string;
+  detail: string;
+  fileNum?: number;
+  totalFiles?: number;
+  hunk?: number;
+  totalHunks?: number;
+  batch?: number;
+  totalBatches?: number;
+  fileCount?: number;
+}
+
+export function ReviewPR({ prId, prTitle }: Props) {
   const [state, setState] = useState<ReviewState>("idle");
-  const [output, setOutput] = useState<string[]>([]);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showOutput, setShowOutput] = useState(false);
-  const [puristReady, setPuristReady] = useState<boolean | null>(null);
-  const [puristMessage, setPuristMessage] = useState<string>("Checking Purist configuration...");
+  const [reviewOutput, setReviewOutput] = useState<ReviewOutput | null>(null);
+  const [hasSavedState, setHasSavedState] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Check Purist configuration so the Review PR button reflects readiness.
-  // Re-runs whenever AiSettings bumps `puristConfigRevision` after a successful save,
-  // so updating the path while the diff is open re-enables the button immediately.
+  // Check for resumable state on mount
   useEffect(() => {
-    let cancelled = false;
-    const verify = async () => {
-      setPuristReady(null);
-      setPuristMessage("Checking Purist configuration...");
-      try {
-        const path = await getPuristPath();
-        if (cancelled) return;
-        if (!path) {
-          setPuristReady(false);
-          setPuristMessage(
-            "Purist is not configured. Set the Purist path in AI Settings to enable PR review.",
-          );
-          return;
-        }
-        const result = await checkPurist(path);
-        if (cancelled) return;
-        setPuristReady(result.ok);
-        setPuristMessage(
-          result.ok
-            ? "Run Purist to review this PR"
-            : `Purist is not available at the configured path: ${result.message}. Update the path in AI Settings.`,
-        );
-      } catch (e: any) {
-        if (cancelled) return;
-        setPuristReady(false);
-        setPuristMessage(
-          `Failed to verify Purist: ${String(e)}. Check AI Settings.`,
-        );
-      }
-    };
-
-    // preact signals fire `subscribe` synchronously with the current value,
-    // so this handles both the initial check and subsequent saves.
-    const unsubscribe = puristConfigRevision.subscribe(() => {
-      verify();
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
+    getSavedReview().then((s) => setHasSavedState(!!s));
   }, []);
 
   // Auto-scroll panel
@@ -78,40 +47,43 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
     if (panelRef.current) {
       panelRef.current.scrollTop = panelRef.current.scrollHeight;
     }
-  }, [output]);
+  }, [progress]);
 
-  const startReview = async () => {
+  const handleStartReview = async () => {
     setState("running");
-    setOutput([]);
     setError(null);
+    setReviewOutput(null);
     setShowOutput(true);
 
     const unlisteners: UnlistenFn[] = [];
 
-    // Listen for streaming output chunks
-    const unlistenChunk = await listen<{ text: string }>("review-output-chunk", (event) => {
-      setOutput((prev) => [...prev, event.payload.text]);
+    // Listen for progress events
+    const unlistenProgress = await listen<Progress>("review-progress", (event) => {
+      setProgress(event.payload);
     });
-    unlisteners.push(unlistenChunk);
+    unlisteners.push(unlistenProgress);
 
     // Listen for completion
-    const unlistenDone = await listen<{ success: boolean; message: string }>(
-      "review-output-done",
+    const unlistenDone = await listen<{ success: boolean; summary: string; findings: any[] }>(
+      "review-done",
       (event) => {
         if (event.payload.success) {
+          setReviewOutput({
+            summary: event.payload.summary,
+            findings: event.payload.findings,
+          });
           setState("done");
         } else {
           setState("error");
-          setError(event.payload.message);
+          setError("Review failed");
         }
-        // Clean up listeners
         unlisteners.forEach((u) => u());
       }
     );
     unlisteners.push(unlistenDone);
 
     try {
-      await reviewPrDryRun(orgUrl, project, repo, prId);
+      await startReview(prId, prTitle);
     } catch (e: any) {
       setState("error");
       setError(String(e));
@@ -119,17 +91,16 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
     }
   };
 
-  const postReview = async () => {
+  const handlePostReview = async () => {
     setState("posting");
-    setOutput([]);
     setError(null);
 
     const unlisteners: UnlistenFn[] = [];
 
-    const unlistenChunk = await listen<{ text: string }>("review-post-chunk", (event) => {
-      setOutput((prev) => [...prev, event.payload.text]);
+    const unlistenProgress = await listen<Progress>("review-progress", (event) => {
+      setProgress(event.payload);
     });
-    unlisteners.push(unlistenChunk);
+    unlisteners.push(unlistenProgress);
 
     const unlistenDone = await listen<{ success: boolean; message: string }>(
       "review-post-done",
@@ -146,7 +117,7 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
     unlisteners.push(unlistenDone);
 
     try {
-      await reviewPrPost(orgUrl, project, repo, prId);
+      await startReviewPost(prId, prTitle);
     } catch (e: any) {
       setState("error");
       setError(String(e));
@@ -154,20 +125,56 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
     }
   };
 
+  const handleCancel = () => {
+    cancelReview();
+  };
+
+  const handleResume = async () => {
+    setHasSavedState(false);
+    await handleStartReview();
+  };
+
+  const handleDiscard = async () => {
+    await clearSavedReview();
+    setHasSavedState(false);
+  };
+
   const handleClose = () => {
     setShowOutput(false);
     setState("idle");
-    setOutput([]);
+    setProgress(null);
+    setReviewOutput(null);
     setError(null);
+  };
+
+  const progressText = () => {
+    if (!progress) return "Starting review...";
+    switch (progress.phase) {
+      case "resume":
+        return "Resuming from saved progress...";
+      case "hunk-review":
+        return `Reviewing ${progress.detail} — hunk ${progress.hunk}/${progress.totalHunks}`;
+      case "file-aggregate":
+        return progress.detail;
+      case "batch-aggregate":
+        return progress.detail;
+      case "synthesis":
+        return "Producing final review summary...";
+      case "posting":
+        return "Posting findings to ADO...";
+      case "done":
+        return "Review complete";
+      default:
+        return progress.detail;
+    }
   };
 
   return (
     <div>
       {/* Trigger button */}
       <button
-        onClick={startReview}
-        disabled={state === "running" || state === "posting" || puristReady !== true}
-        title={puristReady === true ? undefined : puristMessage}
+        onClick={handleStartReview}
+        disabled={state === "running" || state === "posting"}
         class="px-3 py-1.5 bg-accent hover:bg-accent-hover text-white rounded-lg text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
       >
         {state === "running" ? (
@@ -185,7 +192,17 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
         )}
       </button>
 
-      {/* Output panel */}
+      {/* Resumable indicator */}
+      {hasSavedState && state === "idle" && (
+        <span class="text-xs text-amber-500 ml-2">
+          Review in progress —
+          <button onClick={handleResume} class="underline ml-1">resume</button>
+          {" · "}
+          <button onClick={handleDiscard} class="underline">discard</button>
+        </span>
+      )}
+
+      {/* Output modal */}
       {showOutput && (
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={handleClose}>
           <div
@@ -200,7 +217,7 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
               <div class="flex items-center gap-2">
                 {(state === "running" || state === "posting") && (
                   <button
-                    onClick={cancelReview}
+                    onClick={handleCancel}
                     class="px-2 py-1 text-xs text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded hover:bg-red-50 dark:hover:bg-red-900/30"
                   >
                     Cancel
@@ -208,7 +225,7 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
                 )}
                 {state === "done" && (
                   <button
-                    onClick={postReview}
+                    onClick={handlePostReview}
                     class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-xs font-medium"
                   >
                     Post findings to ADO
@@ -224,26 +241,54 @@ export function ReviewPR({ orgUrl, project, repo, prId }: Props) {
             </div>
 
             {/* Output content */}
-            <div ref={panelRef} class="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed">
+            <div ref={panelRef} class="flex-1 overflow-y-auto p-4 text-sm">
               {error ? (
                 <div class="text-red-600 dark:text-red-400 whitespace-pre-wrap">{error}</div>
-              ) : output.length === 0 ? (
-                <div class="text-gray-400 flex items-center gap-2">
-                  <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
-                  Starting review...
-                </div>
               ) : (
-                <div class="whitespace-pre-wrap text-gray-700 dark:text-gray-300">
-                  {output.join("\n")}
-                </div>
-              )}
+                <>
+                  {/* Progress bar */}
+                  {(state === "running" || state === "posting") && (
+                    <div class="mb-4">
+                      <div class="flex items-center gap-2 text-gray-400">
+                        <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
+                        <span>{progressText()}</span>
+                      </div>
+                      {progress?.totalFiles && (
+                        <div class="mt-2 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
+                          <div
+                            class="bg-accent h-full rounded-full transition-all duration-300"
+                            style={{
+                              width: progress.phase === "hunk-review"
+                                ? `${Math.round(
+                                    ((progress.fileNum! - 1 + (progress.hunk || 0) / (progress.totalHunks || 1)) /
+                                      progress.totalFiles) *
+                                      100
+                                  )}%`
+                                : progress.phase === "batch-aggregate"
+                                  ? `${Math.round(((progress.batch || 0) / (progress.totalBatches || 1)) * 100)}%`
+                                  : "0%",
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
 
-              {/* Status indicator at bottom */}
-              {(state === "running" || state === "posting") && (
-                <div class="sticky bottom-0 text-gray-400 pt-2">
-                  <span class="animate-spin inline-block w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full mr-2" />
-                  {state === "posting" ? "Posting findings to ADO..." : "Review in progress..."}
-                </div>
+                  {/* Review summary */}
+                  {reviewOutput?.summary && (
+                    <div class="whitespace-pre-wrap text-gray-700 dark:text-gray-300 leading-relaxed">
+                      {reviewOutput.summary}
+                    </div>
+                  )}
+
+                  {/* Status at bottom */}
+                  {(state === "running" || state === "posting") && !progress && (
+                    <div class="text-gray-400">
+                      <span class="animate-spin inline-block w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full mr-2" />
+                      Starting...
+                    </div>
+                  )}
+                </>
               )}
             </div>
 

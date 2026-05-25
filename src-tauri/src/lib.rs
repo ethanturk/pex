@@ -4,7 +4,7 @@ pub mod auth;
 pub mod cache;
 pub mod commands;
 pub mod diff;
-pub mod purist;
+pub mod review;
 pub mod window_state;
 
 use thiserror::Error;
@@ -40,7 +40,6 @@ pub struct AppState {
     pub db: std::sync::Mutex<rusqlite::Connection>,
     pub ado_client: std::sync::Mutex<Option<ado::AdoClient>>,
     pub ai_manager: std::sync::Mutex<Option<ai::AiManager>>,
-    pub purist_pid: std::sync::Arc<std::sync::Mutex<Option<u32>>>,
     pub diff_cache: cache::diff_cache::DiffCache,
     pub standards_cache: cache::standards_cache::StandardsCache,
 }
@@ -72,7 +71,6 @@ pub fn run() {
             db: std::sync::Mutex::new(db),
             ado_client: std::sync::Mutex::new(None),
             ai_manager: std::sync::Mutex::new(None),
-            purist_pid: std::sync::Arc::new(std::sync::Mutex::new(None)),
             diff_cache: cache::diff_cache::DiffCache::new(),
             standards_cache: cache::standards_cache::StandardsCache::new(),
         })
@@ -102,18 +100,14 @@ pub fn run() {
             commands::ai::get_ai_prompts,
             commands::ai::save_ai_prompt,
             commands::ai::reset_ai_prompt,
-            commands::ai::check_purist,
-            commands::ai::get_purist_path,
-            commands::ai::save_purist_path,
-            commands::ai::get_purist_config,
-            commands::ai::save_purist_config,
-            commands::ai::set_purist_config_path,
-            commands::ai::review_pr_dry_run,
-            commands::ai::review_pr_post,
-            commands::ai::cancel_review,
             commands::ai::test_ai_connection,
             commands::ai::get_diff_hunks,
             commands::ai::review_hunk,
+            commands::review::start_review,
+            commands::review::start_review_post,
+            commands::review::cancel_review,
+            commands::review::get_saved_review,
+            commands::review::clear_saved_review,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

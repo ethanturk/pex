@@ -96,8 +96,3 @@ export const currentIteration = signal<number>(1);
 // view mode and folder-collapse state. Used for j/k navigation so it matches
 // what the user actually sees.
 export const visibleFilePaths = signal<string[]>([]);
-
-// ---- Purist config revision ----
-// Bumped whenever the Purist path is saved so consumers (e.g. ReviewPR button)
-// can re-verify readiness without depending on a parent re-mount.
-export const puristConfigRevision = signal<number>(0);

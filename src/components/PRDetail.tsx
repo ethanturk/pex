@@ -197,10 +197,8 @@ export function PRDetail({ prId }: Props) {
         <div class="flex items-center gap-2">
           {activeOrg.value && (
             <ReviewPR
-              orgUrl={activeOrg.value.orgUrl}
-              project={selectedProject.value}
-              repo={selectedRepo.value}
               prId={prId}
+              prTitle={`PR #${prId}`}
             />
           )}
           <ApprovalBar onVote={handleApprove} />

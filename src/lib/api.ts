@@ -253,11 +253,6 @@ export interface AiSettingsNoKey {
   standardsMaxChars: number;
 }
 
-export interface PuristCheckResult {
-  ok: boolean;
-  message: string;
-}
-
 export async function getAiSettings(): Promise<AiSettingsNoKey> {
   return invoke<AiSettingsNoKey>("get_ai_settings");
 }
@@ -319,61 +314,56 @@ export async function explainHunk(
   return invoke<string>("explain_hunk", { filePath, oldContent, newContent, hunkIndex });
 }
 
-export async function checkPurist(puristPath: string): Promise<PuristCheckResult> {
-  return invoke<PuristCheckResult>("check_purist", { puristPath });
-}
-
-export async function getPuristPath(): Promise<string | null> {
-  return invoke<string | null>("get_purist_path");
-}
-
-export async function savePuristPath(path: string): Promise<void> {
-  return invoke("save_purist_path", { path });
-}
-
-export interface PuristConfigPayload {
-  path: string;
-  isCustomPath: boolean;
-  exists: boolean;
-  content: string;
-}
-
-export async function getPuristConfig(): Promise<PuristConfigPayload> {
-  return invoke<PuristConfigPayload>("get_purist_config");
-}
-
-export async function savePuristConfig(content: string): Promise<PuristConfigPayload> {
-  return invoke<PuristConfigPayload>("save_purist_config", { content });
-}
-
-export async function setPuristConfigPath(path: string): Promise<void> {
-  return invoke("set_purist_config_path", { path });
-}
-
 export async function testAiConnection(): Promise<string> {
   return invoke<string>("test_ai_connection");
 }
 
-export async function reviewPrDryRun(
-  orgUrl: string,
-  project: string,
-  repo: string,
-  prId: number,
-): Promise<void> {
-  return invoke("review_pr_dry_run", { orgUrl, project, repo, prId });
+// ---- Native PR Review ----
+
+export interface ReviewFinding {
+  filePath: string;
+  newLineno: number | null;
+  content: string;
 }
 
-export async function reviewPrPost(
-  orgUrl: string,
-  project: string,
-  repo: string,
-  prId: number,
-): Promise<void> {
-  return invoke("review_pr_post", { orgUrl, project, repo, prId });
+export interface ReviewOutput {
+  summary: string;
+  findings: ReviewFinding[];
+}
+
+export async function startReview(prId: number, prTitle: string): Promise<ReviewOutput> {
+  return invoke<ReviewOutput>("start_review", { prId, prTitle });
+}
+
+export async function startReviewPost(prId: number, prTitle: string): Promise<void> {
+  return invoke("start_review_post", { prId, prTitle });
 }
 
 export async function cancelReview(): Promise<void> {
   return invoke("cancel_review");
+}
+
+export async function getSavedReview(): Promise<ReviewState | null> {
+  return invoke<ReviewState | null>("get_saved_review");
+}
+
+export async function clearSavedReview(): Promise<void> {
+  return invoke("clear_saved_review");
+}
+
+export interface ReviewState {
+  prKey: string;
+  phase: string;
+  filePaths: string[];
+  currentFileIdx: number;
+  currentFileHunks: number;
+  currentHunk: number;
+  currentFileFindings: [number, string][];
+  completedFiles: [string, string][];
+  batchSummaries: string[];
+  currentBatch: number;
+  totalBatches: number;
+  finalReview: string | null;
 }
 
 export interface HunkLine {
