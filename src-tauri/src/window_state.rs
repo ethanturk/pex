@@ -17,7 +17,7 @@ mod imp {
         maximized: bool,
     }
 
-    fn state_path(app: &tauri::AppHandle) -> PathBuf {
+    fn state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
         let mut path = app.path().app_config_dir().expect("no config dir");
         fs::create_dir_all(&path).ok();
         path.push("window-state.json");
