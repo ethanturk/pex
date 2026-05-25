@@ -26,7 +26,11 @@ export function App() {
     // Check if we have saved orgs — if so, go to org-select instead of auth
     getSavedOrgs().then((orgs) => {
       savedOrgs.value = orgs;
-      if (orgs.length > 0) {
+      if (orgs.length === 1) {
+        // Single org: skip org-select, go straight to PR list
+        activeOrg.value = orgs[0];
+        currentView.value = { kind: "pr-list" };
+      } else if (orgs.length > 1) {
         currentView.value = { kind: "org-select" };
       }
     });

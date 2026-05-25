@@ -1,4 +1,4 @@
-import { useState, useEffect } from "preact/hooks";
+import { useState, useEffect, useMemo } from "preact/hooks";
 import { currentView, selectedProject, selectedRepo } from "@/lib/signals";
 import { listProjects, listRepositories, listPullRequests, type Project, type Repository, type PullRequest } from "@/lib/api";
 
@@ -9,11 +9,23 @@ const STATUS_CLASS: Record<string, string> = {
   abandoned: "status-abandoned",
 };
 
+const STATUS_LABEL: Record<string, string> = {
+  all: "All statuses",
+  active: "Active",
+  draft: "Draft",
+  completed: "Completed",
+  abandoned: "Abandoned",
+};
+
 export function PRList() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [repos, setRepos] = useState<Repository[]>([]);
   const [prs, setPrs] = useState<PullRequest[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Filter state
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     listProjects().then(setProjects);
@@ -35,6 +47,24 @@ export function PRList() {
         .finally(() => setLoading(false));
     }
   }, [selectedRepo.value]);
+
+  // Client-side filtering
+  const filteredPrs = useMemo(() => {
+    let result = prs;
+    if (statusFilter !== "all") {
+      result = result.filter((pr) => pr.status === statusFilter);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(
+        (pr) =>
+          pr.title.toLowerCase().includes(q) ||
+          pr.createdBy.displayName.toLowerCase().includes(q) ||
+          pr.sourceRefName.toLowerCase().includes(q),
+      );
+    }
+    return result;
+  }, [prs, statusFilter, searchQuery]);
 
   const openPR = (prId: number) => {
     currentView.value = { kind: "pr-detail", prId };
@@ -65,6 +95,28 @@ export function PRList() {
             <option key={r.id} value={r.id}>{r.name}</option>
           ))}
         </select>
+
+        {/* PR-level filters */}
+        {prs.length > 0 && (
+          <>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.currentTarget.value)}
+              class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none"
+            >
+              {Object.entries(STATUS_LABEL).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+            <input
+              type="text"
+              value={searchQuery}
+              onInput={(e) => setSearchQuery(e.currentTarget.value)}
+              placeholder="Search title, author, branch..."
+              class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none placeholder-gray-400 flex-1 min-w-0"
+            />
+          </>
+        )}
       </div>
 
       {/* PR list */}
@@ -74,12 +126,14 @@ export function PRList() {
             Loading pull requests...
           </div>
         )}
-        {!loading && prs.length === 0 && selectedProject.value && selectedRepo.value && (
+        {!loading && filteredPrs.length === 0 && selectedProject.value && selectedRepo.value && (
           <div class="flex items-center justify-center py-12 text-gray-400 text-sm">
-            No open pull requests found.
+            {prs.length === 0
+              ? "No open pull requests found."
+              : "No PRs match the current filters."}
           </div>
         )}
-        {prs.map((pr) => (
+        {filteredPrs.map((pr) => (
           <button
             key={pr.pullRequestId}
             class="w-full text-left px-4 py-3 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 flex items-start gap-3"
