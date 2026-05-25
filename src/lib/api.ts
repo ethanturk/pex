@@ -52,8 +52,16 @@ export async function loginPat(orgUrl: string, pat: string): Promise<boolean> {
   return invoke<boolean>("login_pat", { orgUrl, pat });
 }
 
-export async function loginOAuth(orgUrl: string): Promise<string> {
-  return invoke<string>("login_oauth", { orgUrl });
+export async function loginOAuth(
+  orgUrl: string,
+  clientId: string,
+  clientSecret: string,
+): Promise<{ access_token: string; expires_in: number }> {
+  return invoke<{ access_token: string; expires_in: number }>("login_oauth", {
+    orgUrl,
+    clientId,
+    clientSecret,
+  });
 }
 
 export async function getSavedOrgs(): Promise<any[]> {

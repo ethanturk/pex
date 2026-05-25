@@ -1,5 +1,5 @@
 import { currentView, activeOrg, savedOrgs } from "@/lib/signals";
-import { loginPat, getSavedOrgs, removeOrg } from "@/lib/api";
+import { loginPat, loginOAuth, getSavedOrgs, removeOrg } from "@/lib/api";
 import { useState } from "preact/hooks";
 
 export function AuthScreen() {
@@ -55,7 +55,7 @@ export function AuthScreen() {
               + Add another account
             </summary>
             <div class="mt-3 space-y-3">
-              {renderForm()}
+              {renderPatForm()}
             </div>
           </details>
         </div>
@@ -68,14 +68,44 @@ export function AuthScreen() {
       <div class="w-full max-w-sm space-y-4">
         <h2 class="text-xl font-semibold">Connect to Azure DevOps</h2>
         <p class="text-sm text-gray-500 dark:text-gray-400">
-          Enter your organization URL and a Personal Access Token with Code (Read & Write) scope.
+          Sign in with a Personal Access Token or OAuth.
         </p>
-        {renderForm()}
+        {renderPatForm()}
+        <div class="relative">
+          <div class="absolute inset-0 flex items-center">
+            <div class="w-full border-t border-gray-200 dark:border-gray-700"></div>
+          </div>
+          <div class="relative flex justify-center text-xs">
+            <span class="px-2 bg-white dark:bg-gray-950 text-gray-400">or</span>
+          </div>
+        </div>
+        <button
+          onClick={() => {
+            // OAuth flow — user provides org URL and app credentials from settings
+            const clientId = prompt("Enter your Azure AD app Client ID (from app registration):");
+            const clientSecret = prompt("Enter your Azure AD app Client Secret:");
+            if (clientId && clientSecret && orgUrl) {
+              setLoading(true);
+              setError("");
+              loginOAuth(orgUrl, clientId, clientSecret)
+                .then(() => {
+                  activeOrg.value = { orgUrl, name: new URL(orgUrl).hostname, tokenType: "oauth" };
+                  getSavedOrgs().then((orgs) => { savedOrgs.value = orgs; });
+                  currentView.value = { kind: "pr-list" };
+                })
+                .catch((e) => setError(e.toString()))
+                .finally(() => setLoading(false));
+            }
+          }}
+          class="w-full py-2 px-4 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800"
+        >
+          Sign in with browser (OAuth)
+        </button>
       </div>
     </div>
   );
 
-  function renderForm() {
+  function renderPatForm() {
     return (
       <>
         <div class="space-y-3">

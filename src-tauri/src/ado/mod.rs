@@ -7,16 +7,29 @@ use serde::de::DeserializeOwned;
 #[derive(Clone)]
 pub struct AdoClient {
     pub org_url: String,
-    pat: String,
+    auth_value: String,  // "Basic base64" or "Bearer token"
     http: reqwest::Client,
     api_version: String,
 }
 
 impl AdoClient {
     pub fn new(org_url: String, pat: String) -> Self {
+        let auth = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!(":{}", pat))
+        );
         Self {
             org_url: org_url.trim_end_matches('/').to_string(),
-            pat,
+            auth_value: auth,
+            http: reqwest::Client::new(),
+            api_version: "7.1".to_string(),
+        }
+    }
+
+    pub fn with_bearer_token(org_url: String, token: String) -> Self {
+        Self {
+            org_url: org_url.trim_end_matches('/').to_string(),
+            auth_value: format!("Bearer {}", token),
             http: reqwest::Client::new(),
             api_version: "7.1".to_string(),
         }
@@ -24,11 +37,10 @@ impl AdoClient {
 
     fn auth_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        let auth = format!(
-            "Basic {}",
-            base64::engine::general_purpose::STANDARD.encode(format!(":{}", self.pat))
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&self.auth_value).unwrap(),
         );
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&auth).unwrap());
         headers
     }
 

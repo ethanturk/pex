@@ -19,11 +19,21 @@
 }
 
 /* ===== Diff styling ===== */
+.diff-container {
+  contain: strict;
+}
+.diff-line {
+  @apply font-mono text-sm leading-5 whitespace-pre;
+  content-visibility: auto;
+  contain-intrinsic-size: 0 20px; /* estimate ~20px per line */
+}
 .diff-add { @apply bg-green-100 dark:bg-green-900/30; }
 .diff-remove { @apply bg-red-100 dark:bg-red-900/30; }
 .diff-header { @apply bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 font-mono text-xs px-2 py-0.5; }
-.diff-lineno { @apply text-gray-400 dark:text-gray-500 select-none w-12 text-right pr-2 border-r border-gray-200 dark:border-gray-700 font-mono text-xs leading-5; }
+.diff-lineno { @apply text-gray-400 dark:text-gray-500 select-none w-12 text-right pr-2 border-r border-gray-200 dark:border-gray-700 font-mono text-xs leading-5 inline-block; }
 .diff-line { @apply font-mono text-sm leading-5 whitespace-pre; }
+.diff-sign { @apply select-none text-gray-400 dark:text-gray-500 font-mono text-xs; }
+.diff-content { }
 .diff-conflict { @apply bg-orange-100 dark:bg-orange-900/30 border-l-4 border-orange-500; }
 .diff-viewed { @apply line-through text-gray-400 dark:text-gray-500; }
 
