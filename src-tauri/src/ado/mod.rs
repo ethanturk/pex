@@ -154,6 +154,21 @@ impl AdoClient {
         )).await
     }
 
+    pub async fn get_iterations(
+        &self,
+        project: &str,
+        repo_id: &str,
+        pr_id: i64,
+    ) -> Result<Vec<Iteration>, AppError> {
+        #[derive(serde::Deserialize)]
+        struct Response { value: Vec<Iteration> }
+        let resp: Response = self.get(&format!(
+            "{}/_apis/git/repositories/{}/pullRequests/{}/iterations?api-version={}",
+            project, repo_id, pr_id, self.api_version
+        )).await?;
+        Ok(resp.value)
+    }
+
     // ---- Files & Diffs ----
 
     pub async fn get_pr_files(
@@ -306,6 +321,20 @@ impl AdoClient {
         ), thread).await
     }
 
+    pub async fn add_comment_to_thread(
+        &self,
+        project: &str,
+        repo_id: &str,
+        pr_id: i64,
+        thread_id: i64,
+        comment: &serde_json::Value,
+    ) -> Result<serde_json::Value, AppError> {
+        self.post(&format!(
+            "{}/_apis/git/repositories/{}/pullRequests/{}/threads/{}/comments?api-version={}",
+            project, repo_id, pr_id, thread_id, self.api_version
+        ), comment).await
+    }
+
     // ---- Reviewer Status ----
 
     pub async fn update_reviewer_status(
@@ -393,6 +422,20 @@ pub struct PrFilesResult {
     pub files: Vec<FileChange>,
     pub commit_id: String,
     pub parent_commit_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Iteration {
+    pub id: i64,
+    pub name: String,
+}
+
+/// Trait for abstracting over Git providers (Azure DevOps, GitHub, etc.)
+/// Used to enable future multi-provider support without rewriting the frontend.
+#[allow(dead_code)]
+pub trait GitProvider {
+    fn list_pull_requests(&self) -> impl std::future::Future<Output = Result<Vec<PullRequest>, crate::AppError>>;
+    fn get_file_diff(&self, pr_id: i64, path: &str, iteration: i32) -> impl std::future::Future<Output = Result<DiffResult, crate::AppError>>;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

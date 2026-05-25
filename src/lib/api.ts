@@ -102,6 +102,21 @@ export async function listPullRequests(
   return invoke<PullRequest[]>("list_pull_requests", { projectId, repoId });
 }
 
+// ============= Iterations =============
+
+export interface Iteration {
+  id: number;
+  name: string;
+}
+
+export async function getIterations(
+  projectId: string,
+  repoId: string,
+  prId: number,
+): Promise<Iteration[]> {
+  return invoke<Iteration[]>("get_iterations", { projectId, repoId, prId });
+}
+
 // ============= Files & Diffs =============
 
 export async function getPrFiles(

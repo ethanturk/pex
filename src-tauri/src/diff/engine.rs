@@ -64,3 +64,48 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_diff_added_line() {
+        let old = "line1\n";
+        let new = "line1\nline2\n";
+        let html = highlighted_diff(old, new, ".txt");
+        assert!(html.contains("diff-add"));
+        assert!(html.contains("line2"));
+    }
+
+    #[test]
+    fn test_diff_removed_line() {
+        let old = "line1\nline2\n";
+        let new = "line1\n";
+        let html = highlighted_diff(old, new, ".txt");
+        assert!(html.contains("diff-remove"));
+    }
+
+    #[test]
+    fn test_diff_no_changes() {
+        let old = "line1\nline2\n";
+        let new = "line1\nline2\n";
+        let html = highlighted_diff(old, new, ".txt");
+        assert!(!html.contains("diff-add"));
+        assert!(!html.contains("diff-remove"));
+    }
+
+    #[test]
+    fn test_conflict_detection() {
+        let old = "before\n";
+        let new = "before\n<<<<<<< ours\nmiddle\n=======\ntheirs\n>>>>>>> theirs\n";
+        let html = highlighted_diff(old, new, ".txt");
+        assert!(html.contains("diff-conflict"));
+    }
+
+    #[test]
+    fn test_escape_html() {
+        assert_eq!(escape_html("<script>"), "&lt;script&gt;");
+        assert_eq!(escape_html("a & b"), "a &amp; b");
+    }
+}

@@ -66,9 +66,27 @@ pub async fn list_pull_requests(
                     "vote": r.vote,
                     "isRequired": r.is_required
                 })).collect::<Vec<_>>(),
-                "iterationCount": 1  // ADO doesn't return this in list — fetch on detail
+                "iterationCount": 1
             })
         })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn get_iterations(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+) -> Result<Vec<serde_json::Value>, String> {
+    let client = get_client(&state)?;
+    let iterations = client
+        .get_iterations(&project_id, &repo_id, pr_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(iterations
+        .into_iter()
+        .map(|i| serde_json::json!({ "id": i.id, "name": i.name }))
         .collect())
 }
 

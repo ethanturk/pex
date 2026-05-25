@@ -52,6 +52,7 @@ pub fn run() {
             commands::pr::list_projects,
             commands::pr::list_repositories,
             commands::pr::list_pull_requests,
+            commands::pr::get_iterations,
             commands::files::get_pr_files,
             commands::files::get_file_diff,
             commands::files::mark_file_viewed,

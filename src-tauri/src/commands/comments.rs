@@ -92,27 +92,22 @@ pub async fn post_reply(
 ) -> Result<serde_json::Value, String> {
     let client = get_client(&state)?;
 
-    // ADO doesn't have a dedicated reply endpoint — add a comment to the thread
     let body = serde_json::json!({
-        "comments": [{
-            "parentCommentId": thread_id,
-            "content": content,
-            "commentType": 1
-        }],
-        "status": 1
+        "content": content,
+        "parentCommentId": 0,
+        "commentType": 1
     });
 
-    let thread = client
-        .post_thread(&project_id, &repo_id, pr_id, &body)
+    let comment = client
+        .add_comment_to_thread(&project_id, &repo_id, pr_id, thread_id, &body)
         .await
         .map_err(|e| e.to_string())?;
 
-    let last_comment = thread.comments.last();
     Ok(serde_json::json!({
-        "id": last_comment.map(|c| c.id).unwrap_or(0),
-        "author": last_comment.and_then(|c| c.author.as_ref().map(|a| a.display_name.clone())).unwrap_or_default(),
-        "content": last_comment.and_then(|c| c.content.clone()).unwrap_or_default(),
-        "publishedDate": last_comment.and_then(|c| c.published_date.clone()).unwrap_or_default()
+        "id": comment["id"],
+        "author": comment.get("author").and_then(|a| a.get("displayName")).and_then(|v| v.as_str()).unwrap_or(""),
+        "content": comment.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+        "publishedDate": comment.get("publishedDate").and_then(|v| v.as_str()).unwrap_or("")
     }))
 }
 
@@ -126,13 +121,11 @@ pub async fn update_reviewer_status(
 ) -> Result<(), String> {
     let client = get_client(&state)?;
 
-    // Get the PR to find our reviewer ID
     let pr = client
         .get_pull_request(&project_id, &repo_id, pr_id)
         .await
         .map_err(|e| e.to_string())?;
 
-    // Find the current user among reviewers
     let reviewer = pr
         .reviewers
         .iter()

@@ -8,6 +8,7 @@ import {
   updateReviewerStatus,
   getThreads,
   postComment,
+  getIterations,
   type CommentThread,
 } from "@/lib/api";
 import { FileTree } from "@/components/FileTree";
@@ -25,6 +26,17 @@ export function PRDetail({ prId }: Props) {
 
   const projectId = selectedProject.value;
   const repoId = selectedRepo.value;
+
+  // Fetch iterations on mount
+  useEffect(() => {
+    if (projectId && repoId) {
+      getIterations(projectId, repoId, prId)
+        .then((iters) => {
+          if (iters.length > 0) setIterationCount(iters.length);
+        })
+        .catch(() => {}); // Silently fall back to 1
+    }
+  }, [projectId, repoId, prId]);
 
   const loadFiles = useCallback(async () => {
     if (!projectId || !repoId) return;
