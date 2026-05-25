@@ -24,6 +24,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Derive the release version from the tag and write it into every file
+      # the build cares about. The tag is the source of truth; package.json,
+      # tauri.conf.json, and Cargo.toml only need to agree at build time.
+      - name: Set version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting version to $VERSION"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+          # Replace the FIRST `version = "..."` line in Cargo.toml — that's the
+          # [package] one. awk is portable across linux/macos/git-bash.
+          awk -v v="$VERSION" '
+            BEGIN { done = 0 }
+            /^version = "[^"]*"/ && !done { sub(/"[^"]*"/, "\"" v "\""); done = 1 }
+            { print }
+          ' src-tauri/Cargo.toml > src-tauri/Cargo.toml.tmp
+          mv src-tauri/Cargo.toml.tmp src-tauri/Cargo.toml
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -58,3 +79,51 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
+
+  # After every build target succeeds, commit the bumped version back to
+  # master so the source tree stays honest about what was released. Runs once
+  # (not in the matrix) on ubuntu.
+  sync-version:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          # We need the default token to be able to push back. If branch
+          # protection blocks bot pushes, this step will fail loudly — fix
+          # by allowing github-actions[bot] to bypass, or by replacing
+          # GITHUB_TOKEN with a PAT in `token:`.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply version bump to master
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+          awk -v v="$VERSION" '
+            BEGIN { done = 0 }
+            /^version = "[^"]*"/ && !done { sub(/"[^"]*"/, "\"" v "\""); done = 1 }
+            { print }
+          ' src-tauri/Cargo.toml > src-tauri/Cargo.toml.tmp
+          mv src-tauri/Cargo.toml.tmp src-tauri/Cargo.toml
+
+      - name: Commit and push if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml; then
+            echo "Master is already at ${GITHUB_REF_NAME#v}; nothing to commit."
+            exit 0
+          fi
+          git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          # [skip ci] prevents re-triggering workflows on the bump commit.
+          git commit -m "chore: sync version to ${GITHUB_REF_NAME#v} [skip ci]"
+          git push origin master

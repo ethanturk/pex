@@ -234,12 +234,48 @@ if [ "$OS" = Linux ]; then
   warn "No installable package found — check $BUNDLE_DIR"
 
 elif [ "$OS" = Darwin ]; then
-  DMG="$(echo "$SCRIPT_DIR"/src-tauri/target/release/bundle/dmg/*.dmg | head -1)"
-  if [ -f "$DMG" ]; then
-    step "Opening .dmg…"
-    open "$DMG"
-    ok "Drag Pex to /Applications"
-  else
-    warn "No .dmg found — check src-tauri/target/release/bundle/dmg/"
+  APP_SRC="$SCRIPT_DIR/src-tauri/target/release/bundle/macos/Pex.app"
+  APP_DEST="/Applications/Pex.app"
+
+  if [ ! -d "$APP_SRC" ]; then
+    warn "No Pex.app found at $APP_SRC"
+    fail "Build did not produce a macOS app bundle."
+    exit 1
+  fi
+
+  # Quit any running Pex so we can overwrite /Applications/Pex.app cleanly —
+  # otherwise the rm-then-cp leaves the user running the stale binary.
+  if pgrep -x Pex >/dev/null 2>&1; then
+    step "Pex is running — quitting it…"
+    osascript -e 'tell application "Pex" to quit' >/dev/null 2>&1 || true
+    sleep 1
+    pgrep -x Pex >/dev/null 2>&1 && pkill -x Pex >/dev/null 2>&1 || true
+  fi
+
+  # Replace any existing install. Try without sudo first; if /Applications
+  # is locked down (multi-user mac), retry with sudo.
+  copy_app() {
+    rm -rf "$APP_DEST" 2>/dev/null && cp -R "$APP_SRC" "$APP_DEST" 2>/dev/null
+  }
+
+  step "Installing to $APP_DEST…"
+  if ! copy_app; then
+    warn "Need elevated permissions to write to /Applications"
+    sudo rm -rf "$APP_DEST"
+    sudo cp -R "$APP_SRC" "$APP_DEST"
+  fi
+
+  # Strip the quarantine flag the OS applies to a freshly-copied unsigned
+  # bundle (avoids the "Pex can't be opened, unidentified developer" block
+  # on first launch).
+  xattr -dr com.apple.quarantine "$APP_DEST" 2>/dev/null || true
+
+  ok "Pex installed at $APP_DEST"
+
+  if [ -n "$INPUT_FD" ]; then
+    prompt_yn "      Launch Pex now? [Y/n] "
+    if [ -z "${REPLY:-}" ] || [ "$REPLY" = Y ] || [ "$REPLY" = y ]; then
+      open "$APP_DEST"
+    fi
   fi
 fi
