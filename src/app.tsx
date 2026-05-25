@@ -34,7 +34,9 @@ export function App() {
           currentView.value = { kind: "pr-list" };
         } catch (e) {
           console.error("Failed to activate saved org:", e);
-          // Credential missing/expired — fall through to auth screen
+          // Credential missing/expired — fall through to auth screen, with the
+          // org pre-set so AuthScreen can pre-fill the URL.
+          activeOrg.value = orgs[0];
           currentView.value = { kind: "auth" };
         }
       } else if (orgs.length > 1) {

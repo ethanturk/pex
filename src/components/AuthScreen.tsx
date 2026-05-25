@@ -3,13 +3,23 @@ import { loginPat, loginOAuth, getSavedOrgs, activateOrg } from "@/lib/api";
 import { useState } from "preact/hooks";
 
 export function AuthScreen() {
-  const [orgUrl, setOrgUrl] = useState("");
+  // If we were routed here because a saved org's credential was missing
+  // (e.g. after an upgrade from a build that didn't persist PATs to the
+  // keyring), activeOrg will already be set — pre-fill the URL so re-signing
+  // in is a single paste.
+  const prefilledOrg = activeOrg.value?.orgUrl ?? "";
+  const [orgUrl, setOrgUrl] = useState(prefilledOrg);
   const [pat, setPat] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(
+    prefilledOrg ? "Your saved session has expired. Sign in again to continue." : "",
+  );
   const [oauthOpen, setOauthOpen] = useState(false);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  // Force the form view even when there are saved orgs (used to bypass the
+  // account picker when a saved org's credential is missing).
+  const [forceForm, setForceForm] = useState(!!prefilledOrg);
 
   const handleOAuthLogin = async () => {
     if (!orgUrl) {
@@ -56,12 +66,17 @@ export function AuthScreen() {
   };
 
   const existingOrgs = savedOrgs.value;
-  if (existingOrgs.length > 0) {
+  if (existingOrgs.length > 0 && !forceForm) {
     return (
       <div class="flex items-center justify-center h-full">
         <div class="w-full max-w-sm space-y-4">
           <h2 class="text-xl font-semibold">Connect to Azure DevOps</h2>
           <p class="text-sm text-gray-500 dark:text-gray-400">Select an account or add a new one.</p>
+          {error && (
+            <div class="px-3 py-2 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 break-words">
+              {error}
+            </div>
+          )}
           <div class="space-y-2">
             {existingOrgs.map((org) => (
               <button
@@ -74,7 +89,18 @@ export function AuthScreen() {
                     activeOrg.value = org;
                     currentView.value = { kind: "pr-list" };
                   } catch (e: any) {
-                    setError(typeof e === "string" ? e : e?.message ?? String(e));
+                    const msg = typeof e === "string" ? e : e?.message ?? String(e);
+                    // Missing credential (e.g. upgraded from a build that
+                    // didn't persist the PAT) → drop into the form with the
+                    // org URL pre-filled so re-signing in is one paste.
+                    if (/no saved (pat|oauth)/i.test(msg)) {
+                      activeOrg.value = org;
+                      setOrgUrl(org.orgUrl);
+                      setError("Your saved session has expired. Sign in again to continue.");
+                      setForceForm(true);
+                    } else {
+                      setError(msg);
+                    }
                   }
                 }}
               >

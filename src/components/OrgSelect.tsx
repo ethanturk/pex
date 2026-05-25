@@ -31,11 +31,15 @@ export function OrgSelect() {
                     activeOrg.value = org;
                     currentView.value = { kind: "pr-list" };
                   } catch (e: any) {
-                    setError(
-                      `Couldn't sign in to ${org.name}: ${
-                        typeof e === "string" ? e : e?.message ?? String(e)
-                      }`
-                    );
+                    const msg = typeof e === "string" ? e : e?.message ?? String(e);
+                    // Missing credential (e.g. upgraded from a build that didn't
+                    // persist the PAT) → route to auth with the org pre-filled.
+                    if (/no saved (pat|oauth)/i.test(msg)) {
+                      activeOrg.value = org;
+                      currentView.value = { kind: "auth" };
+                    } else {
+                      setError(`Couldn't sign in to ${org.name}: ${msg}`);
+                    }
                   } finally {
                     setBusy(null);
                   }

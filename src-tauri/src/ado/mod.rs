@@ -298,26 +298,66 @@ impl AdoClient {
             .get_iteration_detail(project, repo_id, pr_id, iteration)
             .await?;
 
-        let new_content = self
+        let new_snap = self
             .get_file_content(project, repo_id, file_path, &source_commit)
             .await?;
 
-        let old_content = match &base_commit {
+        let old_snap = match &base_commit {
             Some(bid) => self
                 .get_file_content(project, repo_id, file_path, bid)
                 .await?,
-            None => String::new(),
+            None => FileSnapshot::Missing,
         };
 
-        // 4. Compute diff + syntax highlight
-        let html = crate::diff::engine::highlighted_diff(&old_content, &new_content, file_path);
+        // Pull out the bytes (or empty string for missing/inconclusive sides).
+        let old_content = match &old_snap {
+            FileSnapshot::Present(s) => s.clone(),
+            _ => String::new(),
+        };
+        let new_content = match &new_snap {
+            FileSnapshot::Present(s) => s.clone(),
+            _ => String::new(),
+        };
 
-        let change_type = if old_content.is_empty() {
-            "add"
-        } else if new_content.is_empty() {
-            "delete"
-        } else {
-            "edit"
+        // Compute diff + syntax highlight
+        let mut html = crate::diff::engine::highlighted_diff(&old_content, &new_content, file_path);
+
+        // Only show the "couldn't fetch" diagnostic when we actually couldn't
+        // tell what's at one or both sides. An empty `__init__.py` (Present(""))
+        // is a real, valid file and should render a clean empty diff.
+        let inconclusive_side = matches!(new_snap, FileSnapshot::Inconclusive)
+            || matches!(old_snap, FileSnapshot::Inconclusive);
+        // Two non-empty bodies that happen to match across base and source is
+        // strong evidence of a fetch quirk (ADO returning identical metadata
+        // for both versions); still flag those.
+        let identical_nonempty = matches!(&old_snap, FileSnapshot::Present(s) if !s.is_empty())
+            && matches!(&new_snap, FileSnapshot::Present(s) if !s.is_empty())
+            && old_content == new_content;
+        if inconclusive_side || identical_nonempty {
+            let base = base_commit.as_deref().unwrap_or("<none>");
+            let reason = if inconclusive_side {
+                "Couldn't determine file contents from Azure DevOps — the items endpoint didn't return body bytes for one or both sides."
+            } else {
+                "Old and new file contents are identical — likely a content-fetch issue (e.g. ADO returned metadata instead of bytes for this file)."
+            };
+            html = format!(
+                r#"<div class="p-4 text-sm text-amber-700 dark:text-amber-300 break-words font-mono">
+                  {}
+                  <br/>Path: <code>{}</code>
+                  <br/>Base commit: <code>{}</code>
+                  <br/>Source commit: <code>{}</code>
+                </div>"#,
+                reason,
+                escape_html_inline(file_path),
+                escape_html_inline(base),
+                escape_html_inline(&source_commit),
+            );
+        }
+
+        let change_type = match (&old_snap, &new_snap) {
+            (FileSnapshot::Missing, _) => "add",
+            (_, FileSnapshot::Missing) => "delete",
+            _ => "edit",
         };
 
         Ok(DiffResult {
@@ -343,9 +383,13 @@ impl AdoClient {
         if start_line == 0 || end_line < start_line {
             return Ok(Vec::new());
         }
-        let content = self
+        let content = match self
             .get_file_content(project, repo_id, file_path, commit_id)
-            .await?;
+            .await?
+        {
+            FileSnapshot::Present(s) => s,
+            FileSnapshot::Missing | FileSnapshot::Inconclusive => return Ok(Vec::new()),
+        };
         let lines: Vec<String> = content
             .lines()
             .skip(start_line - 1)
@@ -364,48 +408,92 @@ impl AdoClient {
         repo_id: &str,
         file_path: &str,
         commit_id: &str,
-    ) -> Result<String, AppError> {
-        // ADO's items endpoint can return JSON metadata or raw bytes depending on
-        // $format AND the Accept header. We request the JSON envelope with
-        // includeContent=true and pull the `content` field — this is unambiguous
-        // regardless of what the server decides about Accept negotiation.
-        // versionType=commit is required — without it ADO defaults to "branch" and
-        // tries to resolve the SHA as a branch name (always 404).
-        // ADO's items endpoint expects the path without a URL-encoded leading slash
-        // in some configurations; normalize by stripping a leading '/'.
-        let normalized_path = file_path.strip_prefix('/').unwrap_or(file_path);
-        let url = format!(
-            "{}/{}/_apis/git/repositories/{}/items?path=/{}&versionDescriptor.version={}&versionDescriptor.versionType=commit&includeContent=true&api-version={}",
-            self.org_url, project, repo_id,
-            urlencoding(normalized_path),
-            commit_id,
-            self.api_version
+    ) -> Result<FileSnapshot, AppError> {
+        // ADO's items endpoint requires the path rooted at "/". The iteration
+        // changes API is inconsistent about whether returned paths include the
+        // leading slash, so normalize both cases. We percent-encode each segment
+        // but leave the slashes intact — some ADO routing layers misbehave with
+        // %2F-encoded path separators in the `path` query value.
+        let rooted = if file_path.starts_with('/') {
+            file_path.to_string()
+        } else {
+            format!("/{}", file_path)
+        };
+        let path_for_url = encode_path_preserve_slash(&rooted);
+
+        // Try raw-text first ($format=text + download=true). When ADO honors it the
+        // body is the file bytes directly. If we get JSON anyway (some flavors of
+        // ADO ignore $format with certain Accept headers), parse the envelope.
+        let text_url = format!(
+            "{}/{}/_apis/git/repositories/{}/items?path={}&versionDescriptor.version={}&versionDescriptor.versionType=commit&download=true&$format=text&api-version={}",
+            self.org_url, project, repo_id, path_for_url, commit_id, self.api_version
         );
 
+        match self.fetch_item_body(&text_url, file_path, commit_id).await? {
+            FetchOutcome::Text(s) => return Ok(FileSnapshot::Present(s)),
+            FetchOutcome::Empty200 => return Ok(FileSnapshot::Present(String::new())),
+            FetchOutcome::Missing => return Ok(FileSnapshot::Missing),
+            FetchOutcome::Inconclusive => {} // fall through to JSON+includeContent
+        }
+
+        // Fallback: JSON envelope with includeContent=true, then read `.content`.
+        let json_url = format!(
+            "{}/{}/_apis/git/repositories/{}/items?path={}&versionDescriptor.version={}&versionDescriptor.versionType=commit&includeContent=true&api-version={}",
+            self.org_url, project, repo_id, path_for_url, commit_id, self.api_version
+        );
+        match self.fetch_item_body(&json_url, file_path, commit_id).await? {
+            FetchOutcome::Text(s) => Ok(FileSnapshot::Present(s)),
+            FetchOutcome::Empty200 => Ok(FileSnapshot::Present(String::new())),
+            FetchOutcome::Missing => Ok(FileSnapshot::Missing),
+            // Both strategies couldn't decide — leave it as Inconclusive so
+            // the diagnostic only fires when we truly have no answer.
+            FetchOutcome::Inconclusive => Ok(FileSnapshot::Inconclusive),
+        }
+    }
+
+    async fn fetch_item_body(
+        &self,
+        url: &str,
+        file_path: &str,
+        commit_id: &str,
+    ) -> Result<FetchOutcome, AppError> {
         let mut headers = self.auth_headers();
         headers.insert(
             reqwest::header::ACCEPT,
-            reqwest::header::HeaderValue::from_static("application/json"),
+            reqwest::header::HeaderValue::from_static("*/*"),
         );
 
         let resp = self
             .http
-            .get(&url)
+            .get(url)
             .headers(headers)
             .send()
             .await
             .map_err(|e| AppError::Ado(format!("Fetch file content failed: {}", e)))?;
 
+        let debug = std::env::var("PEX_DEBUG_HTTP").is_ok();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if debug {
+            eprintln!("[pex] GET {url} → {} ({})", resp.status(), content_type);
+        }
+
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            // File doesn't exist at this version — added or deleted file.
-            return Ok(String::new());
+            return Ok(FetchOutcome::Missing);
         }
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             return Err(AppError::Ado(format!(
                 "Fetch file content HTTP {} for {} @ {}: {}",
-                status, file_path, commit_id, body
+                status,
+                file_path,
+                commit_id,
+                truncate_for_error(&body)
             )));
         }
 
@@ -414,21 +502,51 @@ impl AdoClient {
             .await
             .map_err(|e| AppError::Ado(format!("Read file body failed: {}", e)))?;
 
-        // Body may be either JSON metadata (Accept honored) or raw text (server ignored Accept).
-        // Heuristic: JSON shape starts with `{` and contains `"content"`.
-        if body.starts_with('{') {
+        if debug {
+            let preview: String = body.chars().take(160).collect::<String>().replace('\n', "\\n");
+            eprintln!("[pex]   body: {} bytes; preview: {}", body.len(), preview);
+        }
+
+        // Decide envelope vs raw by Content-Type, NOT by sniffing the body —
+        // a JSON *file's* content also starts with `{`, which used to make us
+        // misread raw JSON files as ADO envelopes with a missing `content`
+        // field, returning Empty for every file that starts with `{`.
+        let is_json_envelope = content_type.starts_with("application/json");
+
+        if is_json_envelope {
+            if body.is_empty() {
+                // JSON endpoint returned literally nothing — that's a fetch
+                // anomaly, not a "file is empty" signal.
+                return Ok(FetchOutcome::Inconclusive);
+            }
             #[derive(serde::Deserialize)]
             struct ItemResp {
                 #[serde(default)]
                 content: Option<String>,
             }
             match serde_json::from_str::<ItemResp>(&body) {
-                Ok(item) => Ok(item.content.unwrap_or_default()),
-                // Fall through: not the shape we expected, treat the body as raw text.
-                Err(_) => Ok(body),
+                Ok(item) => match item.content {
+                    Some(s) if !s.is_empty() => Ok(FetchOutcome::Text(s)),
+                    // Empty string in the envelope means the file exists and is
+                    // 0 bytes — a legitimate result for files like __init__.py.
+                    Some(_) => Ok(FetchOutcome::Empty200),
+                    // `content` was missing/null — ADO sometimes omits it for
+                    // files past an internal size threshold. Caller retries.
+                    None => Ok(FetchOutcome::Inconclusive),
+                },
+                Err(e) => Err(AppError::Ado(format!(
+                    "Failed to parse ADO item envelope for {} @ {}: {}",
+                    file_path, commit_id, e
+                ))),
             }
+        } else if body.is_empty() {
+            // 200 with no body via the raw-text endpoint = the file exists
+            // and is empty (zero bytes). Don't conflate with a fetch failure.
+            Ok(FetchOutcome::Empty200)
         } else {
-            Ok(body)
+            // Raw bytes (application/octet-stream, text/plain, etc.) — this is
+            // the file content verbatim.
+            Ok(FetchOutcome::Text(body))
         }
     }
 
@@ -521,6 +639,57 @@ fn urlencoding(s: &str) -> String {
         .replace('?', "%3F")
         .replace('+', "%2B")
         .replace('%', "%25")
+}
+
+/// Percent-encode a path for use as a query-string value, leaving '/' intact.
+/// ADO's items endpoint accepts both forms but is more reliable with raw slashes.
+fn encode_path_preserve_slash(s: &str) -> String {
+    s.split('/')
+        .map(urlencoding)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Cap an error-body snippet so we don't log megabytes of binary content.
+fn truncate_for_error(s: &str) -> String {
+    const MAX: usize = 240;
+    if s.len() <= MAX {
+        s.to_string()
+    } else {
+        format!("{}…(truncated {} bytes)", &s[..MAX], s.len() - MAX)
+    }
+}
+
+/// Minimal HTML escape for short diagnostic strings.
+fn escape_html_inline(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Outcome of one attempt to fetch a file's bytes from ADO.
+enum FetchOutcome {
+    /// 200 with a non-empty body that we interpret as the file content.
+    Text(String),
+    /// 200 with an empty body via the raw-text endpoint — the file exists but is empty.
+    /// (`__init__.py`, `.gitkeep`, etc.) Treat as a real, empty file.
+    Empty200,
+    /// 404 — file legitimately doesn't exist at this commit (added/deleted file).
+    Missing,
+    /// 200 but the body didn't tell us what we needed (e.g. JSON envelope with
+    /// `content: null` because ADO didn't inline content for this file).
+    /// Caller should try a different fetch strategy.
+    Inconclusive,
+}
+
+/// What we know about a file at one commit after exhausting our fetch strategies.
+enum FileSnapshot {
+    /// File exists at this commit; contents may be the empty string.
+    Present(String),
+    /// File does not exist at this commit.
+    Missing,
+    /// We never got a definitive answer (every strategy failed inconclusively).
+    Inconclusive,
 }
 
 // ---- Response Types ----

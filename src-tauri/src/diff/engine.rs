@@ -148,6 +148,51 @@ mod tests {
     }
 
     #[test]
+    fn test_diff_new_file_realistic_python() {
+        // Mirror the kind of content the user is fetching successfully (4645
+        // bytes of Python) — triple-quoted docstring, special chars, etc.
+        let old = "";
+        let new = r#""""EmbeddingReliabilityEvaluator — the v1 PO-mandated reliability gate.
+
+Distinguishes embedding *freshness* (a reliability check, not a boost) from
+document *freshness* (a recency boost handled elsewhere).
+"""
+import dataclasses
+from typing import Optional, List
+
+class EmbeddingReliabilityEvaluator:
+    def __init__(self, threshold: float = 0.7) -> None:
+        self.threshold = threshold
+
+    def evaluate(self, score: float) -> bool:
+        return score >= self.threshold
+"#;
+        let html = highlighted_diff(old, new, "embedding_reliability_evaluator.py");
+        eprintln!("PY-INSERT HTML LEN: {}", html.len());
+        eprintln!("PY-INSERT HTML (first 600 chars):\n{}", &html.chars().take(600).collect::<String>());
+        assert!(html.contains("EmbeddingReliabilityEvaluator"), "should contain class name");
+        assert!(html.contains("diff-add"), "should mark inserts");
+        assert!(html.len() > 500, "html should be substantial, got {} bytes", html.len());
+    }
+
+    #[test]
+    fn test_diff_new_file_all_insert() {
+        // Reproduces the "added file" case where the base side is empty.
+        let old = "";
+        let new = "line1\nline2\nline3\n";
+        let html = highlighted_diff(old, new, ".py");
+        eprintln!("ALL-INSERT HTML: {html}");
+        assert!(
+            html.contains("line1") && html.contains("line2") && html.contains("line3"),
+            "rendered HTML should contain every inserted line; got: {html}"
+        );
+        assert!(
+            html.contains("diff-add"),
+            "rendered HTML should mark inserted lines with diff-add; got: {html}"
+        );
+    }
+
+    #[test]
     fn test_diff_removed_line() {
         let old = "line1\nline2\n";
         let new = "line1\n";
