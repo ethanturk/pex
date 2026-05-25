@@ -64,6 +64,14 @@ export async function loginOAuth(
   });
 }
 
+export async function refreshOAuthToken(
+  orgUrl: string,
+): Promise<{ access_token: string; expires_in: number }> {
+  return invoke<{ access_token: string; expires_in: number }>("refresh_oauth_token", {
+    orgUrl,
+  });
+}
+
 export async function getSavedOrgs(): Promise<any[]> {
   return invoke<any[]>("get_saved_orgs");
 }

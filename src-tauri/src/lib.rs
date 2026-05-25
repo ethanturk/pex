@@ -40,6 +40,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             db: std::sync::Mutex::new(db),
             ado_client: std::sync::Mutex::new(None),
@@ -47,6 +48,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::auth::login_pat,
             commands::auth::login_oauth,
+            commands::auth::refresh_oauth_token,
             commands::auth::get_saved_orgs,
             commands::auth::remove_org,
             commands::pr::list_projects,

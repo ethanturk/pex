@@ -150,6 +150,43 @@ async fn validate_token(org_url: &str, token: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Refresh an expired OAuth access token using the refresh token.
+pub async fn refresh_oauth_token(
+    client_secret: &str,
+    refresh_token: &str,
+    redirect_uri: &str,
+) -> Result<OAuthToken, AppError> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(TOKEN_URL)
+        .form(&[
+            ("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
+            ("client_assertion", client_secret),
+            ("grant_type", "refresh_token"),
+            ("assertion", refresh_token),
+            ("redirect_uri", redirect_uri),
+        ])
+        .send()
+        .await
+        .map_err(|e| AppError::Auth(format!("Token refresh failed: {}", e)))?;
+
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| AppError::Auth(e.to_string()))?;
+
+    if !status.is_success() {
+        return Err(AppError::Auth(format!("Token refresh HTTP {}: {}", status, body)));
+    }
+
+    let token: OAuthTokenResponse = serde_json::from_str(&body)
+        .map_err(|e| AppError::Auth(format!("Token parse error: {}", e)))?;
+
+    Ok(OAuthToken {
+        access_token: token.access_token,
+        refresh_token: token.refresh_token,
+        expires_in: token.expires_in,
+    })
+}
+
 // ---- Types ----
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

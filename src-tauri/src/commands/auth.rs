@@ -34,7 +34,6 @@ pub async fn login_oauth(
         &client_id,
         &client_secret,
         |url| {
-            // Open the authorize URL in the system browser
             let _ = tauri_plugin_opener::open_url(url, None::<&str>);
         },
     )
@@ -44,14 +43,51 @@ pub async fn login_oauth(
     let client = crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token.clone());
     *state.ado_client.lock().unwrap() = Some(client);
 
-    // Save to cache
+    // Save org to cache
     let conn = state.db.lock().unwrap();
     crate::cache::save_org(&conn, &org_url, &org_url, "oauth").map_err(|e| e.to_string())?;
 
-    // Save token to keyring (store the access token)
-    crate::auth::keyring_store::KeyringStore::save_pat(
-        &format!("oauth:{}", org_url),
-        &token.access_token,
+    // Store refresh token + client secret for later refresh
+    crate::auth::keyring_store::KeyringStore::save_oauth(
+        &org_url,
+        &token.refresh_token,
+        &client_secret,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "access_token": token.access_token,
+        "expires_in": token.expires_in
+    }))
+}
+
+#[tauri::command]
+pub async fn refresh_oauth_token(
+    state: State<'_, AppState>,
+    org_url: String,
+) -> Result<serde_json::Value, String> {
+    // Retrieve stored refresh token and client secret
+    let (refresh_token, client_secret) = crate::auth::keyring_store::KeyringStore::get_oauth(&org_url)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No OAuth credentials stored for this org".to_string())?;
+
+    let token = crate::auth::oauth::refresh_oauth_token(
+        &client_secret,
+        &refresh_token,
+        "http://localhost:0/callback", // dummy redirect for refresh
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Update the ADO client with new token
+    let client = crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token.clone());
+    *state.ado_client.lock().unwrap() = Some(client);
+
+    // Store updated refresh token
+    crate::auth::keyring_store::KeyringStore::save_oauth(
+        &org_url,
+        &token.refresh_token,
+        &client_secret,
     )
     .map_err(|e| e.to_string())?;
 
