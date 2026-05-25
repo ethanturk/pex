@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useState, useEffect } from "preact/hooks";
 import {
   getDiffHunks,
   reviewHunk,
@@ -7,6 +7,7 @@ import {
   type DiffHunk,
   type ReviewHunkContext,
 } from "@/lib/api";
+import { useResizableWidth } from "@/lib/useResizableWidth";
 
 type HunkAi = { loading: boolean; text: string | null; error: string | null };
 
@@ -17,10 +18,19 @@ interface Props {
   /// Optional ADO context — when provided, hunk reviews pull AGENTS.md / STYLE.md
   /// at `sourceCommit` to ground feedback in project standards.
   reviewContext?: ReviewHunkContext;
+  /// Called when the user clicks the close (×) button in the sidebar header.
+  /// `PRDetail` owns the open/closed state of the sidebar.
+  onClose: () => void;
 }
 
-export function HunkReview({ filePath, oldContent, newContent, reviewContext }: Props) {
-  const [open, setOpen] = useState(false);
+export function HunkReview({ filePath, oldContent, newContent, reviewContext, onClose }: Props) {
+  const resize = useResizableWidth({
+    storageKey: "pex-hunkreview-width",
+    defaultWidth: 448,
+    min: 280,
+    max: 900,
+    side: "left",
+  });
   const [hunks, setHunks] = useState<DiffHunk[] | null>(null);
   const [reviews, setReviews] = useState<Map<number, HunkAi>>(new Map());
   const [explanations, setExplanations] = useState<Map<number, HunkAi>>(new Map());
@@ -31,25 +41,25 @@ export function HunkReview({ filePath, oldContent, newContent, reviewContext }: 
     concurrency: number;
   } | null>(null);
 
-  const handleToggle = async () => {
-    if (open) {
-      setOpen(false);
-      return;
-    }
-
-    setOpen(true);
-
-    // Load hunks if not already loaded
-    if (!hunks) {
+  // Load hunks once on mount. PRDetail keys this component on the file path so
+  // switching files unmounts/remounts and forces a fresh load.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
       try {
         const result = await getDiffHunks(oldContent, newContent);
-        setHunks(result);
-        setLoadError(null);
+        if (!cancelled) {
+          setHunks(result);
+          setLoadError(null);
+        }
       } catch (e: any) {
-        setLoadError(String(e));
+        if (!cancelled) setLoadError(String(e));
       }
-    }
-  };
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const runHunkAi = async (
     hunkIndex: number,
@@ -130,19 +140,27 @@ export function HunkReview({ filePath, oldContent, newContent, reviewContext }: 
   };
 
   return (
-    <div>
-      {/* Toggle button */}
-      <div class="px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex items-center gap-2">
-        <button
-          onClick={handleToggle}
-          class="text-xs px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 font-medium"
-        >
-          {open ? "Hide hunk reviews" : "🔍 Review hunks"}
-        </button>
+    <aside
+      class="border-l border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 shrink-0 flex flex-col relative"
+      style={{ width: `${resize.width}px` }}
+    >
+      <div
+        onMouseDown={resize.onMouseDown}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize hunk review sidebar"
+        title="Drag to resize"
+        class="absolute top-0 left-0 bottom-0 w-1.5 -ml-0.5 cursor-col-resize hover:bg-accent/40 active:bg-accent/70 z-10"
+      />
+      {/* Sidebar header */}
+      <div class="px-4 py-2 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2 shrink-0">
+        <span class="text-sm font-semibold">🔍 Hunk review</span>
         {hunks && (
-          <span class="text-xs text-gray-400">{hunks.length} hunk{hunks.length !== 1 ? "s" : ""}</span>
+          <span class="text-xs text-gray-400">
+            {hunks.length} hunk{hunks.length !== 1 ? "s" : ""}
+          </span>
         )}
-        {open && hunks && hunks.length > 0 && (
+        {hunks && hunks.length > 0 && (
           <button
             onClick={handleReviewAll}
             disabled={!!reviewAll}
@@ -158,11 +176,18 @@ export function HunkReview({ filePath, oldContent, newContent, reviewContext }: 
               : "Review All"}
           </button>
         )}
+        <button
+          onClick={onClose}
+          aria-label="Close hunk review sidebar"
+          title="Close"
+          class={`${hunks && hunks.length > 0 ? "" : "ml-auto "}text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none px-1`}
+        >
+          ×
+        </button>
       </div>
 
-      {/* Hunks panel */}
-      {open && (
-        <div class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 max-h-[50vh] overflow-y-auto">
+      {/* Hunks list */}
+      <div class="flex-1 overflow-y-auto">
           {loadError ? (
             <div class="p-4 text-sm text-red-600 dark:text-red-400">{loadError}</div>
           ) : !hunks ? (
@@ -280,7 +305,6 @@ export function HunkReview({ filePath, oldContent, newContent, reviewContext }: 
             })
           )}
         </div>
-      )}
-    </div>
+    </aside>
   );
 }

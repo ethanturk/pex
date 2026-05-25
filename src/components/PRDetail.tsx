@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
+import { useResizableWidth } from "@/lib/useResizableWidth";
 import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths } from "@/lib/signals";
 import {
   getPrFiles,
@@ -29,6 +30,14 @@ export function PRDetail({ prId }: Props) {
   const [loading, setLoading] = useState(false);
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
+  const [hunkSidebarOpen, setHunkSidebarOpen] = useState(false);
+  const fileTreeResize = useResizableWidth({
+    storageKey: "pex-filetree-width",
+    defaultWidth: 256,
+    min: 160,
+    max: 600,
+    side: "right",
+  });
 
   const projectId = selectedProject.value;
   const repoId = selectedRepo.value;
@@ -195,6 +204,25 @@ export function PRDetail({ prId }: Props) {
           <span class="text-xs text-gray-400 ml-2">j/k files · v toggle viewed · a approve</span>
         </div>
         <div class="flex items-center gap-2">
+          <button
+            onClick={() => setHunkSidebarOpen((v) => !v)}
+            disabled={!diffHtml}
+            aria-pressed={hunkSidebarOpen}
+            title={
+              !diffHtml
+                ? "Select a file to enable hunk review"
+                : hunkSidebarOpen
+                  ? "Close hunk review sidebar"
+                  : "Open hunk review sidebar"
+            }
+            class={`text-xs px-3 py-1.5 rounded-lg border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+              hunkSidebarOpen
+                ? "border-accent text-accent bg-accent/10"
+                : "border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+            }`}
+          >
+            🔍 Review hunks
+          </button>
           {activeOrg.value && (
             <ReviewPR
               prId={prId}
@@ -207,48 +235,64 @@ export function PRDetail({ prId }: Props) {
 
       {/* Body: File Tree + Diff */}
       <div class="flex flex-1 overflow-hidden">
-        <aside class="w-64 border-r border-gray-200 dark:border-gray-800 overflow-y-auto shrink-0">
-          <FileTree files={prFiles.value} onToggleViewed={handleToggleViewed} />
+        <aside
+          class="border-r border-gray-200 dark:border-gray-800 shrink-0 relative"
+          style={{ width: `${fileTreeResize.width}px` }}
+        >
+          <div class="h-full overflow-y-auto">
+            <FileTree files={prFiles.value} onToggleViewed={handleToggleViewed} />
+          </div>
+          <div
+            onMouseDown={fileTreeResize.onMouseDown}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize file tree"
+            title="Drag to resize"
+            class="absolute top-0 right-0 bottom-0 w-1.5 -mr-0.5 cursor-col-resize hover:bg-accent/40 active:bg-accent/70 z-10"
+          />
         </aside>
 
         <div class="flex-1 overflow-y-auto">
           {loading ? (
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>
           ) : diffHtml ? (
-            <div>
-              <HunkReview
-                filePath={diffPath}
-                oldContent={oldContent}
-                newContent={newContent}
-                reviewContext={
-                  activeOrg.value && projectId && repoId && sourceCommit
-                    ? {
-                        orgUrl: activeOrg.value.orgUrl,
-                        projectId,
-                        repoId,
-                        sourceCommit,
-                      }
-                    : undefined
-                }
-              />
-              <DiffViewer
-                html={diffHtml}
-                path={diffPath}
-                threads={threads}
-                onComment={handlePostComment}
-                projectId={projectId!}
-                repoId={repoId!}
-                sourceCommit={sourceCommit}
-                baseCommit={baseCommit}
-                view={diffView.value}
-              />
-            </div>
+            <DiffViewer
+              html={diffHtml}
+              path={diffPath}
+              threads={threads}
+              onComment={handlePostComment}
+              projectId={projectId!}
+              repoId={repoId!}
+              sourceCommit={sourceCommit}
+              baseCommit={baseCommit}
+              view={diffView.value}
+            />
           ) : (
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">
               Select a file to view its diff
             </div>
           )}
         </div>
+
+        {hunkSidebarOpen && diffHtml && (
+          <HunkReview
+            key={diffPath}
+            filePath={diffPath}
+            oldContent={oldContent}
+            newContent={newContent}
+            reviewContext={
+              activeOrg.value && projectId && repoId && sourceCommit
+                ? {
+                    orgUrl: activeOrg.value.orgUrl,
+                    projectId,
+                    repoId,
+                    sourceCommit,
+                  }
+                : undefined
+            }
+            onClose={() => setHunkSidebarOpen(false)}
+          />
+        )}
       </div>
     </div>
   );
