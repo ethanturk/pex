@@ -108,8 +108,21 @@ export function PRDetail({ prId }: Props) {
     currentView.value = { kind: "pr-list" };
   };
 
-  const handlePostComment = async (filePath: string, line: number, content: string) => {
-    const thread = await postComment(projectId, repoId, prId, filePath, line, content);
+  const handlePostComment = async (
+    filePath: string,
+    lineStart: number,
+    lineEnd: number,
+    content: string,
+  ) => {
+    const thread = await postComment(
+      projectId,
+      repoId,
+      prId,
+      filePath,
+      lineStart,
+      lineEnd,
+      content,
+    );
     setThreads([...threads, thread]);
   };
 

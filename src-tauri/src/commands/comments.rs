@@ -46,10 +46,13 @@ pub async fn post_comment(
     repo_id: String,
     pr_id: i64,
     file_path: String,
-    line: i64,
+    line_start: i64,
+    line_end: i64,
     content: String,
 ) -> Result<serde_json::Value, String> {
     let client = get_client(&state)?;
+    let lo = line_start.min(line_end);
+    let hi = line_start.max(line_end);
 
     let body = serde_json::json!({
         "comments": [{
@@ -60,8 +63,10 @@ pub async fn post_comment(
         "status": 1,
         "threadContext": {
             "filePath": file_path,
-            "rightFileStart": { "line": line, "offset": 1 },
-            "rightFileEnd": { "line": line, "offset": 1 }
+            "rightFileStart": { "line": lo, "offset": 1 },
+            // ADO PR comment ranges are inclusive on both ends; offsets are 1-based
+            // column positions within the line.
+            "rightFileEnd": { "line": hi, "offset": 1 }
         }
     });
 

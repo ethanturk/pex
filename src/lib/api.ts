@@ -203,7 +203,8 @@ export async function postComment(
   repoId: string,
   prId: number,
   filePath: string,
-  line: number,
+  lineStart: number,
+  lineEnd: number,
   content: string,
 ): Promise<CommentThread> {
   return invoke<CommentThread>("post_comment", {
@@ -211,7 +212,8 @@ export async function postComment(
     repoId,
     prId,
     filePath,
-    line,
+    lineStart,
+    lineEnd,
     content,
   });
 }
