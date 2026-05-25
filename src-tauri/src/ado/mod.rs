@@ -150,10 +150,13 @@ impl AdoClient {
         repo_id: &str,
         pr_id: i64,
         iteration: i32,
-    ) -> Result<Vec<FileChange>, AppError> {
+    ) -> Result<PrFilesResult, AppError> {
         #[derive(serde::Deserialize)]
         struct CommitResponse {
+            #[serde(rename = "commitId")]
             commit_id: String,
+            #[serde(rename = "parents")]
+            parents: Vec<String>,
         }
         #[derive(serde::Deserialize)]
         struct CommitsResponse { value: Vec<CommitResponse> }
@@ -163,36 +166,102 @@ impl AdoClient {
             project, repo_id, pr_id, iteration, self.api_version
         )).await?;
 
-        let commit_id = commits
+        let commit = commits
             .value
-            .first()
-            .map(|c| c.commit_id.clone())
+            .into_iter()
+            .next()
             .ok_or_else(|| AppError::Ado("No commits found for iteration".into()))?;
+
+        let parent_commit_id = commit.parents.into_iter().next();
 
         #[derive(serde::Deserialize)]
         struct ChangesResponse { changes: Vec<FileChange> }
 
         let changes: ChangesResponse = self.get(&format!(
-            "{}/_apis/git/repositories/{}/commits/{}/changes?api-version={}",
-            project, repo_id, commit_id, self.api_version
+            "{}/_apis/git/repositories/{}/commits/{}/changes?$top=1000&api-version={}",
+            project, repo_id, commit.commit_id, self.api_version
         )).await?;
 
-        Ok(changes.changes)
+        Ok(PrFilesResult {
+            files: changes.changes,
+            commit_id: commit.commit_id,
+            parent_commit_id,
+        })
     }
 
     pub async fn get_file_diff(
         &self,
-        _project: &str,
-        _repo_id: &str,
-        _pr_id: i64,
-        _file_path: &str,
-        _iteration: i32,
+        project: &str,
+        repo_id: &str,
+        pr_id: i64,
+        file_path: &str,
+        iteration: i32,
     ) -> Result<DiffResult, AppError> {
-        // ADO doesn't have a per-file diff endpoint — we fetch the iteration's
-        // diff and filter client-side. For now, return a stub.
-        // In production, fetch the iteration diff via:
-        // GET .../pullRequests/{prId}/iterations/{iteration}/diff?path={filePath}
-        Err(AppError::Ado("Diff endpoint requires iteration diff API — implement in phase 4".into()))
+        // 1. Get the iteration commit + parent
+        #[derive(serde::Deserialize)]
+        struct CommitResp {
+            #[serde(rename = "commitId")]
+            commit_id: String,
+            #[serde(rename = "parents")]
+            parents: Vec<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct CommitsList { value: Vec<CommitResp> }
+
+        let commits: CommitsList = self.get(&format!(
+            "{}/_apis/git/repositories/{}/pullRequests/{}/commits?$top=1&iteration={}&api-version={}",
+            project, repo_id, pr_id, iteration, self.api_version
+        )).await?;
+
+        let commit = commits.value.into_iter().next()
+            .ok_or_else(|| AppError::Ado("No commits found for iteration".into()))?;
+        let parent_id = commit.parents.into_iter().next();
+
+        // 2. Fetch new file content (at the iteration commit)
+        let new_content = self.get_file_content(project, repo_id, file_path, &commit.commit_id).await;
+
+        // 3. Fetch old file content (at the parent commit, or empty for new files)
+        let old_content = match &parent_id {
+            Some(pid) => self.get_file_content(project, repo_id, file_path, pid).await,
+            None => String::new(), // No parent = initial commit, all files are new
+        };
+
+        // 4. Compute diff + syntax highlight
+        let html = crate::diff::engine::highlighted_diff(&old_content, &new_content, file_path);
+
+        let change_type = if old_content.is_empty() { "add" }
+            else if new_content.is_empty() { "delete" }
+            else { "edit" };
+
+        Ok(DiffResult {
+            html,
+            path: file_path.to_string(),
+            status: change_type.to_string(),
+        })
+    }
+
+    /// Fetch raw file content at a specific commit version.
+    async fn get_file_content(
+        &self,
+        project: &str,
+        repo_id: &str,
+        file_path: &str,
+        commit_id: &str,
+    ) -> String {
+        let url = format!(
+            "{}/{}/_apis/git/repositories/{}/items?path={}&versionDescriptor.version={}&api-version={}",
+            self.org_url, project, repo_id,
+            urlencoding(file_path),
+            commit_id,
+            self.api_version
+        );
+
+        match self.http.get(&url).headers(self.auth_headers()).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                resp.text().await.unwrap_or_default()
+            }
+            _ => String::new(), // File doesn't exist at this version (new or deleted)
+        }
     }
 
     // ---- Comments ----
@@ -242,6 +311,16 @@ impl AdoClient {
         ), &body).await?;
         Ok(())
     }
+}
+
+/// Simple percent-encode for URL path segments
+fn urlencoding(s: &str) -> String {
+    s.replace(' ', "%20")
+        .replace('#', "%23")
+        .replace('&', "%26")
+        .replace('?', "%3F")
+        .replace('+', "%2B")
+        .replace('%', "%25")
 }
 
 // ---- Response Types ----
@@ -295,6 +374,13 @@ pub struct Reviewer {
     pub vote: i32,
     #[serde(rename = "isRequired")]
     pub is_required: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PrFilesResult {
+    pub files: Vec<FileChange>,
+    pub commit_id: String,
+    pub parent_commit_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

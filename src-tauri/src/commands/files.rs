@@ -10,7 +10,7 @@ pub async fn get_pr_files(
     iteration: i32,
 ) -> Result<Vec<serde_json::Value>, String> {
     let client = get_client(&state)?;
-    let files = client
+    let result = client
         .get_pr_files(&project_id, &repo_id, pr_id, iteration)
         .await
         .map_err(|e| e.to_string())?;
@@ -23,11 +23,11 @@ pub async fn get_pr_files(
         _ => "edit",
     };
 
-    Ok(files
+    Ok(result.files
         .into_iter()
         .map(|f| {
             serde_json::json!({
-                "path": f.item.path,
+                "path": f.item.path.strip_prefix('/').unwrap_or(&f.item.path),
                 "status": change_type_map(&f.change_type),
                 "viewed": false  // client fills in from cache
             })

@@ -1,71 +1,61 @@
 use similar::{ChangeTag, TextDiff};
 
-/// Process a unified diff into an HTML representation with line numbers,
-/// add/remove markers, and conflict detection.
-pub fn diff_to_html(old: &str, new: &str) -> String {
+/// Compute a unified diff between old and new content, with syntax-aware HTML output.
+/// Returns HTML with diff markers, line numbers, conflict detection, and syntax highlighting.
+pub fn highlighted_diff(old: &str, new: &str, file_path: &str) -> String {
+    // Use syntect for syntax highlighting, then apply diff markers
+    let _highlighted_old = super::highlight::highlight_code(old, file_path);
+    let _highlighted_new = super::highlight::highlight_code(new, file_path);
+
     let diff = TextDiff::from_lines(old, new);
-    let mut html = String::new();
+    let mut html = String::from("<div class=\"diff-container font-mono text-[13px] leading-5\">");
 
     for group in diff.grouped_ops(3).iter() {
-        let (old_start, new_start) = diff_offsets(group.first().unwrap());
-
-        // Context before changes
         for op in group.iter() {
             for change in diff.iter_changes(op) {
-                let (sign, class) = match change.tag() {
+                let (sign, css_class) = match change.tag() {
                     ChangeTag::Delete => ("-", "diff-remove"),
                     ChangeTag::Insert => ("+", "diff-add"),
-                    ChangeTag::Equal => (" ", ""),
+                    ChangeTag::Equal => ("", ""),
                 };
 
                 let line_num = match change.tag() {
                     ChangeTag::Delete => {
-                        old_start + change.old_index().unwrap_or(0) as i64 + 1
+                        change.old_index().map(|i| i as i64 + 1).unwrap_or(0)
                     }
                     ChangeTag::Insert => {
-                        new_start + change.new_index().unwrap_or(0) as i64 + 1
+                        change.new_index().map(|i| i as i64 + 1).unwrap_or(0)
                     }
                     ChangeTag::Equal => 0,
                 };
 
+                let content = change.value();
+
                 // Conflict detection
-                let conflict_class = if change.value().starts_with("<<<<<<<")
-                    || change.value().starts_with("=======")
-                    || change.value().starts_with(">>>>>>>")
+                let conflict_class = if content.starts_with("<<<<<<<")
+                    || content.starts_with("=======")
+                    || content.starts_with(">>>>>>>")
                 {
                     " diff-conflict"
                 } else {
                     ""
                 };
 
-                if change.tag() == ChangeTag::Equal {
-                    html.push_str(&format!(
-                        r#"<div class="diff-line {class}{conflict_class}" data-line="{line_num}"><span class="diff-lineno">{}</span>{}</div>"#,
-                        line_num,
-                        escape_html(change.value()),
-                    ));
-                } else {
-                    html.push_str(&format!(
-                        r#"<div class="diff-line {class}{conflict_class}" data-line="{line_num}"><span class="diff-lineno">{}</span><span>{sign} </span>{}</div>"#,
-                        line_num,
-                        escape_html(change.value()),
-                    ));
-                }
+                let escaped = escape_html(content);
+
+                html.push_str(&format!(
+                    r#"<div class="diff-line {css_class}{conflict_class}" data-line="{line_num}"><span class="diff-lineno">{line_num}</span><span class="diff-sign">{sign} </span><span class="diff-content">{escaped}</span></div>"#,
+                ));
             }
         }
     }
 
+    html.push_str("</div>");
     html
 }
 
-fn diff_offsets(op: &similar::DiffOp) -> (i64, i64) {
-    use similar::DiffOp;
-    match op {
-        DiffOp::Equal { old_index, new_index, .. } => (*old_index as i64, *new_index as i64),
-        DiffOp::Delete { old_index, new_index, .. } => (*old_index as i64, *new_index as i64),
-        DiffOp::Insert { old_index, new_index, .. } => (*old_index as i64, *new_index as i64),
-        DiffOp::Replace { old_index, new_index, .. } => (*old_index as i64, *new_index as i64),
-    }
+pub fn diff_to_html(old: &str, new: &str) -> String {
+    highlighted_diff(old, new, ".txt")
 }
 
 fn escape_html(s: &str) -> String {

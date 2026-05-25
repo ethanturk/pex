@@ -1,33 +1,30 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
-import { currentView, prFiles, selectedFile, currentIteration } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo } from "@/lib/signals";
 import {
   getPrFiles,
   getViewedFiles,
   markFileViewed,
   getFileDiff,
   updateReviewerStatus,
-  type FileDiff,
+  getThreads,
+  postComment,
+  type CommentThread,
 } from "@/lib/api";
 import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
 import { ApprovalBar } from "@/components/ApprovalBar";
 
-// These are derived from the current org/project/repo — we'd plumb them via signals
-// For now, we read from localStorage or the activeOrg signal
-import { activeOrg } from "@/lib/signals";
-
-interface Props {
-  prId: number;
-}
+interface Props { prId: number; }
 
 export function PRDetail({ prId }: Props) {
-  const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [diffHtml, setDiffHtml] = useState<string>("");
+  const [diffPath, setDiffPath] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [iterationCount, setIterationCount] = useState(1);
+  const [threads, setThreads] = useState<CommentThread[]>([]);
 
-  // Derive project/repo from state — in real impl, these come from the PR list selection
-  const [projectId, setProjectId] = useState(localStorage.getItem("pex-project") || "");
-  const [repoId, setRepoId] = useState(localStorage.getItem("pex-repo") || "");
+  const projectId = selectedProject.value;
+  const repoId = selectedRepo.value;
 
   const loadFiles = useCallback(async () => {
     if (!projectId || !repoId) return;
@@ -47,15 +44,17 @@ export function PRDetail({ prId }: Props) {
     setLoading(true);
     try {
       const d = await getFileDiff(projectId, repoId, prId, path, currentIteration.value);
-      setDiff(d);
+      setDiffHtml(d.html);
+      setDiffPath(d.path);
+      // Load threads for this file
+      const allThreads = await getThreads(projectId, repoId, prId);
+      setThreads(allThreads.filter((t: any) => t.filePath === d.path));
     } finally {
       setLoading(false);
     }
   }, [projectId, repoId, prId]);
 
-  useEffect(() => {
-    loadFiles();
-  }, [loadFiles]);
+  useEffect(() => { loadFiles(); }, [loadFiles]);
 
   useEffect(() => {
     const unsub1 = selectedFile.subscribe((path) => {
@@ -65,10 +64,7 @@ export function PRDetail({ prId }: Props) {
       loadFiles();
       if (selectedFile.value) loadDiff(selectedFile.value);
     });
-    return () => {
-      unsub1();
-      unsub2();
-    };
+    return () => { unsub1(); unsub2(); };
   }, [loadDiff, loadFiles]);
 
   const handleToggleViewed = async (path: string, viewed: boolean) => {
@@ -81,6 +77,43 @@ export function PRDetail({ prId }: Props) {
     await updateReviewerStatus(projectId, repoId, prId, vote);
     currentView.value = { kind: "pr-list" };
   };
+
+  const handlePostComment = async (filePath: string, line: number, content: string) => {
+    const thread = await postComment(projectId, repoId, prId, filePath, line, content);
+    setThreads([...threads, thread]);
+  };
+
+  // ---- Keyboard shortcuts ----
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const key = e.key.toLowerCase();
+
+      if (key === "j") {
+        e.preventDefault();
+        const idx = prFiles.value.findIndex((f) => f.path === selectedFile.value);
+        if (idx < prFiles.value.length - 1) {
+          selectedFile.value = prFiles.value[idx + 1].path;
+        }
+      } else if (key === "k") {
+        e.preventDefault();
+        const idx = prFiles.value.findIndex((f) => f.path === selectedFile.value);
+        if (idx > 0) {
+          selectedFile.value = prFiles.value[idx - 1].path;
+        }
+      } else if (key === "v") {
+        e.preventDefault();
+        const file = prFiles.value.find((f) => f.path === selectedFile.value);
+        if (file) handleToggleViewed(file.path, !file.viewed);
+      } else if (key === "a") {
+        e.preventDefault();
+        handleApprove(10);
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [prId, projectId, repoId]);
 
   return (
     <div class="flex flex-col h-full">
@@ -105,23 +138,27 @@ export function PRDetail({ prId }: Props) {
               ))}
             </select>
           )}
+          <span class="text-xs text-gray-400 ml-2">j/k files · v toggle viewed · a approve</span>
         </div>
         <ApprovalBar onVote={handleApprove} />
       </div>
 
       {/* Body: File Tree + Diff */}
       <div class="flex flex-1 overflow-hidden">
-        {/* File Tree Sidebar */}
         <aside class="w-64 border-r border-gray-200 dark:border-gray-800 overflow-y-auto shrink-0">
           <FileTree files={prFiles.value} onToggleViewed={handleToggleViewed} />
         </aside>
 
-        {/* Diff / Empty State */}
         <div class="flex-1 overflow-y-auto">
           {loading ? (
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>
-          ) : diff ? (
-            <DiffViewer diff={diff} />
+          ) : diffHtml ? (
+            <DiffViewer
+              html={diffHtml}
+              path={diffPath}
+              threads={threads}
+              onComment={handlePostComment}
+            />
           ) : (
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">
               Select a file to view its diff

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
-import { currentView } from "@/lib/signals";
+import { currentView, selectedProject, selectedRepo } from "@/lib/signals";
 import { listProjects, listRepositories, listPullRequests, type Project, type Repository, type PullRequest } from "@/lib/api";
 
 const STATUS_CLASS: Record<string, string> = {
@@ -13,8 +13,6 @@ export function PRList() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [repos, setRepos] = useState<Repository[]>([]);
   const [prs, setPrs] = useState<PullRequest[]>([]);
-  const [selectedProject, setSelectedProject] = useState<string>("");
-  const [selectedRepo, setSelectedRepo] = useState<string>("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -22,29 +20,33 @@ export function PRList() {
   }, []);
 
   useEffect(() => {
-    if (selectedProject) {
-      listRepositories(selectedProject).then(setRepos);
-      setSelectedRepo("");
+    if (selectedProject.value) {
+      listRepositories(selectedProject.value).then(setRepos);
+      selectedRepo.value = "";
       setPrs([]);
     }
-  }, [selectedProject]);
+  }, [selectedProject.value]);
 
   useEffect(() => {
-    if (selectedProject && selectedRepo) {
+    if (selectedProject.value && selectedRepo.value) {
       setLoading(true);
-      listPullRequests(selectedProject, selectedRepo)
+      listPullRequests(selectedProject.value, selectedRepo.value)
         .then(setPrs)
         .finally(() => setLoading(false));
     }
-  }, [selectedRepo]);
+  }, [selectedRepo.value]);
+
+  const openPR = (prId: number) => {
+    currentView.value = { kind: "pr-detail", prId };
+  };
 
   return (
     <div class="flex flex-col h-full">
       {/* Filters */}
       <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
         <select
-          value={selectedProject}
-          onChange={(e) => setSelectedProject(e.currentTarget.value)}
+          value={selectedProject.value}
+          onChange={(e) => (selectedProject.value = e.currentTarget.value)}
           class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none"
         >
           <option value="">Select project...</option>
@@ -53,9 +55,9 @@ export function PRList() {
           ))}
         </select>
         <select
-          value={selectedRepo}
-          onChange={(e) => setSelectedRepo(e.currentTarget.value)}
-          disabled={!selectedProject}
+          value={selectedRepo.value}
+          onChange={(e) => (selectedRepo.value = e.currentTarget.value)}
+          disabled={!selectedProject.value}
           class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none disabled:opacity-50"
         >
           <option value="">Select repository...</option>
@@ -72,7 +74,7 @@ export function PRList() {
             Loading pull requests...
           </div>
         )}
-        {!loading && prs.length === 0 && selectedProject && selectedRepo && (
+        {!loading && prs.length === 0 && selectedProject.value && selectedRepo.value && (
           <div class="flex items-center justify-center py-12 text-gray-400 text-sm">
             No open pull requests found.
           </div>
@@ -81,7 +83,7 @@ export function PRList() {
           <button
             key={pr.pullRequestId}
             class="w-full text-left px-4 py-3 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 flex items-start gap-3"
-            onClick={() => (currentView.value = { kind: "pr-detail", prId: pr.pullRequestId })}
+            onClick={() => openPR(pr.pullRequestId)}
           >
             <div class="flex-1 min-w-0">
               <div class="font-medium text-sm truncate">{pr.title}</div>

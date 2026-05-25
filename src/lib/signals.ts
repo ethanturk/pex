@@ -37,6 +37,10 @@ export type View =
   | { kind: "pr-detail"; prId: number };
 export const currentView = signal<View>({ kind: "auth" });
 
+// ---- PR Selection Context (project/repo carried from PRList → PRDetail) ----
+export const selectedProject = signal<string>("");
+export const selectedRepo = signal<string>("");
+
 // ---- PR Review State (per-PR) ----
 export interface FileEntry {
   path: string;
