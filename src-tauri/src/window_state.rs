@@ -6,7 +6,7 @@ mod imp {
     use serde::{Deserialize, Serialize};
     use std::fs;
     use std::path::PathBuf;
-    use tauri::{Manager, PhysicalPosition, PhysicalSize, Runtime, Window};
+    use tauri::{Manager, PhysicalPosition, PhysicalSize, Runtime, WebviewWindow};
 
     #[derive(Debug, Serialize, Deserialize)]
     struct WindowState {
@@ -24,8 +24,8 @@ mod imp {
         path
     }
 
-    pub fn restore<R: Runtime>(window: &Window<R>) {
-        let path = state_path(&window.app_handle());
+    pub fn restore<R: Runtime>(window: &WebviewWindow<R>) {
+        let path = state_path(window.app_handle());
         let state: WindowState = match fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -44,8 +44,8 @@ mod imp {
         }
     }
 
-    pub fn save<R: Runtime>(window: &Window<R>) {
-        let path = state_path(&window.app_handle());
+    pub fn save<R: Runtime>(window: &WebviewWindow<R>) {
+        let path = state_path(window.app_handle());
 
         let position = window
             .outer_position()
@@ -83,10 +83,10 @@ mod imp {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use tauri::{Runtime, Window};
+    use tauri::{Runtime, WebviewWindow};
 
-    pub fn restore<R: Runtime>(_window: &Window<R>) {}
-    pub fn save<R: Runtime>(_window: &Window<R>) {}
+    pub fn restore<R: Runtime>(_window: &WebviewWindow<R>) {}
+    pub fn save<R: Runtime>(_window: &WebviewWindow<R>) {}
 }
 
 pub use imp::*;
