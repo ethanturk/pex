@@ -23,3 +23,4 @@ Thumbs.db
 
 # Pex
 pex.db
+.claude/settings.local.json
