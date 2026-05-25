@@ -76,7 +76,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Pex v__VERSION__'
           releaseBody: 'See the assets below to download and install.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
 
