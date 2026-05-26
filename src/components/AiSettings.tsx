@@ -26,6 +26,9 @@ import {
 interface Props {
   open: boolean;
   onClose: () => void;
+  /** Render as static content without modal backdrop.
+   *  Used in the mobile Settings tab where the tab shell provides containment. */
+  standalone?: boolean;
 }
 
 type Tab = "general" | "ai-defaults" | "review" | "prompts" | "calibration" | "pr-list";
@@ -70,7 +73,7 @@ function normalizeStandardsMaxChars(value: string | number): number {
 const INPUT_CLASS =
   "w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent";
 
-export function AiSettings({ open, onClose }: Props) {
+export function AiSettings({ open, onClose, standalone }: Props) {
   const [tab, setTab] = useState<Tab>("ai-defaults");
 
   // ---- AI Defaults tab (provider creds — save-button gated) ----
@@ -389,30 +392,26 @@ export function AiSettings({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  return (
+  // On mobile (standalone): render just the card content without backdrop.
+  // On desktop: render as a centered modal with backdrop (see final return).
+  const card = (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onMouseDown={(e) => setBackdropMouseDown(e.target === e.currentTarget)}
-      onMouseUp={(e) => {
-        if (backdropMouseDown && e.target === e.currentTarget) {
-          onClose();
-        }
-        setBackdropMouseDown(false);
-      }}
+      class={`bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-full max-w-2xl flex flex-col overflow-hidden ${
+        standalone ? "h-full" : "mx-4 h-[85vh] max-h-[720px]"
+      }`}
     >
-      <div
-        class="bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-full max-w-2xl mx-4 h-[85vh] max-h-[720px] flex flex-col overflow-hidden"
-      >
-        {/* Header */}
-        <div class="shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 class="text-base font-semibold">Settings</h2>
+      {/* Header */}
+      <div class="shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+        <h2 class="text-base font-semibold">Settings</h2>
+        {!standalone && (
           <button
             class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none"
             onClick={onClose}
           >
             ×
           </button>
-        </div>
+        )}
+      </div>
 
         {/* Tabs */}
         <div class="shrink-0 flex border-b border-gray-200 dark:border-gray-700 px-5">
@@ -1028,6 +1027,20 @@ export function AiSettings({ open, onClose }: Props) {
           )}
         </div>
       </div>
+    );
+
+  return standalone ? card : (
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onMouseDown={(e) => setBackdropMouseDown(e.target === e.currentTarget)}
+      onMouseUp={(e) => {
+        if (backdropMouseDown && e.target === e.currentTarget) {
+          onClose();
+        }
+        setBackdropMouseDown(false);
+      }}
+    >
+      {card}
     </div>
   );
 }

@@ -206,3 +206,61 @@ html[data-diff-size="xl"]     { --diff-font-size: 18px; --diff-line-height: 28px
 ::-webkit-scrollbar-track { @apply bg-transparent; }
 ::-webkit-scrollbar-thumb { @apply bg-gray-300 dark:bg-gray-700 rounded-full; }
 ::-webkit-scrollbar-thumb:hover { @apply bg-gray-400 dark:bg-gray-600; }
+
+/* ===== Mobile / iOS ===== */
+
+/* Safe area — pad content away from notch and home indicator.
+   Applied to the root layout container, not individual elements. */
+.safe-top { padding-top: env(safe-area-inset-top, 0px); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.safe-left { padding-left: env(safe-area-inset-left, 0px); }
+.safe-right { padding-right: env(safe-area-inset-right, 0px); }
+
+/* Apple HIG minimum touch target: 44×44 pt.
+   Applied to buttons, links, tappable rows on mobile. */
+@media (max-width: 767px) {
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Larger tap targets for interactive elements */
+  button, [role="button"], .tappable {
+    min-height: 44px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  /* iOS momentum scroll for overflow containers */
+  .scroll-ios {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Prevent iOS text size adjust on orientation change */
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* Disable iOS callout on long-press */
+  .no-callout {
+    -webkit-touch-callout: none;
+  }
+
+  /* Disable tap highlight */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* iPad: wider than phone but still needs touch-sized targets.
+   Uses the same 44pt minimum but keeps desktop-style multi-panel layout. */
+@media (min-width: 768px) and (max-width: 1024px) {
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
