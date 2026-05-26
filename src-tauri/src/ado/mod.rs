@@ -93,7 +93,7 @@ impl AdoClient {
         serde_json::from_str(&text).map_err(|e| AppError::Ado(format!("Parse error: {}", e)))
     }
 
-    async fn patch<T: DeserializeOwned>(
+    async fn put<T: DeserializeOwned>(
         &self,
         path: &str,
         body: &serde_json::Value,
@@ -101,7 +101,7 @@ impl AdoClient {
         let url = format!("{}/{}", self.org_url, path);
         let resp = self
             .http
-            .patch(&url)
+            .put(&url)
             .headers(self.auth_headers())
             .json(body)
             .send()
@@ -637,9 +637,12 @@ impl AdoClient {
         reviewer_id: &str,
         vote: i32,
     ) -> Result<(), AppError> {
-        let body = serde_json::json!({ "vote": vote });
+        // PUT (not PATCH) — per ADO REST docs, PATCH on a reviewer only edits
+        // isFlagged/hasDeclined; casting a vote requires PUT. `id` in the body
+        // lets the same call also add the reviewer if missing.
+        let body = serde_json::json!({ "vote": vote, "id": reviewer_id });
         let _: serde_json::Value = self
-            .patch(
+            .put(
                 &format!(
                     "{}/_apis/git/repositories/{}/pullRequests/{}/reviewers/{}?api-version={}",
                     project, repo_id, pr_id, reviewer_id, self.api_version

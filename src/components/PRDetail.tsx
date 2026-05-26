@@ -123,8 +123,14 @@ export function PRDetail({ prId }: Props) {
   };
 
   const handleApprove = async (vote: number) => {
-    await updateReviewerStatus(projectId, repoId, prId, vote);
-    currentView.value = { kind: "pr-list" };
+    try {
+      await updateReviewerStatus(projectId, repoId, prId, vote);
+      currentView.value = { kind: "pr-list" };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("Vote failed:", msg);
+      alert(`Vote failed: ${msg}`);
+    }
   };
 
   const handlePostComment = async (

@@ -198,30 +198,17 @@ pub async fn update_reviewer_status(
 ) -> Result<(), String> {
     let client = get_client(&state)?;
 
-    let pr = client
-        .get_pull_request(&project_id, &repo_id, pr_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
+    // PUT on the reviewer endpoint adds the user as a reviewer if missing, so
+    // we no longer need to pre-check whether the user is on the PR.
     let me = client
         .get_authenticated_user_id()
         .await
         .map_err(|e| e.to_string())?;
 
-    let reviewer = pr
-        .reviewers
-        .iter()
-        .find(|r| r.id.eq_ignore_ascii_case(&me));
-
-    match reviewer {
-        Some(r) => client
-            .update_reviewer_status(&project_id, &repo_id, pr_id, &r.id, vote)
-            .await
-            .map_err(|e| e.to_string()),
-        None => Err(
-            "You are not a reviewer on this PR. Add yourself as a reviewer first.".to_string(),
-        ),
-    }
+    client
+        .update_reviewer_status(&project_id, &repo_id, pr_id, &me, vote)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn get_client(state: &AppState) -> Result<crate::ado::AdoClient, String> {
