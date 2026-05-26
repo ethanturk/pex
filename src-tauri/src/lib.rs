@@ -82,6 +82,7 @@ pub fn run() {
             commands::auth::get_saved_orgs,
             commands::auth::remove_org,
             commands::auth::activate_org,
+            commands::auth::get_current_user_id,
             commands::pr::list_projects,
             commands::pr::list_repositories,
             commands::pr::list_pull_requests,

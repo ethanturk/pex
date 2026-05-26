@@ -24,6 +24,21 @@ pub async fn login_pat(
     }
 }
 
+#[tauri::command]
+pub async fn get_current_user_id(state: State<'_, AppState>) -> Result<String, String> {
+    let client = {
+        let guard = state.ado_client.lock().unwrap();
+        guard
+            .as_ref()
+            .ok_or_else(|| "Not authenticated".to_string())?
+            .clone()
+    };
+    client
+        .get_authenticated_user_id()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Rehydrate the in-memory ADO client for a saved org by reading credentials
 /// from the keyring. Called on app startup and when switching orgs.
 #[tauri::command]

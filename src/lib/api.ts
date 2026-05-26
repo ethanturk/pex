@@ -91,6 +91,10 @@ export async function activateOrg(orgUrl: string): Promise<boolean> {
   return invoke<boolean>("activate_org", { orgUrl });
 }
 
+export async function getCurrentUserId(): Promise<string> {
+  return invoke<string>("get_current_user_id");
+}
+
 // ============= Projects & Repos =============
 
 export interface Project {

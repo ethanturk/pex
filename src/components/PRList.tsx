@@ -1,6 +1,13 @@
 import { useState, useEffect, useMemo } from "preact/hooks";
 import { currentView, selectedProject, selectedRepo } from "@/lib/signals";
-import { listProjects, listRepositories, listPullRequests, type Project, type Repository, type PullRequest } from "@/lib/api";
+import { listProjects, listRepositories, listPullRequests, getCurrentUserId, type Project, type Repository, type PullRequest } from "@/lib/api";
+
+const VOTE_TAG: Record<number, { label: string; class: string }> = {
+  10: { label: "Approved", class: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300" },
+  5: { label: "Approved w/ Suggestions", class: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" },
+  [-5]: { label: "Waiting for Author", class: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300" },
+  [-10]: { label: "Rejected", class: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300" },
+};
 
 const STATUS_CLASS: Record<string, string> = {
   active: "status-active",
@@ -27,9 +34,11 @@ export function PRList() {
   // Filter state
   const [statusFilter, setStatusFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [userId, setUserId] = useState<string>("");
 
   useEffect(() => {
     listProjects().then(setProjects);
+    getCurrentUserId().then(setUserId).catch(() => setUserId(""));
   }, []);
 
   // Load the repo list whenever the selected project changes (or on remount, so
@@ -180,6 +189,17 @@ export function PRList() {
               </div>
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
+              {(() => {
+                const mine = userId
+                  ? pr.reviewers.find((r) => r.id.toLowerCase() === userId.toLowerCase())
+                  : undefined;
+                const tag = mine ? VOTE_TAG[mine.vote] : undefined;
+                return tag ? (
+                  <span class={`text-xs px-2 py-0.5 rounded-full font-medium ${tag.class}`}>
+                    {tag.label}
+                  </span>
+                ) : null;
+              })()}
               {pr.isDraft && (
                 <span class={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_CLASS.draft}`}>
                   Draft
