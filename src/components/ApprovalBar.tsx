@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 
 interface Props {
   onVote: (vote: number) => void;
@@ -13,36 +13,30 @@ const ACTIONS = [
 
 export function ApprovalBar({ onVote }: Props) {
   const [confirming, setConfirming] = useState<number | null>(null);
+  const pending = confirming !== null ? ACTIONS.find((a) => a.vote === confirming) : null;
 
-  const handleConfirm = () => {
+  const cancel = () => setConfirming(null);
+  const confirm = () => {
     if (confirming !== null) {
       onVote(confirming);
       setConfirming(null);
     }
   };
 
-  const pending = confirming !== null ? ACTIONS.find((a) => a.vote === confirming) : null;
+  useEffect(() => {
+    if (!pending) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") cancel();
+      else if (e.key === "Enter") confirm();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [pending, confirming]);
 
   return (
-    <div class="flex items-center gap-1.5">
-      {pending ? (
-        <div class="flex items-center gap-1.5">
-          <span class="text-xs text-gray-500">{pending.prompt}</span>
-          <button
-            onClick={handleConfirm}
-            class={`px-3 py-1 rounded text-xs font-medium ${pending.class}`}
-          >
-            Confirm
-          </button>
-          <button
-            onClick={() => setConfirming(null)}
-            class="px-3 py-1 rounded text-xs font-medium text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-          >
-            Cancel
-          </button>
-        </div>
-      ) : (
-        ACTIONS.map((a) => (
+    <>
+      <div class="flex items-center gap-1.5">
+        {ACTIONS.map((a) => (
           <button
             key={a.vote}
             onClick={() => setConfirming(a.vote)}
@@ -50,8 +44,39 @@ export function ApprovalBar({ onVote }: Props) {
           >
             {a.label}
           </button>
-        ))
+        ))}
+      </div>
+
+      {pending && (
+        <div
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={cancel}
+        >
+          <div
+            class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-5 w-[320px] max-w-[90vw]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-4">
+              {pending.prompt}
+            </div>
+            <div class="flex justify-end gap-2">
+              <button
+                onClick={cancel}
+                class="px-3 py-1.5 rounded text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirm}
+                autofocus
+                class={`px-3 py-1.5 rounded text-xs font-medium ${pending.class}`}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
       )}
-    </div>
+    </>
   );
 }

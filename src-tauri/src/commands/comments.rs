@@ -1,5 +1,28 @@
 use crate::AppState;
+use crate::ado::CommentThread;
 use tauri::State;
+
+fn thread_to_json(t: &CommentThread) -> serde_json::Value {
+    serde_json::json!({
+        "id": t.id,
+        "filePath": t.thread_context.as_ref()
+            .and_then(|ctx| ctx.file_path.clone())
+            .unwrap_or_default(),
+        "lineStart": t.thread_context.as_ref()
+            .and_then(|ctx| ctx.right_file_start.as_ref().map(|p| p.line))
+            .unwrap_or(0),
+        "lineEnd": t.thread_context.as_ref()
+            .and_then(|ctx| ctx.right_file_end.as_ref().map(|p| p.line))
+            .unwrap_or(0),
+        "status": t.status,
+        "comments": t.comments.iter().map(|c| serde_json::json!({
+            "id": c.id,
+            "author": c.author.as_ref().map(|a| a.display_name.clone()).unwrap_or_default(),
+            "content": c.content,
+            "publishedDate": c.published_date
+        })).collect::<Vec<_>>()
+    })
+}
 
 #[tauri::command]
 pub async fn get_threads(
@@ -13,30 +36,7 @@ pub async fn get_threads(
         .get_threads(&project_id, &repo_id, pr_id)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(threads
-        .into_iter()
-        .map(|t| {
-            serde_json::json!({
-                "id": t.id,
-                "filePath": t.thread_context.as_ref()
-                    .and_then(|ctx| ctx.file_path.clone())
-                    .unwrap_or_default(),
-                "lineStart": t.thread_context.as_ref()
-                    .and_then(|ctx| ctx.right_file_start.as_ref().map(|p| p.line))
-                    .unwrap_or(0),
-                "lineEnd": t.thread_context.as_ref()
-                    .and_then(|ctx| ctx.right_file_end.as_ref().map(|p| p.line))
-                    .unwrap_or(0),
-                "status": t.status,
-                "comments": t.comments.iter().map(|c| serde_json::json!({
-                    "id": c.id,
-                    "author": c.author.as_ref().map(|a| a.display_name.clone()).unwrap_or_default(),
-                    "content": c.content,
-                    "publishedDate": c.published_date
-                })).collect::<Vec<_>>()
-            })
-        })
-        .collect())
+    Ok(threads.iter().map(thread_to_json).collect())
 }
 
 #[tauri::command]
@@ -75,15 +75,7 @@ pub async fn post_comment(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(serde_json::json!({
-        "id": thread.id,
-        "status": thread.status,
-        "comments": thread.comments.iter().map(|c| serde_json::json!({
-            "id": c.id,
-            "author": c.author.as_ref().map(|a| a.display_name.clone()).unwrap_or_default(),
-            "content": c.content
-        })).collect::<Vec<_>>()
-    }))
+    Ok(thread_to_json(&thread))
 }
 
 /// Post a review finding to ADO. Supports three anchoring modes:
@@ -163,15 +155,7 @@ pub async fn post_review_finding(
         }
     };
 
-    Ok(serde_json::json!({
-        "id": thread.id,
-        "status": thread.status,
-        "comments": thread.comments.iter().map(|c| serde_json::json!({
-            "id": c.id,
-            "author": c.author.as_ref().map(|a| a.display_name.clone()).unwrap_or_default(),
-            "content": c.content
-        })).collect::<Vec<_>>()
-    }))
+    Ok(thread_to_json(&thread))
 }
 
 #[tauri::command]
@@ -219,18 +203,24 @@ pub async fn update_reviewer_status(
         .await
         .map_err(|e| e.to_string())?;
 
+    let me = client
+        .get_authenticated_user_id()
+        .await
+        .map_err(|e| e.to_string())?;
+
     let reviewer = pr
         .reviewers
         .iter()
-        .find(|r| r.vote == 0 || r.is_required)
-        .or_else(|| pr.reviewers.first());
+        .find(|r| r.id.eq_ignore_ascii_case(&me));
 
     match reviewer {
         Some(r) => client
             .update_reviewer_status(&project_id, &repo_id, pr_id, &r.id, vote)
             .await
             .map_err(|e| e.to_string()),
-        None => Err("Could not find your reviewer entry on this PR".to_string()),
+        None => Err(
+            "You are not a reviewer on this PR. Add yourself as a reviewer first.".to_string(),
+        ),
     }
 }
 

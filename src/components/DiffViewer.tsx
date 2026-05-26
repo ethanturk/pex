@@ -387,7 +387,9 @@ export function DiffViewer({
       {threads.map((t) => (
         <div key={t.id} class="border-t border-gray-100 dark:border-gray-800 p-3">
           <div class="text-xs text-gray-400 mb-1">
-            Thread on line {t.lineStart === t.lineEnd ? t.lineStart : `${t.lineStart}-${t.lineEnd}`}
+            {t.lineStart > 0
+              ? `Thread on line ${t.lineStart === t.lineEnd ? t.lineStart : `${t.lineStart}-${t.lineEnd}`}`
+              : "File-level thread"}
           </div>
           {t.comments.map((c) => (
             <div

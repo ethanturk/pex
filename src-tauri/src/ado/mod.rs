@@ -613,6 +613,22 @@ impl AdoClient {
 
     // ---- Reviewer Status ----
 
+    pub async fn get_authenticated_user_id(&self) -> Result<String, AppError> {
+        #[derive(serde::Deserialize)]
+        struct ConnectionData {
+            #[serde(rename = "authenticatedUser")]
+            authenticated_user: AuthenticatedUser,
+        }
+        #[derive(serde::Deserialize)]
+        struct AuthenticatedUser {
+            id: String,
+        }
+        let resp: ConnectionData = self
+            .get(&format!("_apis/connectionData?api-version={}", self.api_version))
+            .await?;
+        Ok(resp.authenticated_user.id)
+    }
+
     pub async fn update_reviewer_status(
         &self,
         project: &str,
