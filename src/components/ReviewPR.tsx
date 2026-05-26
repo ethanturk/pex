@@ -3,9 +3,33 @@ import {
   reviewRuns,
   activeReviewPrId,
   sidebarMode,
+  currentView,
+  selectedProject,
+  selectedRepo,
 } from "@/lib/signals";
 import { startBackgroundReview } from "@/lib/reviewBus";
-import { getSavedReview, clearSavedReview } from "@/lib/api";
+import { getSavedReview, clearSavedReview, type ReviewState } from "@/lib/api";
+
+// pr_key format from Rust: `{org_url}/{project_id}/{repo_id}/{pr_id}`.
+// org_url contains slashes, so split from the end.
+function parsePrKey(prKey: string): { projectId: string; repoId: string; prId: number } | null {
+  const parts = prKey.split("/");
+  if (parts.length < 4) return null;
+  const prId = Number(parts[parts.length - 1]);
+  if (!Number.isFinite(prId)) return null;
+  return {
+    repoId: parts[parts.length - 2],
+    projectId: parts[parts.length - 3],
+    prId,
+  };
+}
+
+function progressPercent(s: ReviewState): number | null {
+  const total = s.filePaths.length;
+  if (total === 0) return null;
+  const done = Math.min(s.currentFileIdx, total);
+  return Math.round((done / total) * 100);
+}
 
 interface Props {
   projectId: string;
@@ -24,28 +48,42 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
   const busyElsewhere = runningPrId !== null && !isThisRunning;
   const open = sidebarMode.value === "pr-review";
 
-  const [hasSavedState, setHasSavedState] = useState(false);
+  const [savedReview, setSavedReview] = useState<ReviewState | null>(null);
   useEffect(() => {
-    getSavedReview().then((s) => setHasSavedState(!!s));
+    getSavedReview().then(setSavedReview);
   }, []);
+
+  const savedTarget = savedReview ? parsePrKey(savedReview.prKey) : null;
 
   const handleClick = () => {
     sidebarMode.value = open ? null : "pr-review";
     if (!open && !run && !busyElsewhere) {
       startBackgroundReview(projectId, repoId, prId, prTitle);
-      setHasSavedState(false);
+      setSavedReview(null);
     }
   };
 
   const handleResume = () => {
-    setHasSavedState(false);
+    if (busyElsewhere) return;
+    const target = savedTarget;
+    setSavedReview(null);
     sidebarMode.value = "pr-review";
-    if (!busyElsewhere) startBackgroundReview(projectId, repoId, prId, prTitle);
+    if (target && target.prId !== prId) {
+      // Saved progress belongs to a different PR — navigate there so the
+      // user can see what's resuming, then kick off the engine which will
+      // pick up the saved state (engine matches on pr_key).
+      selectedProject.value = target.projectId;
+      selectedRepo.value = target.repoId;
+      currentView.value = { kind: "pr-detail", prId: target.prId };
+      startBackgroundReview(target.projectId, target.repoId, target.prId, `PR #${target.prId}`);
+    } else {
+      startBackgroundReview(projectId, repoId, prId, prTitle);
+    }
   };
 
   const handleDiscard = async () => {
     await clearSavedReview();
-    setHasSavedState(false);
+    setSavedReview(null);
   };
 
   const label = (() => {
@@ -82,14 +120,30 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
         {label}
       </button>
 
-      {hasSavedState && !run && !isThisRunning && (
-        <span class="text-xs text-amber-500">
-          Saved progress —
-          <button onClick={handleResume} class="underline ml-1">resume</button>
-          {" · "}
-          <button onClick={handleDiscard} class="underline">discard</button>
-        </span>
-      )}
+      {savedReview && !run && !isThisRunning && (() => {
+        const savedPrId = savedTarget?.prId;
+        const savedLabel = savedPrId != null ? `PR #${savedPrId}` : "another PR";
+        const pct = progressPercent(savedReview);
+        const pctSuffix = pct != null ? ` (${pct}%)` : "";
+        const resumeTitle = savedPrId != null && savedPrId !== prId
+          ? `Jump to PR #${savedPrId} and resume its review`
+          : "Resume the saved review";
+        return (
+          <span class="text-xs text-amber-500">
+            Saved progress for {savedLabel}{pctSuffix} —
+            <button
+              onClick={handleResume}
+              disabled={busyElsewhere}
+              title={resumeTitle}
+              class="underline ml-1 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              resume
+            </button>
+            {" · "}
+            <button onClick={handleDiscard} class="underline">discard</button>
+          </span>
+        );
+      })()}
     </div>
   );
 }
