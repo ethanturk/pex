@@ -31,6 +31,7 @@ export function PRDetail({ prId }: Props) {
   const [loading, setLoading] = useState(false);
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
+  const [copied, setCopied] = useState(false);
   const fileTreeResize = useResizableWidth({
     storageKey: "pex-filetree-width",
     defaultWidth: 256,
@@ -190,6 +191,22 @@ export function PRDetail({ prId }: Props) {
             ← Back
           </button>
           <span class="font-semibold text-sm">PR #{prId}</span>
+          <button
+            class="text-xs px-1.5 py-0.5 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+            title={copied ? "Copied!" : "Copy PR URL"}
+            aria-label="Copy PR URL"
+            onClick={() => {
+              const org = activeOrg.value?.orgUrl?.replace(/\/$/, "");
+              if (!org) return;
+              const url = `${org}/${projectId}/_git/${repoId}/pullrequest/${prId}`;
+              navigator.clipboard.writeText(url).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              });
+            }}
+          >
+            {copied ? "✓" : "📋"}
+          </button>
           {iterationCount > 1 && (
             <select
               value={currentIteration.value}

@@ -71,10 +71,10 @@ pub fn highlighted_diff(old: &str, new: &str, file_path: &str) -> String {
         // Hunk body.
         for op in group {
             for change in diff.iter_changes(op) {
-                let (sign, css_class) = match change.tag() {
-                    ChangeTag::Delete => ("-", "diff-remove"),
-                    ChangeTag::Insert => ("+", "diff-add"),
-                    ChangeTag::Equal => ("", ""),
+                let css_class = match change.tag() {
+                    ChangeTag::Delete => "diff-remove",
+                    ChangeTag::Insert => "diff-add",
+                    ChangeTag::Equal => "",
                 };
 
                 let line_num = match change.tag() {
@@ -103,7 +103,7 @@ pub fn highlighted_diff(old: &str, new: &str, file_path: &str) -> String {
                 .unwrap_or_else(|| escape_html(content));
 
                 html.push_str(&format!(
-                    r#"<div class="diff-line {css_class}{conflict_class}" data-line="{line_num}"><span class="diff-lineno">{line_num}</span><span class="diff-sign">{sign} </span><span class="diff-content">{rendered}</span></div>"#,
+                    r#"<div class="diff-line {css_class}{conflict_class}" data-line="{line_num}"><span class="diff-lineno">{line_num}</span><span class="diff-sign"></span><span class="diff-content">{rendered}</span></div>"#,
                 ));
             }
         }
@@ -268,7 +268,7 @@ pub fn split_diff_html(old: &str, new: &str, file_path: &str) -> String {
 
 fn render_cell(
     line_num: Option<usize>,
-    sign: &str,
+    _sign: &str,
     raw: &str,
     rendered: &str,
     css_class: &str,
@@ -289,7 +289,7 @@ fn render_cell(
         String::new()
     };
     format!(
-        r#"<div class="diff-cell diff-line {css_class}{conflict_class}"{data_line_attr}><span class="diff-lineno">{ln_text}</span><span class="diff-sign">{sign} </span><span class="diff-content">{rendered}</span></div>"#,
+        r#"<div class="diff-cell diff-line {css_class}{conflict_class}"{data_line_attr}><span class="diff-lineno">{ln_text}</span><span class="diff-sign"></span><span class="diff-content">{rendered}</span></div>"#,
     )
 }
 

@@ -43,7 +43,7 @@ function renderEqualLinesInline(lines: string[], startNewLine: number): string {
   return lines
     .map((line, i) => {
       const ln = startNewLine + i;
-      return `<div class="diff-line" data-line="${ln}"><span class="diff-lineno">${ln}</span><span class="diff-sign">  </span><span class="diff-content">${escapeHtml(line)}\n</span></div>`;
+      return `<div class="diff-line" data-line="${ln}"><span class="diff-lineno">${ln}</span><span class="diff-sign"></span><span class="diff-content">${escapeHtml(line)}\n</span></div>`;
     })
     .join("");
 }
@@ -58,8 +58,8 @@ function renderEqualLinesSplit(
       const newLn = startNewLine + i;
       const oldLn = startOldLine + i;
       const escaped = escapeHtml(line);
-      const oldCell = `<div class="diff-cell diff-line"><span class="diff-lineno">${oldLn}</span><span class="diff-sign">  </span><span class="diff-content">${escaped}\n</span></div>`;
-      const newCell = `<div class="diff-cell diff-line" data-line="${newLn}"><span class="diff-lineno">${newLn}</span><span class="diff-sign">  </span><span class="diff-content">${escaped}\n</span></div>`;
+      const oldCell = `<div class="diff-cell diff-line"><span class="diff-lineno">${oldLn}</span><span class="diff-sign"></span><span class="diff-content">${escaped}\n</span></div>`;
+      const newCell = `<div class="diff-cell diff-line" data-line="${newLn}"><span class="diff-lineno">${newLn}</span><span class="diff-sign"></span><span class="diff-content">${escaped}\n</span></div>`;
       return `<div class="diff-row">${oldCell}${newCell}</div>`;
     })
     .join("");
@@ -170,6 +170,8 @@ export function DiffViewer({
     // Defer to existing controls (expander buttons, etc.) and to clicks inside the popup itself.
     if (target.closest(".diff-expander-btn")) return;
     if (target.closest(".comment-popup")) return;
+    // Only the gutter (line-number column with the "+" affordance) starts a comment.
+    if (!target.closest(".diff-lineno")) return;
     const ln = lineFromTarget(target);
     if (ln === null) return;
     // Prevent native text selection while we own the drag.

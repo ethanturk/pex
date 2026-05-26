@@ -30,8 +30,8 @@
   content-visibility: auto;
   contain-intrinsic-size: 0 20px; /* estimate ~20px per line */
 }
-.diff-add { @apply bg-green-100 dark:bg-green-900/30; }
-.diff-remove { @apply bg-red-100 dark:bg-red-900/30; }
+.diff-add { @apply bg-green-100 dark:bg-green-900/30 border-l-2 border-green-500 dark:border-green-600; }
+.diff-remove { @apply bg-red-100 dark:bg-red-900/30 border-l-2 border-red-500 dark:border-red-600; }
 .diff-header { @apply bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 font-mono text-xs px-2 py-0.5; }
 .diff-lineno {
   @apply text-gray-400 dark:text-gray-500 select-none w-12 text-right pr-2 border-r border-gray-200 dark:border-gray-700 font-mono text-xs leading-5 inline-block;
@@ -40,10 +40,13 @@
 /* Hover affordance on diff lines: tinted row, pointer cursor, and a "+" badge
    in the gutter so it's obvious clicking will start a comment. */
 .diff-line {
-  @apply font-mono text-sm leading-5 whitespace-pre cursor-pointer;
+  @apply font-mono text-sm leading-5 whitespace-pre;
 }
 .diff-line:hover {
   @apply bg-blue-50 dark:bg-blue-900/20;
+}
+.diff-line:hover .diff-lineno {
+  @apply cursor-pointer;
 }
 .diff-line:hover .diff-lineno::after {
   content: "+";
