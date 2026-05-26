@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Serializable progress state for resumable PR reviews.
 /// Persisted to SQLite so the user can continue after cancellation or crash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReviewState {
     /// The PR URL or identifier
     pub pr_key: String,
