@@ -30,8 +30,8 @@ pub fn highlighted_diff_view(old: &str, new: &str, file_path: &str, view: DiffVi
 /// Between (and around) hunks, emits `<div class="diff-expander">` markers carrying the
 /// hidden 1-based line range on both sides, so the frontend can fetch and inject context.
 pub fn highlighted_diff(old: &str, new: &str, file_path: &str) -> String {
-    let _highlighted_old = super::highlight::highlight_code(old, file_path);
-    let _highlighted_new = super::highlight::highlight_code(new, file_path);
+    let old_hl = super::highlight::highlight_lines(old, file_path);
+    let new_hl = super::highlight::highlight_lines(new, file_path);
 
     let diff = TextDiff::from_lines(old, new);
     let groups = diff.grouped_ops(CONTEXT_LINES);
@@ -94,10 +94,16 @@ pub fn highlighted_diff(old: &str, new: &str, file_path: &str) -> String {
                     ""
                 };
 
-                let escaped = escape_html(content);
+                let rendered = match change.tag() {
+                    ChangeTag::Delete => change.old_index().and_then(|i| old_hl.get(i)).cloned(),
+                    ChangeTag::Insert | ChangeTag::Equal => {
+                        change.new_index().and_then(|i| new_hl.get(i)).cloned()
+                    }
+                }
+                .unwrap_or_else(|| escape_html(content));
 
                 html.push_str(&format!(
-                    r#"<div class="diff-line {css_class}{conflict_class}" data-line="{line_num}"><span class="diff-lineno">{line_num}</span><span class="diff-sign">{sign} </span><span class="diff-content">{escaped}</span></div>"#,
+                    r#"<div class="diff-line {css_class}{conflict_class}" data-line="{line_num}"><span class="diff-lineno">{line_num}</span><span class="diff-sign">{sign} </span><span class="diff-content">{rendered}</span></div>"#,
                 ));
             }
         }
@@ -126,8 +132,8 @@ pub fn highlighted_diff(old: &str, new: &str, file_path: &str) -> String {
 /// Only the new-side cell carries `data-line`, so the existing selection /
 /// comment flow continues to target new-side lines.
 pub fn split_diff_html(old: &str, new: &str, file_path: &str) -> String {
-    let _highlighted_old = super::highlight::highlight_code(old, file_path);
-    let _highlighted_new = super::highlight::highlight_code(new, file_path);
+    let old_hl = super::highlight::highlight_lines(old, file_path);
+    let new_hl = super::highlight::highlight_lines(new, file_path);
 
     let diff = TextDiff::from_lines(old, new);
     let groups = diff.grouped_ops(CONTEXT_LINES);
@@ -161,23 +167,28 @@ pub fn split_diff_html(old: &str, new: &str, file_path: &str) -> String {
             ));
         }
 
-        // Collect deletes + inserts + equals as a linear stream of (tag, old_n, new_n, content),
+        // Collect deletes + inserts + equals as a linear stream of (line, raw, rendered),
         // then pair contiguous del/ins runs to render side-by-side rows.
-        let mut pending_del: Vec<(usize, String)> = Vec::new();
-        let mut pending_ins: Vec<(usize, String)> = Vec::new();
+        // `raw` is needed for conflict-marker detection; `rendered` is the highlighted HTML.
+        let mut pending_del: Vec<(usize, String, String)> = Vec::new();
+        let mut pending_ins: Vec<(usize, String, String)> = Vec::new();
 
         let flush = |html: &mut String,
-                     dels: &mut Vec<(usize, String)>,
-                     inss: &mut Vec<(usize, String)>| {
+                     dels: &mut Vec<(usize, String, String)>,
+                     inss: &mut Vec<(usize, String, String)>| {
             let n = dels.len().max(inss.len());
             for i in 0..n {
                 let old_cell = dels
                     .get(i)
-                    .map(|(ln, c)| render_cell(Some(*ln), "-", c, "diff-remove", false))
+                    .map(|(ln, raw, rendered)| {
+                        render_cell(Some(*ln), "-", raw, rendered, "diff-remove", false)
+                    })
                     .unwrap_or_else(empty_cell);
                 let new_cell = inss
                     .get(i)
-                    .map(|(ln, c)| render_cell(Some(*ln), "+", c, "diff-add", true))
+                    .map(|(ln, raw, rendered)| {
+                        render_cell(Some(*ln), "+", raw, rendered, "diff-add", true)
+                    })
                     .unwrap_or_else(empty_cell);
                 html.push_str(&format!(
                     "<div class=\"diff-row\">{old_cell}{new_cell}</div>"
@@ -193,18 +204,40 @@ pub fn split_diff_html(old: &str, new: &str, file_path: &str) -> String {
                 match change.tag() {
                     ChangeTag::Delete => {
                         let n = change.old_index().map(|i| i + 1).unwrap_or(0);
-                        pending_del.push((n, content));
+                        let rendered = change
+                            .old_index()
+                            .and_then(|i| old_hl.get(i))
+                            .cloned()
+                            .unwrap_or_else(|| escape_html(&content));
+                        pending_del.push((n, content, rendered));
                     }
                     ChangeTag::Insert => {
                         let n = change.new_index().map(|i| i + 1).unwrap_or(0);
-                        pending_ins.push((n, content));
+                        let rendered = change
+                            .new_index()
+                            .and_then(|i| new_hl.get(i))
+                            .cloned()
+                            .unwrap_or_else(|| escape_html(&content));
+                        pending_ins.push((n, content, rendered));
                     }
                     ChangeTag::Equal => {
                         flush(&mut html, &mut pending_del, &mut pending_ins);
                         let old_n = change.old_index().map(|i| i + 1).unwrap_or(0);
                         let new_n = change.new_index().map(|i| i + 1).unwrap_or(0);
-                        let old_cell = render_cell(Some(old_n), " ", &content, "", false);
-                        let new_cell = render_cell(Some(new_n), " ", &content, "", true);
+                        let old_rendered = change
+                            .old_index()
+                            .and_then(|i| old_hl.get(i))
+                            .cloned()
+                            .unwrap_or_else(|| escape_html(&content));
+                        let new_rendered = change
+                            .new_index()
+                            .and_then(|i| new_hl.get(i))
+                            .cloned()
+                            .unwrap_or_else(|| escape_html(&content));
+                        let old_cell =
+                            render_cell(Some(old_n), " ", &content, &old_rendered, "", false);
+                        let new_cell =
+                            render_cell(Some(new_n), " ", &content, &new_rendered, "", true);
                         html.push_str(&format!(
                             "<div class=\"diff-row\">{old_cell}{new_cell}</div>"
                         ));
@@ -236,19 +269,19 @@ pub fn split_diff_html(old: &str, new: &str, file_path: &str) -> String {
 fn render_cell(
     line_num: Option<usize>,
     sign: &str,
-    content: &str,
+    raw: &str,
+    rendered: &str,
     css_class: &str,
     is_new_side: bool,
 ) -> String {
-    let conflict_class = if content.starts_with("<<<<<<<")
-        || content.starts_with("=======")
-        || content.starts_with(">>>>>>>")
+    let conflict_class = if raw.starts_with("<<<<<<<")
+        || raw.starts_with("=======")
+        || raw.starts_with(">>>>>>>")
     {
         " diff-conflict"
     } else {
         ""
     };
-    let escaped = escape_html(content);
     let ln_text = line_num.map(|n| n.to_string()).unwrap_or_default();
     let data_line_attr = if is_new_side {
         format!(" data-line=\"{}\"", line_num.unwrap_or(0))
@@ -256,7 +289,7 @@ fn render_cell(
         String::new()
     };
     format!(
-        r#"<div class="diff-cell diff-line {css_class}{conflict_class}"{data_line_attr}><span class="diff-lineno">{ln_text}</span><span class="diff-sign">{sign} </span><span class="diff-content">{escaped}</span></div>"#,
+        r#"<div class="diff-cell diff-line {css_class}{conflict_class}"{data_line_attr}><span class="diff-lineno">{ln_text}</span><span class="diff-sign">{sign} </span><span class="diff-content">{rendered}</span></div>"#,
     )
 }
 

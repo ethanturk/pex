@@ -1,10 +1,14 @@
+use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
-use syntect::html::highlighted_html_for_string;
+use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
 use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
 
-/// Highlight source code to HTML using syntect.
-/// Falls back to plain text if no syntax definition matches.
-pub fn highlight_code(code: &str, file_path: &str) -> String {
+/// Highlight source code to one HTML string per line. Each returned string is
+/// already HTML-escaped and wrapped in styled `<span>` tokens, ready to drop
+/// into a `.diff-content` slot. Falls back to plain escaped text for lines
+/// where syntect fails.
+pub fn highlight_lines(code: &str, file_path: &str) -> Vec<String> {
     let ss = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
 
@@ -15,23 +19,19 @@ pub fn highlight_code(code: &str, file_path: &str) -> String {
         .unwrap_or_else(|| ss.find_syntax_plain_text());
 
     let theme = &ts.themes["base16-ocean.dark"];
+    let mut h = HighlightLines::new(syntax, theme);
 
-    match highlighted_html_for_string(code, &ss, syntax, theme) {
-        Ok(html) => html,
-        Err(_) => escape_html_with_lines(code),
-    }
+    LinesWithEndings::from(code)
+        .map(|line| match h.highlight_line(line, &ss) {
+            Ok(regions) => styled_line_to_highlighted_html(&regions[..], IncludeBackground::No)
+                .unwrap_or_else(|_| escape_html(line)),
+            Err(_) => escape_html(line),
+        })
+        .collect()
 }
 
-fn escape_html_with_lines(code: &str) -> String {
-    code.lines()
-        .map(|line| {
-            format!(
-                "<span>{}</span>",
-                line.replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }

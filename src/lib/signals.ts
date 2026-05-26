@@ -92,6 +92,10 @@ export const prFiles = signal<FileEntry[]>([]);
 export const selectedFile = signal<string | null>(null);
 export const currentIteration = signal<number>(1);
 
+// Set by anything that wants to jump the DiffViewer to a specific 1-based new-side
+// line (e.g. clicking a review finding). DiffViewer consumes it once and resets to null.
+export const pendingScrollLine = signal<number | null>(null);
+
 // Paths in the order they appear in the file tree pane, respecting current
 // view mode and folder-collapse state. Used for j/k navigation so it matches
 // what the user actually sees.

@@ -3,6 +3,8 @@ import {
   reviewRuns,
   activeReviewPrId,
   sidebarMode,
+  selectedFile,
+  pendingScrollLine,
   type PRReviewRun,
   type ReviewProgress,
 } from "@/lib/signals";
@@ -329,6 +331,14 @@ function FindingRow({
   onCancel,
   onPosted,
 }: FindingRowProps) {
+  const jumpToFinding = () => {
+    if (!finding.filePath) return;
+    if (selectedFile.value !== finding.filePath) {
+      selectedFile.value = finding.filePath;
+    }
+    pendingScrollLine.value = finding.lineStart ?? null;
+  };
+  const canJump = !!finding.filePath;
   return (
     <li class="text-xs border border-gray-200 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-900">
       <div class="flex items-start gap-2 mb-1">
@@ -340,7 +350,25 @@ function FindingRow({
           <div class="font-mono text-[11px] text-gray-500 truncate">
             {findingAnchor(finding)}
           </div>
-          <div class="whitespace-pre-wrap text-gray-700 dark:text-gray-300 mt-0.5">
+          <div
+            onClick={canJump ? jumpToFinding : undefined}
+            role={canJump ? "button" : undefined}
+            tabIndex={canJump ? 0 : undefined}
+            title={canJump ? "Jump to file" : undefined}
+            onKeyDown={
+              canJump
+                ? (e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      jumpToFinding();
+                    }
+                  }
+                : undefined
+            }
+            class={`whitespace-pre-wrap text-gray-700 dark:text-gray-300 mt-0.5 ${
+              canJump ? "cursor-pointer hover:text-accent" : ""
+            }`}
+          >
             {finding.comment}
           </div>
         </div>

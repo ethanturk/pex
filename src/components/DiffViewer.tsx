@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "preact/hooks";
 import type { CommentThread } from "@/lib/api";
 import { getFileLines } from "@/lib/api";
-import type { DiffView } from "@/lib/signals";
+import { pendingScrollLine, type DiffView } from "@/lib/signals";
 
 interface Props {
   html: string;
@@ -125,6 +125,19 @@ export function DiffViewer({
     dragAnchorRef.current = null;
     clearHighlight();
   }, [clearHighlight]);
+
+  // Jump to a specific line when something (e.g. a review finding) requests it.
+  // We re-run on `html` so the scroll lands after the new diff is injected.
+  useEffect(() => {
+    const ln = pendingScrollLine.value;
+    if (ln === null || !diffRef.current) return;
+    const el = diffRef.current.querySelector<HTMLElement>(`[data-line="${ln}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    setHighlight(ln, ln);
+    setRange({ start: ln, end: ln });
+    pendingScrollLine.value = null;
+  }, [pendingScrollLine.value, html, setHighlight]);
 
   // Reposition the popup whenever the selection or DOM changes (e.g. after expander reveal).
   useEffect(() => {
