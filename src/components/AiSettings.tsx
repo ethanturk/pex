@@ -6,6 +6,8 @@ import {
   getAiPrompts,
   saveAiPrompt,
   resetAiPrompt,
+  saveAiPromptModel,
+  listAiModels,
   type AiPromptInfo,
 } from "@/lib/api";
 
@@ -35,6 +37,11 @@ export function AiSettings({ open, onClose }: Props) {
   const [prompts, setPrompts] = useState<AiPromptInfo[]>([]);
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
   const [promptStatus, setPromptStatus] = useState<Record<string, { text: string; ok: boolean } | null>>({});
+  // Available models from the configured provider's /models endpoint.
+  // `null` distinguishes "not yet attempted" from "fetched but empty".
+  const [availableModels, setAvailableModels] = useState<string[] | null>(null);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelsRefreshing, setModelsRefreshing] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -58,8 +65,51 @@ export function AiSettings({ open, onClose }: Props) {
       setPrompts(ps);
       setPromptDrafts(Object.fromEntries(ps.map((p) => [p.key, p.value])));
       setPromptStatus({});
+      // Fire-and-forget: populate the model dropdown from the cached list if
+      // there is one, so the picker shows real options without blocking the
+      // dialog. A refresh button gives the user explicit control over hitting
+      // the live /models endpoint.
+      listAiModels(false)
+        .then((m) => {
+          setAvailableModels(m);
+          setModelsError(null);
+        })
+        .catch((e: unknown) => {
+          setAvailableModels([]);
+          setModelsError(String(e));
+        });
     } catch {
       // defaults are fine
+    }
+  };
+
+  const handleRefreshModels = async () => {
+    setModelsRefreshing(true);
+    setModelsError(null);
+    try {
+      const m = await listAiModels(true);
+      setAvailableModels(m);
+    } catch (e: unknown) {
+      setModelsError(String(e));
+    } finally {
+      setModelsRefreshing(false);
+    }
+  };
+
+  const handleChangePromptModel = async (key: string, model: string) => {
+    try {
+      await saveAiPromptModel(key, model);
+      const refreshed = await getAiPrompts();
+      setPrompts(refreshed);
+      setPromptStatus((prev) => ({
+        ...prev,
+        [key]: {
+          text: model ? `Model set to ${model}.` : "Model set to default.",
+          ok: true,
+        },
+      }));
+    } catch (e: any) {
+      setPromptStatus((prev) => ({ ...prev, [key]: { text: String(e), ok: false } }));
     }
   };
 
@@ -271,18 +321,41 @@ export function AiSettings({ open, onClose }: Props) {
 
           {tab === "prompts" && (
             <section>
-              <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-                Customize the system prompts used by AI features. Changes are saved per prompt.
-              </p>
+              <div class="flex items-start justify-between gap-3 mb-3">
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  Customize the system prompts used by AI features. Each prompt can also be pinned to a specific provider model — leave it on <em>Default</em> to use the model from the AI tab.
+                </p>
+                <button
+                  onClick={handleRefreshModels}
+                  disabled={modelsRefreshing}
+                  title="Re-fetch the available models from your provider"
+                  class="shrink-0 px-2.5 py-1 border border-gray-300 dark:border-gray-600 rounded-lg text-[11px] hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                >
+                  {modelsRefreshing ? "Refreshing…" : "Refresh models"}
+                </button>
+              </div>
+
+              {modelsError && (
+                <p class="text-[11px] text-red-600 dark:text-red-400 mb-3">
+                  Couldn't load models: {modelsError}
+                </p>
+              )}
 
               <div class="space-y-5">
                 {prompts.map((p) => {
                   const draft = promptDrafts[p.key] ?? "";
                   const status = promptStatus[p.key];
                   const dirty = draft !== p.value;
+                  const selectedModel = p.model ?? "";
+                  // The currently-selected model may not appear in the list
+                  // (provider /models doesn't include it, or it's a stale
+                  // pin). Surface it anyway so the picker stays honest.
+                  const modelOptions = availableModels ?? [];
+                  const showOrphan =
+                    selectedModel && !modelOptions.includes(selectedModel);
                   return (
                     <div key={p.key}>
-                      <div class="flex items-center justify-between mb-1">
+                      <div class="flex items-center justify-between gap-3 mb-1">
                         <span class="text-xs text-gray-500 dark:text-gray-400">
                           {p.label}
                           {p.isCustomized && (
@@ -290,7 +363,35 @@ export function AiSettings({ open, onClose }: Props) {
                               customized
                             </span>
                           )}
+                          {selectedModel && (
+                            <span class="ml-2 text-[10px] uppercase tracking-wide text-accent">
+                              model: {selectedModel}
+                            </span>
+                          )}
                         </span>
+                        <div class="flex items-center gap-1">
+                          <label class="text-[11px] text-gray-500 dark:text-gray-400">
+                            Model:
+                          </label>
+                          <select
+                            value={selectedModel}
+                            onChange={(e) =>
+                              handleChangePromptModel(p.key, e.currentTarget.value)
+                            }
+                            class="text-[11px] px-1.5 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 max-w-[200px]"
+                            title="Override the model used by this prompt. 'Default' uses the model from the AI tab."
+                          >
+                            <option value="">Default</option>
+                            {showOrphan && (
+                              <option value={selectedModel}>
+                                {selectedModel} (not in list)
+                              </option>
+                            )}
+                            {modelOptions.map((m) => (
+                              <option value={m}>{m}</option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
                       <textarea
                         value={draft}

@@ -7,15 +7,57 @@ use crate::AppError;
 pub enum PromptKey {
     ExplainHunkSystem,
     ReviewHunkSystem,
+    // Multi-pass specialist prompts (used by Thorough review mode).
+    // Modeled after https://github.com/anthropics/claude-code/tree/main/plugins/pr-review-toolkit
+    ReviewCodeReviewerSystem,
+    ReviewSilentFailureSystem,
+    ReviewCommentAnalyzerSystem,
+    ReviewTestAnalyzerSystem,
+    ReviewTypeDesignSystem,
 }
 
 impl PromptKey {
-    pub const ALL: &'static [PromptKey] = &[PromptKey::ExplainHunkSystem, PromptKey::ReviewHunkSystem];
+    pub const ALL: &'static [PromptKey] = &[
+        PromptKey::ExplainHunkSystem,
+        PromptKey::ReviewHunkSystem,
+        PromptKey::ReviewCodeReviewerSystem,
+        PromptKey::ReviewSilentFailureSystem,
+        PromptKey::ReviewCommentAnalyzerSystem,
+        PromptKey::ReviewTestAnalyzerSystem,
+        PromptKey::ReviewTypeDesignSystem,
+    ];
+
+    /// Specialist prompts used by Thorough multi-pass review. Order here is the
+    /// order specialists are run per hunk.
+    pub const THOROUGH_SPECIALISTS: &'static [PromptKey] = &[
+        PromptKey::ReviewCodeReviewerSystem,
+        PromptKey::ReviewSilentFailureSystem,
+        PromptKey::ReviewCommentAnalyzerSystem,
+        PromptKey::ReviewTestAnalyzerSystem,
+        PromptKey::ReviewTypeDesignSystem,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             PromptKey::ExplainHunkSystem => "explain_hunk_system",
             PromptKey::ReviewHunkSystem => "review_hunk_system",
+            PromptKey::ReviewCodeReviewerSystem => "review_code_reviewer_system",
+            PromptKey::ReviewSilentFailureSystem => "review_silent_failure_system",
+            PromptKey::ReviewCommentAnalyzerSystem => "review_comment_analyzer_system",
+            PromptKey::ReviewTestAnalyzerSystem => "review_test_analyzer_system",
+            PromptKey::ReviewTypeDesignSystem => "review_type_design_system",
+        }
+    }
+
+    /// Short human-readable name used as a tag on multi-pass findings.
+    pub fn specialist_label(self) -> &'static str {
+        match self {
+            PromptKey::ReviewCodeReviewerSystem => "code-reviewer",
+            PromptKey::ReviewSilentFailureSystem => "silent-failure-hunter",
+            PromptKey::ReviewCommentAnalyzerSystem => "comment-analyzer",
+            PromptKey::ReviewTestAnalyzerSystem => "test-analyzer",
+            PromptKey::ReviewTypeDesignSystem => "type-design-analyzer",
+            _ => "reviewer",
         }
     }
 
@@ -23,6 +65,11 @@ impl PromptKey {
         match s {
             "explain_hunk_system" => Ok(PromptKey::ExplainHunkSystem),
             "review_hunk_system" => Ok(PromptKey::ReviewHunkSystem),
+            "review_code_reviewer_system" => Ok(PromptKey::ReviewCodeReviewerSystem),
+            "review_silent_failure_system" => Ok(PromptKey::ReviewSilentFailureSystem),
+            "review_comment_analyzer_system" => Ok(PromptKey::ReviewCommentAnalyzerSystem),
+            "review_test_analyzer_system" => Ok(PromptKey::ReviewTestAnalyzerSystem),
+            "review_type_design_system" => Ok(PromptKey::ReviewTypeDesignSystem),
             other => Err(AppError::Ai(format!("Unknown prompt key: {}", other))),
         }
     }
@@ -33,11 +80,20 @@ impl PromptKey {
         match self {
             PromptKey::ExplainHunkSystem => DEFAULT_EXPLAIN_HUNK_SYSTEM,
             PromptKey::ReviewHunkSystem => DEFAULT_REVIEW_HUNK_SYSTEM,
+            PromptKey::ReviewCodeReviewerSystem => DEFAULT_REVIEW_CODE_REVIEWER_SYSTEM,
+            PromptKey::ReviewSilentFailureSystem => DEFAULT_REVIEW_SILENT_FAILURE_SYSTEM,
+            PromptKey::ReviewCommentAnalyzerSystem => DEFAULT_REVIEW_COMMENT_ANALYZER_SYSTEM,
+            PromptKey::ReviewTestAnalyzerSystem => DEFAULT_REVIEW_TEST_ANALYZER_SYSTEM,
+            PromptKey::ReviewTypeDesignSystem => DEFAULT_REVIEW_TYPE_DESIGN_SYSTEM,
         }
     }
 
     fn db_key(self) -> String {
         format!("ai_prompt_{}", self.as_str())
+    }
+
+    fn model_db_key(self) -> String {
+        format!("ai_prompt_model_{}", self.as_str())
     }
 }
 
@@ -62,6 +118,91 @@ For the given hunk:
 
 Be specific — reference exact line numbers from the hunk header. Keep your response focused and brief (3-5 bullet points max). Use markdown. Do not include greetings or sign-offs."#;
 
+// ---- Multi-pass specialist prompts ----
+//
+// Each specialist reviews the SAME hunk through a narrow lens. They share the
+// same output contract as `DEFAULT_REVIEW_HUNK_SYSTEM` (bullet points, "No issues
+// found." sentinel) so the downstream file-aggregate step can consume them
+// uniformly. Distilled from anthropics/claude-code/plugins/pr-review-toolkit.
+
+/// Defaults for the "code-reviewer" specialist — adherence to guidelines, style, best practices.
+pub const DEFAULT_REVIEW_CODE_REVIEWER_SYSTEM: &str = r#"You are an elite code reviewer focused on adherence to project guidelines, style, and best practices. You review a single diff hunk as one pass of a multi-agent review.
+
+For the given hunk:
+1. Identify high-confidence violations of the project conventions/style guide provided to you
+2. Flag patterns that deviate from established practices in the file or repository
+3. Call out maintainability concerns: unclear naming, overly complex logic, code that will rot
+
+Reference exact NEW-side line numbers from the hunk header. Be thorough but filter aggressively — quality over quantity. Skip nitpicks. Keep your response to 2-4 bullet points.
+
+If you find nothing worth flagging, respond with exactly: No issues found.
+
+Do not include greetings or sign-offs."#;
+
+/// Defaults for the "silent-failure-hunter" specialist — error handling and silent failures.
+pub const DEFAULT_REVIEW_SILENT_FAILURE_SYSTEM: &str = r#"You are an elite error-handling auditor with zero tolerance for silent failures. You review a single diff hunk as one pass of a multi-agent review.
+
+Scrutinize the hunk for:
+1. Empty catch blocks, catch-and-continue, or broad exception swallowing
+2. Returning null/undefined/default values on error without logging
+3. Optional chaining or null coalescing that silently skips operations
+4. Fallback chains and retries that hide problems instead of surfacing them
+5. Missing or low-context error logs (no operation name, no IDs, no actionable info)
+6. Mock or fake implementations leaking into non-test code
+
+Reference exact NEW-side line numbers from the hunk header. Only flag issues you are confident about. Keep your response to 2-4 bullet points.
+
+If you find nothing worth flagging, respond with exactly: No issues found.
+
+Do not include greetings or sign-offs."#;
+
+/// Defaults for the "comment-analyzer" specialist — comment accuracy and long-term maintainability.
+pub const DEFAULT_REVIEW_COMMENT_ANALYZER_SYSTEM: &str = r#"You are an expert at evaluating code comments for accuracy, completeness, and long-term maintainability. You review a single diff hunk as one pass of a multi-agent review.
+
+Scrutinize comments added or modified in this hunk for:
+1. Inaccuracy — comment says something the code does not actually do
+2. Comments referencing temporary state, transitional implementations, the current task, or specific callers (these rot)
+3. Comments that restate WHAT the code does instead of explaining WHY
+4. Missing comments where a non-obvious invariant, workaround, or constraint deserves one
+5. Stale TODOs / FIXMEs without owner or context
+
+Reference exact NEW-side line numbers from the hunk header. Ignore well-named code with no comments — that is not a defect. Keep your response to 2-4 bullet points.
+
+If you find nothing worth flagging, respond with exactly: No issues found.
+
+Do not include greetings or sign-offs."#;
+
+/// Defaults for the "pr-test-analyzer" specialist — test coverage quality and gaps.
+pub const DEFAULT_REVIEW_TEST_ANALYZER_SYSTEM: &str = r#"You are an expert test-coverage analyst. You review a single diff hunk as one pass of a multi-agent review.
+
+For the given hunk, focus on BEHAVIORAL coverage (not line coverage):
+1. If this hunk introduces or changes production logic, what critical paths, edge cases, error conditions, or boundary conditions need tests?
+2. If this hunk is a test, does it actually exercise behavior — or is it tightly coupled to implementation details that will break on refactor?
+3. Missing negative cases, async/concurrent behavior, or integration points
+4. Tests that pass without truly asserting the behavior of interest
+
+Reference exact NEW-side line numbers from the hunk header. Be pragmatic — do not demand 100% coverage. Keep your response to 2-4 bullet points.
+
+If you find nothing worth flagging, respond with exactly: No issues found.
+
+Do not include greetings or sign-offs."#;
+
+/// Defaults for the "type-design-analyzer" specialist — type design quality.
+pub const DEFAULT_REVIEW_TYPE_DESIGN_SYSTEM: &str = r#"You are an expert at type design and API ergonomics. You review a single diff hunk as one pass of a multi-agent review.
+
+For any type, struct, interface, enum, or schema introduced or modified in this hunk, evaluate:
+1. Encapsulation — does the type hide its representation, or does it leak internals?
+2. Invariant expression — are illegal states unrepresentable, or are invalid combinations possible?
+3. Usefulness — does the type carry meaning beyond a tuple/dict of primitives ("primitive obsession", "stringly-typed")?
+4. Enforcement — are constructors, factories, or smart-constructor patterns used to keep invariants intact?
+5. Over-design — is the type doing too much, or is it premature abstraction?
+
+Reference exact NEW-side line numbers from the hunk header. If the hunk introduces no new types, you almost certainly have nothing to say. Keep your response to 2-4 bullet points.
+
+If you find nothing worth flagging, respond with exactly: No issues found.
+
+Do not include greetings or sign-offs."#;
+
 /// Resolve a prompt: returns the user override from SQLite if present, otherwise the default.
 pub fn resolve_prompt(conn: &rusqlite::Connection, key: PromptKey) -> Result<String, AppError> {
     let stored = crate::cache::get_setting(conn, &key.db_key())?;
@@ -78,6 +219,21 @@ pub fn save_prompt(conn: &rusqlite::Connection, key: PromptKey, value: &str) -> 
 /// Remove the user override for a prompt (revert to default).
 pub fn reset_prompt(conn: &rusqlite::Connection, key: PromptKey) -> Result<(), AppError> {
     crate::cache::delete_setting(conn, &key.db_key())
+}
+
+/// Read the per-prompt model override, if any.
+/// Empty / missing means "use the default AI model from the AI tab".
+pub fn resolve_model(conn: &rusqlite::Connection, key: PromptKey) -> Result<Option<String>, AppError> {
+    let stored = crate::cache::get_setting(conn, &key.model_db_key())?;
+    Ok(stored.filter(|s| !s.is_empty()))
+}
+
+pub fn save_model(conn: &rusqlite::Connection, key: PromptKey, model: &str) -> Result<(), AppError> {
+    crate::cache::set_setting(conn, &key.model_db_key(), model)
+}
+
+pub fn reset_model(conn: &rusqlite::Connection, key: PromptKey) -> Result<(), AppError> {
+    crate::cache::delete_setting(conn, &key.model_db_key())
 }
 
 /// Prompt for generating explain-hunk user message.

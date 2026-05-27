@@ -1,7 +1,8 @@
 use crate::ai::{AiProvider, ChatMessage, ChatRole};
+use crate::ai::prompts::{resolve_prompt, PromptKey};
 use crate::diff::engine::extract_hunks;
 use crate::review::prompts;
-use crate::review::state::{self, ReviewState};
+use crate::review::state::{self, ReviewMode, ReviewState};
 use crate::AppError;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +26,7 @@ pub struct ReviewInput {
     pub project_id: String,
     pub repo_id: String,
     pub pr_id: i64,
+    pub mode: ReviewMode,
 }
 
 #[derive(Debug, Clone)]
@@ -143,7 +145,31 @@ pub async fn run_review(
     file_entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
     let file_paths: Vec<String> = file_entries.iter().map(|(f, _)| f.path.clone()).collect();
-    let mut state = ReviewState::new(input.pr_key.clone(), file_paths.clone());
+    let mut state = ReviewState::new(input.pr_key.clone(), file_paths.clone(), input.mode);
+
+    // Resolve specialist system prompts + per-specialist model overrides once for
+    // the run (Thorough mode only). Resolved up front so user edits in Settings
+    // take effect on the next run without restarting the app.
+    //
+    // Each tuple: (key, system prompt text, optional model override).
+    // `None` model override means: fall back to the provider's configured model.
+    let specialist_prompts: Vec<(PromptKey, String, Option<String>)> = if input.mode == ReviewMode::Thorough {
+        let mut out = Vec::new();
+        for key in PromptKey::THOROUGH_SPECIALISTS {
+            let (text, model) = match db.lock() {
+                Ok(c) => {
+                    let t = resolve_prompt(&c, *key).unwrap_or_else(|_| key.default_text().to_string());
+                    let m = crate::ai::prompts::resolve_model(&c, *key).unwrap_or(None);
+                    (t, m)
+                }
+                Err(_) => (key.default_text().to_string(), None),
+            };
+            out.push((*key, text, model));
+        }
+        out
+    } else {
+        Vec::new()
+    };
 
     // Check for resumable state
     if let Ok(db_lock) = db.lock() {
@@ -196,16 +222,6 @@ pub async fn run_review(
             cancelled(&cancel)?;
             let hunk = &hunks[state.current_hunk];
 
-            let context_note = prompts::hunk_context_note(
-                &file.path,
-                state.current_hunk + 1,
-                total_hunks,
-            );
-            messages.push(ChatMessage {
-                role: ChatRole::User,
-                content: context_note,
-            });
-
             let hunk_text: String = hunk
                 .lines
                 .iter()
@@ -213,18 +229,83 @@ pub async fn run_review(
                 .collect::<Vec<_>>()
                 .join("");
 
+            let context_note = prompts::hunk_context_note(
+                &file.path,
+                state.current_hunk + 1,
+                total_hunks,
+            );
             let user_msg = prompts::hunk_user_message(
                 &file.path,
                 &hunk.header,
                 &hunk_text,
                 "",
             );
-            messages.push(ChatMessage {
-                role: ChatRole::User,
-                content: user_msg,
-            });
 
-            let response = match retry_once(&provider, &messages).await {
+            // Either run the single generalist pass (Fast) or fan out to all
+            // specialists (Thorough). For Thorough, each specialist gets a
+            // fresh message list so prompts don't bleed across passes.
+            let combined_response: Result<String, AppError> = if input.mode == ReviewMode::Thorough {
+                let mut outputs: Vec<String> = Vec::new();
+                let mut last_err: Option<AppError> = None;
+                for (key, sys_text, model_override) in &specialist_prompts {
+                    let pass_messages = vec![
+                        ChatMessage {
+                            role: ChatRole::System,
+                            content: if input.standards.is_empty() {
+                                sys_text.clone()
+                            } else {
+                                format!("{}\n\nProject standards:\n{}", sys_text, input.standards)
+                            },
+                        },
+                        ChatMessage {
+                            role: ChatRole::User,
+                            content: context_note.clone(),
+                        },
+                        ChatMessage {
+                            role: ChatRole::User,
+                            content: user_msg.clone(),
+                        },
+                    ];
+                    match retry_once_with_model(&provider, &pass_messages, model_override.as_deref()).await {
+                        Ok(r) => {
+                            if r.trim() != "No issues found." && !r.trim().is_empty() {
+                                outputs.push(format!("[{}]\n{}", key.specialist_label(), r.trim()));
+                            }
+                        }
+                        Err(e) => {
+                            last_err = Some(e);
+                        }
+                    }
+                }
+                if outputs.is_empty() {
+                    if let Some(e) = last_err {
+                        Err(e)
+                    } else {
+                        Ok("No issues found.".to_string())
+                    }
+                } else {
+                    Ok(outputs.join("\n\n"))
+                }
+            } else {
+                messages.push(ChatMessage {
+                    role: ChatRole::User,
+                    content: context_note.clone(),
+                });
+                messages.push(ChatMessage {
+                    role: ChatRole::User,
+                    content: user_msg.clone(),
+                });
+                let r = retry_once(&provider, &messages).await;
+                if let Ok(ref response) = r {
+                    messages.push(ChatMessage {
+                        role: ChatRole::Assistant,
+                        content: response.clone(),
+                    });
+                }
+                r
+            };
+
+            let response = match combined_response {
                 Ok(r) => r,
                 Err(e) => {
                     let skip_msg = format!("[skipped — error: {}]", e);
@@ -240,11 +321,6 @@ pub async fn run_review(
                     continue;
                 }
             };
-
-            messages.push(ChatMessage {
-                role: ChatRole::Assistant,
-                content: response.clone(),
-            });
 
             if response.trim() != "No issues found." {
                 state.current_file_findings.push((state.current_hunk + 1, response));
@@ -453,11 +529,19 @@ async fn retry_once(
     provider: &Arc<dyn AiProvider>,
     messages: &[ChatMessage],
 ) -> Result<String, AppError> {
-    match provider.chat(messages).await {
+    retry_once_with_model(provider, messages, None).await
+}
+
+async fn retry_once_with_model(
+    provider: &Arc<dyn AiProvider>,
+    messages: &[ChatMessage],
+    model_override: Option<&str>,
+) -> Result<String, AppError> {
+    match provider.chat_with_model(messages, model_override).await {
         Ok(r) => Ok(r),
         Err(_e) => {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            provider.chat(messages).await
+            provider.chat_with_model(messages, model_override).await
         }
     }
 }

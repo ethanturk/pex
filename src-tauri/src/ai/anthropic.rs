@@ -28,7 +28,11 @@ impl AnthropicProvider {
 
 #[async_trait::async_trait]
 impl AiProvider for AnthropicProvider {
-    async fn chat(&self, messages: &[ChatMessage]) -> Result<String, AppError> {
+    async fn chat_with_model(
+        &self,
+        messages: &[ChatMessage],
+        model_override: Option<&str>,
+    ) -> Result<String, AppError> {
         let url = format!(
             "{}/v1/messages",
             self.endpoint.trim_end_matches('/')
@@ -59,8 +63,9 @@ impl AiProvider for AnthropicProvider {
             })
             .collect();
 
+        let model = model_override.unwrap_or(&self.model);
         let mut request_body = AnthropicRequest {
-            model: &self.model,
+            model,
             max_tokens: 4096,
             messages: anthropic_messages,
             system: None,

@@ -298,6 +298,8 @@ export interface AiPromptInfo {
   value: string;
   defaultValue: string;
   isCustomized: boolean;
+  /// Per-prompt model override. null/empty = use the AI tab's default model.
+  model: string | null;
 }
 
 export async function getAiPrompts(): Promise<AiPromptInfo[]> {
@@ -310,6 +312,22 @@ export async function saveAiPrompt(key: string, value: string): Promise<void> {
 
 export async function resetAiPrompt(key: string): Promise<void> {
   return invoke("reset_ai_prompt", { key });
+}
+
+/// Persist a per-prompt model override. Pass an empty string to clear.
+export async function saveAiPromptModel(key: string, model: string): Promise<void> {
+  return invoke("save_ai_prompt_model", { key, model });
+}
+
+export async function resetAiPromptModel(key: string): Promise<void> {
+  return invoke("reset_ai_prompt_model", { key });
+}
+
+/// Returns the list of model IDs available from the configured AI provider.
+/// When `refresh` is false, the cached list is returned if available;
+/// otherwise the provider's /models endpoint is hit.
+export async function listAiModels(refresh = false): Promise<string[]> {
+  return invoke<string[]>("list_ai_models", { refresh });
 }
 
 export async function explainHunk(
@@ -362,13 +380,18 @@ export interface ReviewOutput {
   findings: ReviewFinding[];
 }
 
+/// Review strategy. "fast" = single generalist pass per hunk (original).
+/// "thorough" = multi-pass with specialist agents (slower, broader coverage).
+export type ReviewMode = "fast" | "thorough";
+
 export async function startReview(
   projectId: string,
   repoId: string,
   prId: number,
   prTitle: string,
+  mode: ReviewMode = "fast",
 ): Promise<ReviewOutput> {
-  return invoke<ReviewOutput>("start_review", { projectId, repoId, prId, prTitle });
+  return invoke<ReviewOutput>("start_review", { projectId, repoId, prId, prTitle, mode });
 }
 
 export async function startReviewPost(
@@ -376,8 +399,9 @@ export async function startReviewPost(
   repoId: string,
   prId: number,
   prTitle: string,
+  mode: ReviewMode = "fast",
 ): Promise<void> {
-  return invoke("start_review_post", { projectId, repoId, prId, prTitle });
+  return invoke("start_review_post", { projectId, repoId, prId, prTitle, mode });
 }
 
 export async function cancelReview(): Promise<void> {
@@ -394,6 +418,7 @@ export async function clearSavedReview(): Promise<void> {
 
 export interface ReviewState {
   prKey: string;
+  mode: ReviewMode;
   phase: string;
   filePaths: string[];
   currentFileIdx: number;

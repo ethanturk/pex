@@ -6,9 +6,31 @@ import {
   currentView,
   selectedProject,
   selectedRepo,
+  type ReviewMode,
 } from "@/lib/signals";
 import { startBackgroundReview } from "@/lib/reviewBus";
 import { getSavedReview, clearSavedReview, type ReviewState } from "@/lib/api";
+
+const REVIEW_MODE_KEY = "pex.reviewMode";
+
+function loadReviewMode(): ReviewMode {
+  try {
+    const v = localStorage.getItem(REVIEW_MODE_KEY);
+    return v === "thorough" ? "thorough" : "fast";
+  } catch {
+    return "fast";
+  }
+}
+
+function saveReviewMode(mode: ReviewMode) {
+  try {
+    localStorage.setItem(REVIEW_MODE_KEY, mode);
+  } catch {
+    // Storage may be unavailable (private mode, quota). The picker still
+    // works in-memory for the current session — surfacing an error would
+    // be more noise than signal.
+  }
+}
 
 // pr_key format from Rust: `{org_url}/{project_id}/{repo_id}/{pr_id}`.
 // org_url contains slashes, so split from the end.
@@ -49,16 +71,22 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
   const open = sidebarMode.value === "pr-review";
 
   const [savedReview, setSavedReview] = useState<ReviewState | null>(null);
+  const [mode, setMode] = useState<ReviewMode>(() => loadReviewMode());
   useEffect(() => {
     getSavedReview().then(setSavedReview);
   }, []);
 
   const savedTarget = savedReview ? parsePrKey(savedReview.prKey) : null;
 
+  const handleModeChange = (next: ReviewMode) => {
+    setMode(next);
+    saveReviewMode(next);
+  };
+
   const handleClick = () => {
     sidebarMode.value = open ? null : "pr-review";
     if (!open && !run && !busyElsewhere) {
-      startBackgroundReview(projectId, repoId, prId, prTitle);
+      startBackgroundReview(projectId, repoId, prId, prTitle, mode);
       setSavedReview(null);
     }
   };
@@ -66,6 +94,7 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
   const handleResume = () => {
     if (busyElsewhere) return;
     const target = savedTarget;
+    const resumeMode = (savedReview?.mode as ReviewMode | undefined) ?? mode;
     setSavedReview(null);
     sidebarMode.value = "pr-review";
     if (target && target.prId !== prId) {
@@ -75,9 +104,9 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
       selectedProject.value = target.projectId;
       selectedRepo.value = target.repoId;
       currentView.value = { kind: "pr-detail", prId: target.prId };
-      startBackgroundReview(target.projectId, target.repoId, target.prId, `PR #${target.prId}`, true);
+      startBackgroundReview(target.projectId, target.repoId, target.prId, `PR #${target.prId}`, resumeMode);
     } else {
-      startBackgroundReview(projectId, repoId, prId, prTitle, true);
+      startBackgroundReview(projectId, repoId, prId, prTitle, resumeMode);
     }
   };
 
@@ -86,14 +115,19 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
     setSavedReview(null);
   };
 
+  const modeSuffix = mode === "thorough" ? " (Thorough)" : "";
   const label = (() => {
     if (isThisRunning) return "Reviewing...";
     if (run?.status === "posting") return "Posting...";
     if (run?.status === "done") return `🔍 Review (${run.output?.findings.length ?? 0})`;
     if (run?.status === "posted") return "🔍 Review ✓";
     if (run?.status === "error") return "🔍 Review (error)";
-    return "🔍 Review PR";
+    return `🔍 Review PR${modeSuffix}`;
   })();
+
+  // Disabling the picker once a run is in flight prevents the displayed mode
+  // from drifting out of sync with the run that's actually executing.
+  const pickerDisabled = isThisRunning || run?.status === "posting";
 
   return (
     <div class="flex items-center gap-2">
@@ -106,7 +140,7 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
             ? `Another review is running (PR #${runningPrId})`
             : open
               ? "Close PR review sidebar"
-              : "Open PR review sidebar"
+              : `Open PR review sidebar — ${mode === "thorough" ? "Thorough (multi-pass)" : "Fast (one-shot)"}`
         }
         class={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 border disabled:opacity-50 disabled:cursor-not-allowed ${
           open
@@ -119,6 +153,17 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
         )}
         {label}
       </button>
+
+      <select
+        value={mode}
+        disabled={pickerDisabled || busyElsewhere}
+        onChange={(e) => handleModeChange((e.currentTarget.value as ReviewMode))}
+        title="Review strategy. Thorough runs multiple specialist passes per hunk (slower)."
+        class="text-xs px-1.5 py-1.5 rounded-lg border bg-bg-surface border-border disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <option value="fast">Fast</option>
+        <option value="thorough">Thorough</option>
+      </select>
 
       {savedReview && !run && !isThisRunning && (() => {
         const savedPrId = savedTarget?.prId;

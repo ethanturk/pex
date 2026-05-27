@@ -34,7 +34,11 @@ impl OpenAiProvider {
 
 #[async_trait::async_trait]
 impl AiProvider for OpenAiProvider {
-    async fn chat(&self, messages: &[ChatMessage]) -> Result<String, AppError> {
+    async fn chat_with_model(
+        &self,
+        messages: &[ChatMessage],
+        model_override: Option<&str>,
+    ) -> Result<String, AppError> {
         let openai_messages: Vec<ChatCompletionRequestMessage> = messages
             .iter()
             .map(|m| match m.role {
@@ -50,8 +54,9 @@ impl AiProvider for OpenAiProvider {
             })
             .collect();
 
+        let model = model_override.unwrap_or(&self.model);
         let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
+            .model(model)
             .messages(openai_messages)
             .build()
             .map_err(|e| AppError::Ai(format!("Failed to build request: {}", e)))?;

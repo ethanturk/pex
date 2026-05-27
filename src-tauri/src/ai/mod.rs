@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod models;
 pub mod openai;
 pub mod prompts;
 pub mod standards;
@@ -62,8 +63,18 @@ impl ChatRole {
 /// AI provider trait — implemented by OpenAI and Anthropic backends.
 #[async_trait::async_trait]
 pub trait AiProvider: Send + Sync {
-    /// Send a chat request and return the model's response text.
-    async fn chat(&self, messages: &[ChatMessage]) -> Result<String, AppError>;
+    /// Send a chat request using the provider's configured model.
+    async fn chat(&self, messages: &[ChatMessage]) -> Result<String, AppError> {
+        self.chat_with_model(messages, None).await
+    }
+
+    /// Send a chat request, optionally overriding the model for this single call.
+    /// `None` means "use the provider's configured model" — same behavior as `chat`.
+    async fn chat_with_model(
+        &self,
+        messages: &[ChatMessage],
+        model_override: Option<&str>,
+    ) -> Result<String, AppError>;
 }
 
 /// Default request timeout in seconds when none is configured.

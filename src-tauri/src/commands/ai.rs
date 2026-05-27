@@ -359,6 +359,10 @@ pub struct PromptInfo {
     pub value: String,
     pub default_value: String,
     pub is_customized: bool,
+    /// Per-prompt model override. `None` means: fall back to the AI tab's model.
+    /// Only consulted by Thorough PR review for specialist prompts today, but
+    /// stored for any prompt so the UI is uniform.
+    pub model: Option<String>,
 }
 
 fn prompt_info(
@@ -379,9 +383,31 @@ fn prompt_info(
         ),
         crate::ai::prompts::PromptKey::ReviewHunkSystem => (
             "Review hunk — system prompt",
-            "Used when you click Review on a diff hunk.",
+            "Used by the Fast PR review mode when reviewing each diff hunk, and when you click Review on a single hunk.",
+        ),
+        crate::ai::prompts::PromptKey::ReviewCodeReviewerSystem => (
+            "Multi-pass: code reviewer",
+            "Thorough PR review specialist — guideline adherence, style, best practices.",
+        ),
+        crate::ai::prompts::PromptKey::ReviewSilentFailureSystem => (
+            "Multi-pass: silent-failure hunter",
+            "Thorough PR review specialist — silent failures, error handling, suppressed errors.",
+        ),
+        crate::ai::prompts::PromptKey::ReviewCommentAnalyzerSystem => (
+            "Multi-pass: comment analyzer",
+            "Thorough PR review specialist — comment accuracy and long-term maintainability.",
+        ),
+        crate::ai::prompts::PromptKey::ReviewTestAnalyzerSystem => (
+            "Multi-pass: test-coverage analyzer",
+            "Thorough PR review specialist — behavioral test coverage and critical gaps.",
+        ),
+        crate::ai::prompts::PromptKey::ReviewTypeDesignSystem => (
+            "Multi-pass: type-design analyzer",
+            "Thorough PR review specialist — type design, invariants, encapsulation.",
         ),
     };
+
+    let model = crate::ai::prompts::resolve_model(conn, key)?;
 
     Ok(PromptInfo {
         key: key.as_str().to_string(),
@@ -390,6 +416,7 @@ fn prompt_info(
         value,
         default_value,
         is_customized,
+        model,
     })
 }
 
@@ -426,4 +453,58 @@ pub async fn reset_ai_prompt(state: State<'_, AppState>, key: String) -> Result<
     let db = state.db.lock().map_err(|e| e.to_string())?;
     crate::ai::prompts::reset_prompt(&db, prompt_key)
         .map_err(|e: crate::AppError| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_ai_prompt_model(
+    state: State<'_, AppState>,
+    key: String,
+    model: String,
+) -> Result<(), String> {
+    let prompt_key = crate::ai::prompts::PromptKey::from_str(&key)
+        .map_err(|e: crate::AppError| e.to_string())?;
+    let trimmed = model.trim();
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    if trimmed.is_empty() {
+        // Empty string means "use the default AI model" — just drop the override.
+        crate::ai::prompts::reset_model(&db, prompt_key)
+            .map_err(|e: crate::AppError| e.to_string())
+    } else {
+        crate::ai::prompts::save_model(&db, prompt_key, trimmed)
+            .map_err(|e: crate::AppError| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn reset_ai_prompt_model(state: State<'_, AppState>, key: String) -> Result<(), String> {
+    let prompt_key = crate::ai::prompts::PromptKey::from_str(&key)
+        .map_err(|e: crate::AppError| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    crate::ai::prompts::reset_model(&db, prompt_key)
+        .map_err(|e: crate::AppError| e.to_string())
+}
+
+/// Returns the list of models available from the configured provider.
+/// If `refresh` is true (or there is no cache for the current provider/endpoint),
+/// fetches the live /models endpoint; otherwise returns the cached list.
+#[tauri::command]
+pub async fn list_ai_models(
+    state: State<'_, AppState>,
+    refresh: Option<bool>,
+) -> Result<Vec<String>, String> {
+    let refresh = refresh.unwrap_or(false);
+
+    if !refresh {
+        let cached = {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            crate::ai::models::get_cached(&db).map_err(|e| e.to_string())?
+        };
+        if let Some(models) = cached {
+            return Ok(models);
+        }
+    }
+
+    crate::ai::models::fetch_and_cache(&state.db)
+        .await
+        .map_err(|e| e.to_string())
 }
