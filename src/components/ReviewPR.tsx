@@ -86,7 +86,7 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
   const handleClick = () => {
     sidebarMode.value = open ? null : "pr-review";
     if (!open && !run && !busyElsewhere) {
-      startBackgroundReview(projectId, repoId, prId, prTitle, mode);
+      startBackgroundReview(projectId, repoId, prId, prTitle, false, mode);
       setSavedReview(null);
     }
   };
@@ -104,9 +104,9 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
       selectedProject.value = target.projectId;
       selectedRepo.value = target.repoId;
       currentView.value = { kind: "pr-detail", prId: target.prId };
-      startBackgroundReview(target.projectId, target.repoId, target.prId, `PR #${target.prId}`, resumeMode);
+      startBackgroundReview(target.projectId, target.repoId, target.prId, `PR #${target.prId}`, true, resumeMode);
     } else {
-      startBackgroundReview(projectId, repoId, prId, prTitle, resumeMode);
+      startBackgroundReview(projectId, repoId, prId, prTitle, true, resumeMode);
     }
   };
 
