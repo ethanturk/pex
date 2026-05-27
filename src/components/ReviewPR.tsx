@@ -115,14 +115,13 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
     setSavedReview(null);
   };
 
-  const modeSuffix = mode === "thorough" ? " (Thorough)" : "";
   const label = (() => {
     if (isThisRunning) return "Reviewing...";
     if (run?.status === "posting") return "Posting...";
     if (run?.status === "done") return `🔍 Review (${run.output?.findings.length ?? 0})`;
     if (run?.status === "posted") return "🔍 Review ✓";
     if (run?.status === "error") return "🔍 Review (error)";
-    return `🔍 Review PR${modeSuffix}`;
+    return "🔍 Review PR";
   })();
 
   // Disabling the picker once a run is in flight prevents the displayed mode

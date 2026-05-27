@@ -147,6 +147,13 @@ pub async fn run_review(
     let file_paths: Vec<String> = file_entries.iter().map(|(f, _)| f.path.clone()).collect();
     let mut state = ReviewState::new(input.pr_key.clone(), file_paths.clone(), input.mode);
 
+    // Resolved once for the run — changing it mid-run isn't worth the surprise
+    // factor, and re-reading per call would just thrash the DB lock.
+    let retry_count = match db.lock() {
+        Ok(c) => crate::ai::read_retry_count(&c).unwrap_or(crate::ai::DEFAULT_RETRY_COUNT),
+        Err(_) => crate::ai::DEFAULT_RETRY_COUNT,
+    };
+
     // Resolve specialist system prompts + per-specialist model overrides once for
     // the run (Thorough mode only). Resolved up front so user edits in Settings
     // take effect on the next run without restarting the app.
@@ -266,7 +273,7 @@ pub async fn run_review(
                             content: user_msg.clone(),
                         },
                     ];
-                    match retry_once_with_model(&provider, &pass_messages, model_override.as_deref()).await {
+                    match chat_with_retries_and_model(&provider, &pass_messages, model_override.as_deref(), retry_count).await {
                         Ok(r) => {
                             if r.trim() != "No issues found." && !r.trim().is_empty() {
                                 outputs.push(format!("[{}]\n{}", key.specialist_label(), r.trim()));
@@ -295,7 +302,7 @@ pub async fn run_review(
                     role: ChatRole::User,
                     content: user_msg.clone(),
                 });
-                let r = retry_once(&provider, &messages).await;
+                let r = chat_with_retries(&provider, &messages, retry_count).await;
                 if let Ok(ref response) = r {
                     messages.push(ChatMessage {
                         role: ChatRole::Assistant,
@@ -367,7 +374,7 @@ pub async fn run_review(
                 },
             ];
 
-            let raw = retry_once(&provider, &agg_messages).await.unwrap_or_else(|e| {
+            let raw = chat_with_retries(&provider, &agg_messages, retry_count).await.unwrap_or_else(|e| {
                 format!("[aggregate failed — {}]", e)
             });
 
@@ -450,7 +457,7 @@ pub async fn run_review(
             },
         ];
 
-        let batch_summary = retry_once(&provider, &batch_messages)
+        let batch_summary = chat_with_retries(&provider, &batch_messages, retry_count)
             .await
             .unwrap_or_else(|e| format!("[batch aggregate failed — {}]", e));
 
@@ -485,7 +492,7 @@ pub async fn run_review(
         },
     ];
 
-    let final_review = retry_once(&provider, &final_messages)
+    let final_review = chat_with_retries(&provider, &final_messages, retry_count)
         .await
         .unwrap_or_else(|e| format!("[final synthesis failed — {}]", e));
 
@@ -525,25 +532,36 @@ pub async fn run_review(
     })
 }
 
-async fn retry_once(
+async fn chat_with_retries(
     provider: &Arc<dyn AiProvider>,
     messages: &[ChatMessage],
+    retries: u32,
 ) -> Result<String, AppError> {
-    retry_once_with_model(provider, messages, None).await
+    chat_with_retries_and_model(provider, messages, None, retries).await
 }
 
-async fn retry_once_with_model(
+/// Calls `provider.chat_with_model` up to `1 + retries` times (initial attempt
+/// plus retries). With `retries = 0`, makes a single attempt — important for
+/// slow local providers where a "failure" is usually just a request the
+/// engine's request_timeout fired on, while the model is still generating;
+/// retrying just adds another orphaned in-flight request.
+async fn chat_with_retries_and_model(
     provider: &Arc<dyn AiProvider>,
     messages: &[ChatMessage],
     model_override: Option<&str>,
+    retries: u32,
 ) -> Result<String, AppError> {
-    match provider.chat_with_model(messages, model_override).await {
-        Ok(r) => Ok(r),
-        Err(_e) => {
+    let mut last_err: Option<AppError> = None;
+    for attempt in 0..=retries {
+        if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            provider.chat_with_model(messages, model_override).await
+        }
+        match provider.chat_with_model(messages, model_override).await {
+            Ok(r) => return Ok(r),
+            Err(e) => last_err = Some(e),
         }
     }
+    Err(last_err.unwrap_or_else(|| AppError::Ai("Chat failed with no error info".into())))
 }
 
 fn save_state_to_db(db: &std::sync::Mutex<rusqlite::Connection>, state: &ReviewState) {

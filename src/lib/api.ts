@@ -255,9 +255,17 @@ export interface AiSettingsNoKey {
   provider: string;
   endpoint: string;
   model: string;
-  requestTimeoutSecs: number;
+  /// TCP/TLS handshake budget. Catches dead servers fast.
+  connectTimeoutSecs: number;
+  /// Stalled-stream guard: max time between successive bytes from the server.
+  /// Does NOT bound total generation — a slow model that keeps the connection
+  /// alive will be allowed to finish.
+  readTimeoutSecs: number;
   hunkConcurrency: number;
   standardsMaxChars: number;
+  /// Number of retries after a failed LLM call in a PR review.
+  /// 0 = no retries (recommended for slow local providers).
+  retryCount: number;
 }
 
 export async function getAiSettings(): Promise<AiSettingsNoKey> {
@@ -269,18 +277,22 @@ export async function saveAiSettings(
   endpoint: string,
   model: string,
   apiKey: string,
-  requestTimeoutSecs: number,
+  connectTimeoutSecs: number,
+  readTimeoutSecs: number,
   hunkConcurrency: number,
   standardsMaxChars: number,
+  retryCount: number,
 ): Promise<void> {
   return invoke("save_ai_settings", {
     provider,
     endpoint,
     model,
     apiKey,
-    requestTimeoutSecs,
+    connectTimeoutSecs,
+    readTimeoutSecs,
     hunkConcurrency,
     standardsMaxChars,
+    retryCount,
   });
 }
 

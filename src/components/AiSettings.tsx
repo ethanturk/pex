@@ -26,9 +26,11 @@ export function AiSettings({ open, onClose }: Props) {
   const [endpoint, setEndpoint] = useState("");
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [requestTimeoutSecs, setRequestTimeoutSecs] = useState(120);
+  const [connectTimeoutSecs, setConnectTimeoutSecs] = useState(10);
+  const [readTimeoutSecs, setReadTimeoutSecs] = useState(60);
   const [hunkConcurrency, setHunkConcurrency] = useState(1);
   const [standardsMaxChars, setStandardsMaxChars] = useState(8000);
+  const [retryCount, setRetryCount] = useState(1);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -58,9 +60,15 @@ export function AiSettings({ open, onClose }: Props) {
       setProvider(settings.provider);
       setEndpoint(settings.endpoint);
       setModel(settings.model);
-      setRequestTimeoutSecs(settings.requestTimeoutSecs || 120);
+      setConnectTimeoutSecs(settings.connectTimeoutSecs || 10);
+      setReadTimeoutSecs(settings.readTimeoutSecs || 60);
       setHunkConcurrency(settings.hunkConcurrency || 1);
       setStandardsMaxChars(settings.standardsMaxChars || 8000);
+      // retryCount of 0 is valid ("no retries"), so don't fall back to a default
+      // when the user has explicitly chosen 0.
+      setRetryCount(
+        Number.isFinite(settings.retryCount) ? settings.retryCount : 1,
+      );
       setApiKey("");
       setPrompts(ps);
       setPromptDrafts(Object.fromEntries(ps.map((p) => [p.key, p.value])));
@@ -149,7 +157,7 @@ export function AiSettings({ open, onClose }: Props) {
     setSaving(true);
     setMessage(null);
     try {
-      await saveAiSettings(provider, endpoint, model, apiKey, requestTimeoutSecs, hunkConcurrency, standardsMaxChars);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, standardsMaxChars, retryCount);
       setMessage({ text: "AI settings saved.", ok: true });
     } catch (e: any) {
       setMessage({ text: String(e), ok: false });
@@ -163,7 +171,7 @@ export function AiSettings({ open, onClose }: Props) {
     setTesting(true);
     setMessage(null);
     try {
-      await saveAiSettings(provider, endpoint, model, apiKey, requestTimeoutSecs, hunkConcurrency, standardsMaxChars);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, standardsMaxChars, retryCount);
       const result = await testAiConnection();
       setMessage({ text: result, ok: true });
     } catch (e: any) {
@@ -243,21 +251,39 @@ export function AiSettings({ open, onClose }: Props) {
                   />
                 </Field>
 
-                <Field label="Request timeout (seconds)">
+                <Field label="Connect timeout (seconds)">
                   <input
                     type="number"
                     min={1}
                     max={3600}
-                    value={requestTimeoutSecs}
+                    value={connectTimeoutSecs}
                     onInput={(e) => {
                       const n = parseInt(e.currentTarget.value, 10);
-                      setRequestTimeoutSecs(Number.isFinite(n) && n > 0 ? n : 120);
+                      setConnectTimeoutSecs(Number.isFinite(n) && n > 0 ? n : 10);
                     }}
-                    placeholder="120"
+                    placeholder="10"
                     class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Maximum time to wait for the model to respond. Increase this for slower local models.
+                    Maximum time for the TCP / TLS handshake. Catches a dead or unreachable server quickly. Does not bound generation time.
+                  </p>
+                </Field>
+
+                <Field label="Read timeout (seconds)">
+                  <input
+                    type="number"
+                    min={1}
+                    max={3600}
+                    value={readTimeoutSecs}
+                    onInput={(e) => {
+                      const n = parseInt(e.currentTarget.value, 10);
+                      setReadTimeoutSecs(Number.isFinite(n) && n > 0 ? n : 60);
+                    }}
+                    placeholder="60"
+                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                  />
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Stalled-stream guard: maximum time between successive bytes from the server. <strong>Does not bound total generation time</strong> — a slow local model that keeps the connection alive will be allowed to finish. Only raise this if your provider returns large bursts with long pauses between them.
                   </p>
                 </Field>
 
@@ -298,6 +324,30 @@ export function AiSettings({ open, onClose }: Props) {
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Per-file cap (in characters) for AGENTS.md / STYLE.md content injected into Review prompts. Anything beyond this is truncated with a visible marker.
+                  </p>
+                </Field>
+
+                <Field label="Retry count">
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={retryCount}
+                    onInput={(e) => {
+                      const n = parseInt(e.currentTarget.value, 10);
+                      // 0 is a deliberate value here ("don't retry"), so don't
+                      // collapse it to the default like the other fields do.
+                      if (!Number.isFinite(n) || n < 0) {
+                        setRetryCount(0);
+                      } else {
+                        setRetryCount(Math.min(10, n));
+                      }
+                    }}
+                    placeholder="1"
+                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                  />
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    How many times to retry an LLM call after it fails during a PR review. Set to <strong>0</strong> for slow local providers — a "failure" there is usually just the request timeout firing while the model is still generating, and retrying just doubles the orphaned work.
                   </p>
                 </Field>
               </div>

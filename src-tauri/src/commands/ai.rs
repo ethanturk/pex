@@ -21,8 +21,11 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         .map_err(|e: crate::AppError| e.to_string())?
         .unwrap_or_else(|| "gpt-4.1".to_string());
 
-    let request_timeout_secs =
-        crate::ai::read_request_timeout(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let connect_timeout_secs =
+        crate::ai::read_connect_timeout(&db).map_err(|e: crate::AppError| e.to_string())?;
+
+    let read_timeout_secs =
+        crate::ai::read_read_timeout(&db).map_err(|e: crate::AppError| e.to_string())?;
 
     let hunk_concurrency =
         crate::ai::read_hunk_concurrency(&db).map_err(|e: crate::AppError| e.to_string())?;
@@ -30,13 +33,18 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
     let standards_max_chars =
         crate::ai::read_standards_max_chars(&db).map_err(|e: crate::AppError| e.to_string())?;
 
+    let retry_count =
+        crate::ai::read_retry_count(&db).map_err(|e: crate::AppError| e.to_string())?;
+
     Ok(AiSettingsNoKey {
         provider,
         endpoint,
         model,
-        request_timeout_secs,
+        connect_timeout_secs,
+        read_timeout_secs,
         hunk_concurrency,
         standards_max_chars,
+        retry_count,
     })
 }
 
@@ -47,20 +55,27 @@ pub async fn save_ai_settings(
     endpoint: String,
     model: String,
     api_key: String,
-    request_timeout_secs: u64,
+    connect_timeout_secs: u64,
+    read_timeout_secs: u64,
     hunk_concurrency: u32,
     standards_max_chars: u32,
+    retry_count: u32,
 ) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
     // Validate provider
     let kind: AiProviderKind = provider.parse().map_err(|e: crate::AppError| e.to_string())?;
 
-    // Clamp timeout to a sane range; 0 falls back to default.
-    let timeout = if request_timeout_secs == 0 {
-        crate::ai::DEFAULT_REQUEST_TIMEOUT_SECS
+    // Clamp timeouts to a sane range; 0 falls back to default.
+    let connect_timeout = if connect_timeout_secs == 0 {
+        crate::ai::DEFAULT_CONNECT_TIMEOUT_SECS
     } else {
-        request_timeout_secs.min(3600)
+        connect_timeout_secs.min(crate::ai::MAX_TIMEOUT_SECS)
+    };
+    let read_timeout = if read_timeout_secs == 0 {
+        crate::ai::DEFAULT_READ_TIMEOUT_SECS
+    } else {
+        read_timeout_secs.min(crate::ai::MAX_TIMEOUT_SECS)
     };
 
     let concurrency = if hunk_concurrency == 0 {
@@ -81,9 +96,20 @@ pub async fn save_ai_settings(
     crate::cache::set_setting(&db, "ai_provider", &provider).map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(&db, "ai_endpoint", &endpoint).map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(&db, "ai_model", &model).map_err(|e: crate::AppError| e.to_string())?;
-    crate::cache::set_setting(&db, "ai_request_timeout_secs", &timeout.to_string())
+    crate::cache::set_setting(&db, "ai_connect_timeout_secs", &connect_timeout.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
+    crate::cache::set_setting(&db, "ai_read_timeout_secs", &read_timeout.to_string())
+        .map_err(|e: crate::AppError| e.to_string())?;
+    // Drop the legacy total-request timeout once the new keys are set so future
+    // reads use the new semantics instead of silently falling back.
+    let _ = crate::cache::delete_setting(&db, "ai_request_timeout_secs");
     crate::cache::set_setting(&db, "ai_hunk_concurrency", &concurrency.to_string())
+        .map_err(|e: crate::AppError| e.to_string())?;
+    // retry_count: 0 is a valid value ("do not retry"), unlike the other
+    // numeric settings where 0 means "use default". Just clamp the upper bound.
+    let retries = retry_count.min(crate::ai::MAX_RETRY_COUNT);
+
+    crate::cache::set_setting(&db, "ai_retry_count", &retries.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(&db, "ai_standards_max_chars", &std_chars.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
@@ -100,10 +126,10 @@ pub async fn save_ai_settings(
     // Reconfigure the AI manager
     let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
     if let Some(ref mut mgr) = *ai_mgr_lock {
-        mgr.configure(kind, &endpoint, &model, &api_key, timeout);
+        mgr.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout);
     } else {
         let mut mgr = crate::ai::AiManager::new();
-        mgr.configure(kind, &endpoint, &model, &api_key, timeout);
+        mgr.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout);
         *ai_mgr_lock = Some(mgr);
     }
 

@@ -78,12 +78,34 @@ pub trait AiProvider: Send + Sync {
 }
 
 /// Default request timeout in seconds when none is configured.
+/// Kept only to preserve old call shapes during migration — no longer wired in.
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 120;
+
+/// Default TCP/TLS handshake budget. Catches dead servers quickly without
+/// punishing slow generation.
+pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+/// Default per-read budget — the maximum time the client will wait between
+/// successive bytes coming back from the server. A long inference is fine as
+/// long as the server is sending *something*; this only fires on actual stalls.
+/// Tighter is fine; looser is fine — pick the value that matches the network
+/// you're working against, not the model's wall-clock latency.
+pub const DEFAULT_READ_TIMEOUT_SECS: u64 = 60;
+/// Hard ceiling for both connect and read so a user fat-fingering "999999"
+/// doesn't accidentally disable cancellation entirely.
+pub const MAX_TIMEOUT_SECS: u64 = 3600;
 
 /// Default number of hunks that can be reviewed in parallel.
 pub const DEFAULT_HUNK_CONCURRENCY: u32 = 1;
 /// Hard cap to keep users from accidentally hammering the LLM.
 pub const MAX_HUNK_CONCURRENCY: u32 = 16;
+
+/// Default number of times the review engine retries a failed LLM call before
+/// giving up on that hunk. 1 = one extra attempt after the first failure.
+/// Set to 0 for local providers to avoid sending duplicate work to a slow
+/// model that didn't really fail — it just hadn't finished yet.
+pub const DEFAULT_RETRY_COUNT: u32 = 1;
+/// Hard cap to keep retry counts from looping forever on persistent errors.
+pub const MAX_RETRY_COUNT: u32 = 10;
 
 /// Default per-file size cap (characters) for AGENTS.md / STYLE.md content
 /// injected into Review prompts. Large enough for typical convention files,
@@ -108,19 +130,48 @@ pub struct AiSettingsNoKey {
     pub provider: String,
     pub endpoint: String,
     pub model: String,
-    pub request_timeout_secs: u64,
+    /// TCP/TLS handshake budget in seconds.
+    pub connect_timeout_secs: u64,
+    /// Per-read stalled-stream budget in seconds. Does NOT bound total generation
+    /// time — a slow model that keeps the connection alive will not be killed.
+    pub read_timeout_secs: u64,
     pub hunk_concurrency: u32,
     pub standards_max_chars: u32,
+    /// Number of retries the review engine performs after a failed LLM call.
+    /// 0 = no retries (recommended for local providers).
+    pub retry_count: u32,
 }
 
-/// Read the configured request timeout (seconds) from SQLite, falling back to the default
-/// if missing or unparseable. Treats 0 as "use default" rather than "no timeout".
-pub fn read_request_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_request_timeout_secs")?;
+/// Read the TCP/TLS connect timeout (seconds), defaulting if missing.
+/// Treats 0 as "use default."
+pub fn read_connect_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_connect_timeout_secs")?;
     Ok(raw
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS))
+        .map(|n| n.min(MAX_TIMEOUT_SECS))
+        .unwrap_or(DEFAULT_CONNECT_TIMEOUT_SECS))
+}
+
+/// Read the per-read (stalled-stream) timeout (seconds), defaulting if missing.
+/// Treats 0 as "use default."
+///
+/// Backward compatibility: if `ai_read_timeout_secs` is unset, falls back to
+/// the legacy `ai_request_timeout_secs` value so existing users don't lose
+/// their tuning. This fallback is harmless because the legacy value was
+/// already a total-request timeout — interpreting it as a read timeout is
+/// strictly more lenient (slow generation now succeeds where it used to fail).
+pub fn read_read_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError> {
+    let new_key = crate::cache::get_setting(conn, "ai_read_timeout_secs")?;
+    if let Some(n) = new_key.and_then(|s| s.parse::<u64>().ok()).filter(|n| *n > 0) {
+        return Ok(n.min(MAX_TIMEOUT_SECS));
+    }
+    let legacy = crate::cache::get_setting(conn, "ai_request_timeout_secs")?;
+    Ok(legacy
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .map(|n| n.min(MAX_TIMEOUT_SECS))
+        .unwrap_or(DEFAULT_READ_TIMEOUT_SECS))
 }
 
 /// Read the configured hunk concurrency (max parallel hunk reviews), clamped to a sane range.
@@ -131,6 +182,17 @@ pub fn read_hunk_concurrency(conn: &rusqlite::Connection) -> Result<u32, AppErro
         .filter(|n| *n >= 1)
         .map(|n| n.min(MAX_HUNK_CONCURRENCY))
         .unwrap_or(DEFAULT_HUNK_CONCURRENCY))
+}
+
+/// Read the configured retry count for failed LLM calls during a PR review.
+/// 0 means "do not retry" — useful for local providers where a "failure" is
+/// often just a slow generation that's still in flight.
+pub fn read_retry_count(conn: &rusqlite::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_retry_count")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(|n| n.min(MAX_RETRY_COUNT))
+        .unwrap_or(DEFAULT_RETRY_COUNT))
 }
 
 /// Read the configured per-file size cap for injected AGENTS.md / STYLE.md content.
@@ -160,7 +222,8 @@ impl AiManager {
         endpoint: &str,
         model: &str,
         api_key: &str,
-        request_timeout_secs: u64,
+        connect_timeout_secs: u64,
+        read_timeout_secs: u64,
     ) {
         self.provider = Some(match kind {
             AiProviderKind::OpenAI => {
@@ -168,7 +231,8 @@ impl AiManager {
                     endpoint.to_string(),
                     model.to_string(),
                     api_key.to_string(),
-                    request_timeout_secs,
+                    connect_timeout_secs,
+                    read_timeout_secs,
                 );
                 std::sync::Arc::new(p) as std::sync::Arc<dyn AiProvider>
             }
@@ -177,7 +241,8 @@ impl AiManager {
                     endpoint.to_string(),
                     model.to_string(),
                     api_key.to_string(),
-                    request_timeout_secs,
+                    connect_timeout_secs,
+                    read_timeout_secs,
                 );
                 std::sync::Arc::new(p) as std::sync::Arc<dyn AiProvider>
             }
@@ -192,7 +257,8 @@ impl AiManager {
         let provider_str = crate::cache::get_setting(conn, "ai_provider")?;
         let endpoint = crate::cache::get_setting(conn, "ai_endpoint")?;
         let model = crate::cache::get_setting(conn, "ai_model")?;
-        let timeout = read_request_timeout(conn)?;
+        let connect_timeout = read_connect_timeout(conn)?;
+        let read_timeout = read_read_timeout(conn)?;
 
         let (Some(provider_str), Some(endpoint), Some(model)) = (provider_str, endpoint, model) else {
             return Ok(false);
@@ -212,7 +278,7 @@ impl AiManager {
             return Ok(false);
         };
 
-        self.configure(kind, &endpoint, &model, &api_key, timeout);
+        self.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout);
         Ok(true)
     }
 

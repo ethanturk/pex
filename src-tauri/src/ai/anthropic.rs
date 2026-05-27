@@ -12,9 +12,20 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(endpoint: String, model: String, api_key: String, request_timeout_secs: u64) -> Self {
+    /// `connect_timeout_secs` bounds the TCP/TLS handshake.
+    /// `read_timeout_secs` bounds the time between successive bytes from the
+    /// server — it does NOT bound total wall-clock generation time, so a slow
+    /// model that keeps the stream alive will be allowed to finish.
+    pub fn new(
+        endpoint: String,
+        model: String,
+        api_key: String,
+        connect_timeout_secs: u64,
+        read_timeout_secs: u64,
+    ) -> Self {
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(request_timeout_secs))
+            .connect_timeout(std::time::Duration::from_secs(connect_timeout_secs))
+            .read_timeout(std::time::Duration::from_secs(read_timeout_secs))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
