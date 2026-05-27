@@ -680,7 +680,9 @@ impl AdoClient {
             id: String,
         }
         let resp: ConnectionData = self
-            .get(&format!("_apis/connectionData?api-version={}", self.api_version))
+            // connectionData is undocumented and only exposed via the -preview stage;
+            // plain 7.1 returns VssInvalidPreviewVersionException.
+            .get("_apis/connectionData?api-version=7.1-preview")
             .await?;
         Ok(resp.authenticated_user.id)
     }
@@ -696,12 +698,14 @@ impl AdoClient {
         // PUT (not PATCH) — per ADO REST docs, PATCH on a reviewer only edits
         // isFlagged/hasDeclined; casting a vote requires PUT. `id` in the body
         // lets the same call also add the reviewer if missing.
+        // The reviewers endpoint is preview-only; the server rejects plain "7.1"
+        // with VssInvalidPreviewVersionException and requires the -preview suffix.
         let body = serde_json::json!({ "vote": vote, "id": reviewer_id });
         let _: serde_json::Value = self
             .put(
                 &format!(
-                    "{}/_apis/git/repositories/{}/pullRequests/{}/reviewers/{}?api-version={}",
-                    project, repo_id, pr_id, reviewer_id, self.api_version
+                    "{}/_apis/git/repositories/{}/pullRequests/{}/reviewers/{}?api-version=7.1-preview",
+                    project, repo_id, pr_id, reviewer_id
                 ),
                 &body,
             )
