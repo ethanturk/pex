@@ -181,6 +181,8 @@ export function PRList() {
             <div class="flex-1 min-w-0">
               <div class="font-medium text-sm truncate">{pr.title}</div>
               <div class="flex items-center gap-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+                <span class="font-mono">#{pr.pullRequestId}</span>
+                <span>·</span>
                 <span>{pr.createdBy.displayName}</span>
                 <span>·</span>
                 <span class="font-mono">{pr.sourceRefName.replace("refs/heads/", "")}</span>

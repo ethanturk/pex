@@ -2,6 +2,7 @@ use crate::review::engine::{self, FileInput, ReviewInput, ReviewOutput};
 use crate::AppState;
 use crate::cache::standards_cache::StandardsCacheKey;
 use crate::diff::engine::DiffView;
+use std::sync::atomic::Ordering;
 use tauri::{Emitter, State};
 
 /// Start a native multi-pass PR review. Streams progress via `review-progress` events.
@@ -94,8 +95,12 @@ pub async fn start_review(
         pr_id,
     };
 
+    // Clear any prior cancel signal before starting a fresh run.
+    state.review_cancel.store(false, Ordering::SeqCst);
+    let cancel = state.review_cancel.clone();
+
     // Run review — the engine handles all the streaming
-    let output = engine::run_review(app.clone(), provider, input, &state.db).await
+    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel).await
         .map_err(|e| e.to_string())?;
 
     let _ = app.emit(
@@ -185,7 +190,9 @@ pub async fn start_review_post(
         pr_id,
     };
 
-    let output = engine::run_review(app.clone(), provider, input, &state.db).await
+    state.review_cancel.store(false, Ordering::SeqCst);
+    let cancel = state.review_cancel.clone();
+    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel).await
         .map_err(|e| e.to_string())?;
 
     // Post to ADO
@@ -218,9 +225,11 @@ pub async fn start_review_post(
     Ok(())
 }
 
-/// Cancel a running review. Clears saved state.
+/// Cancel a running review. Signals the engine to stop between LLM calls and
+/// clears any persisted resume state so a future run starts fresh.
 #[tauri::command]
 pub async fn cancel_review(state: State<'_, AppState>) -> Result<(), String> {
+    state.review_cancel.store(true, Ordering::SeqCst);
     let db = state.db.lock().map_err(|e| e.to_string())?;
     crate::review::state::clear_state(&db).map_err(|e: crate::AppError| e.to_string())
 }

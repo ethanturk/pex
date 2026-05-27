@@ -91,6 +91,21 @@ export function DiffViewer({
   const [posting, setPosting] = useState(false);
   const [postError, setPostError] = useState("");
 
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpInput, setJumpInput] = useState("");
+  const [jumpError, setJumpError] = useState("");
+  const [jumpTotal, setJumpTotal] = useState(0);
+  const jumpInputRef = useRef<HTMLInputElement>(null);
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchIdx, setSearchIdx] = useState(0);
+  const [searchHits, setSearchHits] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Matches are recomputed on every query change; held in a ref so prev/next
+  // navigation doesn't trigger a re-scan.
+  const searchMatchesRef = useRef<HTMLElement[]>([]);
+
   // ---- selection highlight on the DOM (cheap; avoids re-rendering injected HTML)
   const setHighlight = useCallback((lo: number, hi: number) => {
     const root = diffRef.current;
@@ -135,7 +150,6 @@ export function DiffViewer({
     if (!el) return;
     el.scrollIntoView({ block: "center", behavior: "smooth" });
     setHighlight(ln, ln);
-    setRange({ start: ln, end: ln });
     pendingScrollLine.value = null;
   }, [pendingScrollLine.value, html, setHighlight]);
 
@@ -215,6 +229,141 @@ export function DiffViewer({
     window.addEventListener("mouseup", handleUp);
     return () => window.removeEventListener("mouseup", handleUp);
   }, []);
+
+  // Compute the largest known new-side line number visible in this diff. This
+  // includes rendered lines (data-line) and the far end of any unexpanded gap
+  // (data-new-end on .diff-expander). It's the best total available without
+  // an extra API call.
+  const computeTotalLines = useCallback((): number => {
+    const root = diffRef.current;
+    if (!root) return 0;
+    let max = 0;
+    root.querySelectorAll<HTMLElement>("[data-line]").forEach((el) => {
+      const n = Number(el.getAttribute("data-line"));
+      if (Number.isFinite(n) && n > max) max = n;
+    });
+    root.querySelectorAll<HTMLElement>(".diff-expander").forEach((el) => {
+      const n = Number(el.getAttribute("data-new-end") || "0");
+      if (Number.isFinite(n) && n > max) max = n;
+    });
+    return max;
+  }, []);
+
+  const openJumpDialog = useCallback(() => {
+    setJumpTotal(computeTotalLines());
+    setJumpInput("");
+    setJumpError("");
+    setJumpOpen(true);
+    requestAnimationFrame(() => {
+      jumpInputRef.current?.focus();
+      jumpInputRef.current?.select();
+    });
+  }, [computeTotalLines]);
+
+  // Ctrl+G / Cmd+G opens the jump-to-line dialog.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        openJumpDialog();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openJumpDialog]);
+
+  // Find a match's containing data-line element, then its row (for split view).
+  const scrollToMatch = useCallback((idx: number) => {
+    const matches = searchMatchesRef.current;
+    if (matches.length === 0) return;
+    const safe = ((idx % matches.length) + matches.length) % matches.length;
+    const el = matches[safe];
+    const lineEl = el.closest<HTMLElement>("[data-line]");
+    const row = (lineEl?.closest<HTMLElement>(".diff-row")) ?? lineEl ?? el;
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (lineEl) {
+      const n = Number(lineEl.getAttribute("data-line"));
+      if (Number.isFinite(n) && n > 0) setHighlight(n, n);
+    }
+    setSearchIdx(safe);
+  }, [setHighlight]);
+
+  // Recompute matches whenever the query changes. Hidden context lines (inside
+  // unexpanded gaps) are not in the DOM, so they're not searchable until the
+  // user expands them — same limitation as Cmd+G.
+  const runSearch = useCallback((q: string) => {
+    const root = diffRef.current;
+    if (!root || !q) {
+      searchMatchesRef.current = [];
+      setSearchHits(0);
+      setSearchIdx(0);
+      return;
+    }
+    const needle = q.toLowerCase();
+    const matches: HTMLElement[] = [];
+    root.querySelectorAll<HTMLElement>(".diff-content").forEach((el) => {
+      if ((el.textContent ?? "").toLowerCase().includes(needle)) {
+        matches.push(el);
+      }
+    });
+    searchMatchesRef.current = matches;
+    setSearchHits(matches.length);
+    if (matches.length > 0) scrollToMatch(0);
+    else setSearchIdx(0);
+  }, [scrollToMatch]);
+
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, []);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    searchMatchesRef.current = [];
+    setSearchHits(0);
+    setSearchIdx(0);
+  }, []);
+
+  // Ctrl+F / Cmd+F opens the search bar.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        openSearch();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openSearch]);
+
+  // Re-run search when the diff html changes (e.g. after expanding context)
+  // so the hit count stays accurate; preserves the current query.
+  useEffect(() => {
+    if (searchOpen && searchQuery) runSearch(searchQuery);
+  }, [html]);
+
+  const handleJumpSubmit = () => {
+    const n = Number(jumpInput.trim());
+    if (!Number.isInteger(n) || n <= 0) {
+      setJumpError("Enter a positive line number.");
+      return;
+    }
+    const root = diffRef.current;
+    if (!root) return;
+    const el = root.querySelector<HTMLElement>(`[data-line="${n}"]`);
+    if (!el) {
+      setJumpError(
+        `Line ${n} is not currently shown. Expand context to reveal it.`,
+      );
+      return;
+    }
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    setHighlight(n, n);
+    setJumpOpen(false);
+  };
 
   // ---- expander (unchanged behavior)
   const readRange = (el: HTMLElement) => ({
@@ -317,9 +466,64 @@ export function DiffViewer({
     : "";
 
   return (
-    <div class="overflow-x-auto">
+    <div class="h-full flex flex-col overflow-hidden">
+      {/* The diff scrolls inside this container so the comments bar below
+          remains visible without scrolling. */}
+      <div class="flex-1 overflow-auto relative">
       {/* File header */}
       <div class="diff-header sticky top-0 z-10">{path}</div>
+
+      {searchOpen && (
+        <div
+          class="sticky top-0 z-20 ml-auto mr-2 mt-1 w-[min(420px,calc(100%-1rem))] float-right shadow-lg rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 p-2 flex items-center gap-2"
+          // Stop diff-area mouse handlers from owning clicks in the bar.
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onInput={(e) => {
+              const q = e.currentTarget.value;
+              setSearchQuery(q);
+              runSearch(q);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { e.preventDefault(); closeSearch(); }
+              else if (e.key === "Enter") {
+                e.preventDefault();
+                if (searchMatchesRef.current.length > 0) {
+                  scrollToMatch(searchIdx + (e.shiftKey ? -1 : 1));
+                }
+              }
+            }}
+            placeholder="Find in file… (Enter / Shift+Enter)"
+            class="flex-1 min-w-0 px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+          />
+          <span class="text-xs text-gray-500 whitespace-nowrap tabular-nums">
+            {searchHits === 0
+              ? searchQuery ? "0/0" : ""
+              : `${searchIdx + 1}/${searchHits}`}
+          </span>
+          <button
+            onClick={() => scrollToMatch(searchIdx - 1)}
+            disabled={searchHits === 0}
+            title="Previous (Shift+Enter)"
+            class="px-1.5 py-0.5 text-xs text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 disabled:opacity-40"
+          >▲</button>
+          <button
+            onClick={() => scrollToMatch(searchIdx + 1)}
+            disabled={searchHits === 0}
+            title="Next (Enter)"
+            class="px-1.5 py-0.5 text-xs text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 disabled:opacity-40"
+          >▼</button>
+          <button
+            onClick={closeSearch}
+            title="Close (Esc)"
+            class="px-1.5 py-0.5 text-xs text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
+          >×</button>
+        </div>
+      )}
 
       {/* Selection + popup live inside this relative container so the popup
           can be positioned with absolute coords against the diff content. */}
@@ -385,28 +589,97 @@ export function DiffViewer({
         )}
       </div>
 
-      {/* Existing threads (unchanged) */}
-      {threads.map((t) => (
-        <div key={t.id} class="border-t border-gray-100 dark:border-gray-800 p-3">
-          <div class="text-xs text-gray-400 mb-1">
-            {t.lineStart > 0
-              ? `Thread on line ${t.lineStart === t.lineEnd ? t.lineStart : `${t.lineStart}-${t.lineEnd}`}`
-              : "File-level thread"}
+      {jumpOpen && (
+        <div
+          class="fixed inset-0 z-30 flex items-start justify-center pt-32 bg-black/40"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setJumpOpen(false);
+          }}
+        >
+          <div class="w-80 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 p-4 shadow-xl">
+            <div class="text-sm font-medium mb-1">Jump to line</div>
+            <div class="text-xs text-gray-500 mb-2">
+              {jumpTotal > 0
+                ? `File has ${jumpTotal} line${jumpTotal === 1 ? "" : "s"}`
+                : "Line count unavailable"}
+            </div>
+            <input
+              ref={jumpInputRef}
+              type="number"
+              min={1}
+              value={jumpInput}
+              onInput={(e) => {
+                setJumpInput(e.currentTarget.value);
+                if (jumpError) setJumpError("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleJumpSubmit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setJumpOpen(false);
+                }
+              }}
+              placeholder="Line number"
+              class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+            />
+            {jumpError && (
+              <div class="mt-2 text-xs text-red-600 dark:text-red-400">
+                {jumpError}
+              </div>
+            )}
+            <div class="flex gap-2 mt-3 justify-end">
+              <button
+                onClick={() => setJumpOpen(false)}
+                class="px-3 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleJumpSubmit}
+                class="px-3 py-1 bg-accent hover:bg-accent-hover text-white rounded text-xs font-medium"
+              >
+                Jump
+              </button>
+            </div>
           </div>
-          {t.comments.map((c) => (
-            <div
-              key={c.id}
-              class="text-sm mb-2 pl-3 border-l-2 border-gray-200 dark:border-gray-700"
-            >
-              <span class="font-medium text-xs">{c.author}</span>
-              {c.publishedDate && (
-                <span class="text-xs text-gray-400 ml-2">{c.publishedDate}</span>
-              )}
-              <div class="mt-1 text-gray-700 dark:text-gray-300">{c.content}</div>
+        </div>
+      )}
+
+      </div>
+      {/* Comments bar — sits below the scrolling diff so it's always visible
+          when there are comments. Hidden entirely when empty. */}
+      {threads.length > 0 && (
+        <div class="shrink-0 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 max-h-[40vh] overflow-y-auto">
+          <div class="text-xs font-medium text-gray-500 dark:text-gray-400 px-3 py-1.5 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60">
+            Comments ({threads.length})
+          </div>
+          {threads.map((t) => (
+            <div key={t.id} class="border-t border-gray-100 dark:border-gray-800 p-3">
+              <div class="text-xs text-gray-400 mb-1">
+                {t.lineStart > 0
+                  ? `Thread on line ${t.lineStart === t.lineEnd ? t.lineStart : `${t.lineStart}-${t.lineEnd}`}`
+                  : "File-level thread"}
+              </div>
+              {t.comments.map((c) => (
+                <div
+                  key={c.id}
+                  class="text-sm mb-2 pl-3 border-l-2 border-gray-200 dark:border-gray-700"
+                >
+                  <span class="font-medium text-xs">{c.author}</span>
+                  {c.publishedDate && (
+                    <span class="text-xs text-gray-400 ml-2">{c.publishedDate}</span>
+                  )}
+                  <div class="mt-1 text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
+                    {c.content || <span class="italic text-gray-400">(no content)</span>}
+                  </div>
+                </div>
+              ))}
             </div>
           ))}
         </div>
-      ))}
+      )}
     </div>
   );
 }

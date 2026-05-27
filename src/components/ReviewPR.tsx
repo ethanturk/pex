@@ -75,9 +75,9 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
       selectedProject.value = target.projectId;
       selectedRepo.value = target.repoId;
       currentView.value = { kind: "pr-detail", prId: target.prId };
-      startBackgroundReview(target.projectId, target.repoId, target.prId, `PR #${target.prId}`);
+      startBackgroundReview(target.projectId, target.repoId, target.prId, `PR #${target.prId}`, true);
     } else {
-      startBackgroundReview(projectId, repoId, prId, prTitle);
+      startBackgroundReview(projectId, repoId, prId, prTitle, true);
     }
   };
 
@@ -108,14 +108,14 @@ export function ReviewPR({ projectId, repoId, prId, prTitle }: Props) {
               ? "Close PR review sidebar"
               : "Open PR review sidebar"
         }
-        class={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border disabled:opacity-50 disabled:cursor-not-allowed ${
+        class={`px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 border disabled:opacity-50 disabled:cursor-not-allowed ${
           open
             ? "border-accent text-accent bg-accent/10"
             : "bg-accent hover:bg-accent-hover text-white border-transparent"
         }`}
       >
         {(isThisRunning || run?.status === "posting") && (
-          <span class="animate-spin w-3 h-3 border-2 border-current/30 border-t-current rounded-full" />
+          <span class="animate-spin w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full" />
         )}
         {label}
       </button>

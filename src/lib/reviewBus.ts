@@ -53,6 +53,7 @@ export function startBackgroundReview(
   repoId: string,
   prId: number,
   prTitle: string,
+  resuming = false,
 ) {
   activeReviewPrId.value = prId;
   const next = new Map(reviewRuns.value);
@@ -61,7 +62,11 @@ export function startBackgroundReview(
     repoId,
     prTitle,
     status: "running",
-    progress: null,
+    // Seed the progress so the sidebar shows "Resuming…" immediately
+    // instead of "Starting review…" until the engine emits its first event.
+    progress: resuming
+      ? { phase: "resume", detail: "Resuming from saved progress..." }
+      : null,
     output: null,
     error: null,
   });

@@ -2,12 +2,39 @@ use crate::AppState;
 use crate::ado::CommentThread;
 use tauri::State;
 
+/// ADO PR comment threads require `threadContext.filePath` to be repo-root
+/// relative with a leading slash. Posting a slashless path is accepted by the
+/// REST API but the web UI then can't match the thread to a file and shows
+/// "This file no longer exists in the latest pull request changes."
+fn normalize_ado_file_path(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
+}
+
+/// Threads/comments soft-deleted in ADO (the web UI hides them) are still
+/// returned by the REST endpoint. Without this filter the user sees ghost
+/// threads — e.g. three copies of a comment they deleted twice.
+fn visible_comments(t: &CommentThread) -> Vec<&crate::ado::Comment> {
+    t.comments.iter().filter(|c| !c.is_deleted).collect()
+}
+
 fn thread_to_json(t: &CommentThread) -> serde_json::Value {
+    // ADO returns thread filePath with a leading "/" (and post_comment normalizes
+    // to that shape), but the frontend works in slashless paths because
+    // get_pr_files strips the prefix. Strip here so `t.filePath === d.path`
+    // matches in PRDetail's thread filter.
+    let file_path = t
+        .thread_context
+        .as_ref()
+        .and_then(|ctx| ctx.file_path.as_deref())
+        .map(|p| p.strip_prefix('/').unwrap_or(p).to_string())
+        .unwrap_or_default();
     serde_json::json!({
         "id": t.id,
-        "filePath": t.thread_context.as_ref()
-            .and_then(|ctx| ctx.file_path.clone())
-            .unwrap_or_default(),
+        "filePath": file_path,
         "lineStart": t.thread_context.as_ref()
             .and_then(|ctx| ctx.right_file_start.as_ref().map(|p| p.line))
             .unwrap_or(0),
@@ -15,7 +42,7 @@ fn thread_to_json(t: &CommentThread) -> serde_json::Value {
             .and_then(|ctx| ctx.right_file_end.as_ref().map(|p| p.line))
             .unwrap_or(0),
         "status": t.status,
-        "comments": t.comments.iter().map(|c| serde_json::json!({
+        "comments": visible_comments(t).iter().map(|c| serde_json::json!({
             "id": c.id,
             "author": c.author.as_ref().map(|a| a.display_name.clone()).unwrap_or_default(),
             "content": c.content,
@@ -36,7 +63,11 @@ pub async fn get_threads(
         .get_threads(&project_id, &repo_id, pr_id)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(threads.iter().map(thread_to_json).collect())
+    Ok(threads
+        .iter()
+        .filter(|t| !t.is_deleted && !visible_comments(t).is_empty())
+        .map(thread_to_json)
+        .collect())
 }
 
 #[tauri::command]
@@ -62,7 +93,7 @@ pub async fn post_comment(
         }],
         "status": 1,
         "threadContext": {
-            "filePath": file_path,
+            "filePath": normalize_ado_file_path(&file_path),
             "rightFileStart": { "line": lo, "offset": 1 },
             // ADO PR comment ranges are inclusive on both ends; offsets are 1-based
             // column positions within the line.
@@ -108,7 +139,7 @@ pub async fn post_review_finding(
                 "comments": [{ "parentCommentId": 0, "content": content, "commentType": 1 }],
                 "status": 1,
                 "threadContext": {
-                    "filePath": path,
+                    "filePath": normalize_ado_file_path(path),
                     "rightFileStart": { "line": lo, "offset": 1 },
                     "rightFileEnd":   { "line": hi, "offset": 1 },
                 },
@@ -117,7 +148,7 @@ pub async fn post_review_finding(
         (Some(path), None, None) => Some(serde_json::json!({
             "comments": [{ "parentCommentId": 0, "content": content, "commentType": 1 }],
             "status": 1,
-            "threadContext": { "filePath": path },
+            "threadContext": { "filePath": normalize_ado_file_path(path) },
         })),
         _ => None,
     };

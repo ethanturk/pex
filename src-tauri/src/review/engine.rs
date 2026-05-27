@@ -4,7 +4,16 @@ use crate::review::prompts;
 use crate::review::state::{self, ReviewState};
 use crate::AppError;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
+
+fn cancelled(flag: &AtomicBool) -> Result<(), AppError> {
+    if flag.load(Ordering::SeqCst) {
+        Err(AppError::Ado("Review cancelled".into()))
+    } else {
+        Ok(())
+    }
+}
 
 /// Input for a PR review: the files and their content.
 #[derive(Debug, Clone)]
@@ -118,6 +127,7 @@ pub async fn run_review(
     provider: Arc<dyn AiProvider>,
     input: ReviewInput,
     db: &std::sync::Mutex<rusqlite::Connection>,
+    cancel: Arc<AtomicBool>,
 ) -> Result<ReviewOutput, AppError> {
     // ---- Prepare: sort files by hunk count (largest first) ----
     let mut file_entries: Vec<(FileInput, Vec<crate::diff::engine::DiffHunk>)> = input
@@ -147,6 +157,7 @@ pub async fn run_review(
 
     // ---- Phase 1: Hunk Review (per file) ----
     while state.current_file_idx < file_entries.len() {
+        cancelled(&cancel)?;
         let (file, hunks) = &file_entries[state.current_file_idx];
         let total_hunks = hunks.len();
 
@@ -182,6 +193,7 @@ pub async fn run_review(
         }];
 
         while state.current_hunk < total_hunks {
+            cancelled(&cancel)?;
             let hunk = &hunks[state.current_hunk];
 
             let context_note = prompts::hunk_context_note(
@@ -321,6 +333,7 @@ pub async fn run_review(
     let total_batches = state.total_batches;
 
     while state.current_batch <= total_batches {
+        cancelled(&cancel)?;
         let start = (state.current_batch - 1) * batch_size;
         let end = (start + batch_size).min(state.completed_files.len());
 
@@ -372,6 +385,7 @@ pub async fn run_review(
     }
 
     // ---- Phase 3: Final Synthesis ----
+    cancelled(&cancel)?;
     emit_progress(
         &app,
         "synthesis",
@@ -494,7 +508,11 @@ pub async fn post_findings(
                 "comments": [{ "parentCommentId": 0, "content": finding.comment, "commentType": 1 }],
                 "status": 1,
                 "threadContext": {
-                    "filePath": finding.file_path,
+                    "filePath": if finding.file_path.starts_with('/') {
+                        finding.file_path.clone()
+                    } else {
+                        format!("/{}", finding.file_path)
+                    },
                     "rightFileStart": { "line": lo, "offset": 1 },
                     "rightFileEnd":   { "line": hi, "offset": 1 },
                 },

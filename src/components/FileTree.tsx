@@ -204,7 +204,16 @@ function flattenTree(nodes: TreeNode[], collapsed: Set<string>, out: string[]) {
 
 export function FileTree({ files, onToggleViewed }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const tree = useMemo(() => buildTree(files), [files]);
+  const [filter, setFilter] = useState("");
+  const trimmedFilter = filter.trim().toLowerCase();
+  const filteredFiles = useMemo(() => {
+    if (!trimmedFilter) return files;
+    return files.filter((f) => {
+      const name = f.path.split("/").pop() ?? f.path;
+      return name.toLowerCase().includes(trimmedFilter);
+    });
+  }, [files, trimmedFilter]);
+  const tree = useMemo(() => buildTree(filteredFiles), [filteredFiles]);
 
   const toggleFolder = (path: string) => {
     setCollapsed((prev) => {
@@ -219,19 +228,19 @@ export function FileTree({ files, onToggleViewed }: Props) {
 
   useEffect(() => {
     if (mode === "flat") {
-      visibleFilePaths.value = files.map((f) => f.path);
+      visibleFilePaths.value = filteredFiles.map((f) => f.path);
     } else {
       const out: string[] = [];
       flattenTree(tree.children, collapsed, out);
       visibleFilePaths.value = out;
     }
-  }, [files, tree, collapsed, mode]);
+  }, [filteredFiles, tree, collapsed, mode]);
 
   return (
     <div class="flex flex-col">
       <div class="flex items-center justify-between px-2 py-1 border-b border-gray-200 dark:border-gray-800 sticky top-0 bg-white dark:bg-gray-950 z-10">
         <span class="text-[11px] uppercase tracking-wide text-gray-400">
-          Files ({files.length})
+          Files ({trimmedFilter ? `${filteredFiles.length}/${files.length}` : files.length})
         </span>
         <button
           class="text-sm px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -249,11 +258,35 @@ export function FileTree({ files, onToggleViewed }: Props) {
         </button>
       </div>
 
+      <div class="px-2 py-1 border-b border-gray-200 dark:border-gray-800 sticky top-[27px] bg-white dark:bg-gray-950 z-10">
+        <div class="relative">
+          <input
+            type="text"
+            value={filter}
+            onInput={(e) => setFilter(e.currentTarget.value)}
+            placeholder="Filter by filename..."
+            class="w-full text-xs px-2 py-1 pr-6 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+          {filter && (
+            <button
+              onClick={() => setFilter("")}
+              class="absolute right-1 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-sm leading-none"
+              title="Clear filter"
+              aria-label="Clear filter"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      </div>
+
       {files.length === 0 ? (
         <div class="p-3 text-xs text-gray-400">No files changed.</div>
+      ) : filteredFiles.length === 0 ? (
+        <div class="p-3 text-xs text-gray-400">No files match "{filter}".</div>
       ) : mode === "flat" ? (
         <div class="py-1">
-          {files.map((f) => (
+          {filteredFiles.map((f) => (
             <FileRow
               key={f.path}
               file={f}

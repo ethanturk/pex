@@ -90,11 +90,12 @@
 .diff-line--selected .diff-lineno {
   @apply text-blue-700 dark:text-blue-300;
 }
-/* Disable native text selection inside the diff content so the drag-to-select
-   gesture isn't visually competing with the browser's text selection. */
-.diff-container {
-  user-select: none;
-  -webkit-user-select: none;
+/* Allow native text selection on diff content so users can copy code, while
+   keeping the line-number gutter and sign column unselectable (they have
+   `select-none` applied directly) so they don't end up in the clipboard. */
+.diff-content {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* ===== Side-by-side (split) diff ===== */

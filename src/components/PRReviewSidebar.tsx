@@ -28,14 +28,15 @@ function severityLabel(s: Severity): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function findingAnchor(f: Finding): string {
-  if (f.lineStart != null && f.lineEnd != null) {
-    return f.lineStart === f.lineEnd
-      ? `${f.filePath}:${f.lineStart}`
-      : `${f.filePath}:${f.lineStart}-${f.lineEnd}`;
-  }
-  if (f.filePath) return f.filePath;
-  return "(PR-level)";
+function fileName(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i >= 0 ? path.slice(i + 1) : path;
+}
+
+function lineSuffix(f: Finding): string {
+  if (f.lineStart == null) return "";
+  if (f.lineEnd == null || f.lineEnd === f.lineStart) return `:${f.lineStart}`;
+  return `:${f.lineStart}-${f.lineEnd}`;
 }
 
 interface Props {
@@ -99,6 +100,21 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   const restart = () => startBackgroundReview(projectId, repoId, prId, prTitle);
   const post = () => postBackgroundReview(projectId, repoId, prId, prTitle);
   const close = () => (sidebarMode.value = null);
+
+  const cancel = async () => {
+    try {
+      await cancelReview();
+    } finally {
+      // Drop this PR's run so the sidebar resets to the "No review yet" state.
+      // The Rust engine sees the cancel flag, returns early, and the in-flight
+      // startReview promise's .catch in reviewBus would otherwise leave the
+      // run stuck in "error" — clearing it here is what makes the UI reset.
+      const next = new Map(reviewRuns.value);
+      next.delete(prId);
+      reviewRuns.value = next;
+      if (activeReviewPrId.value === prId) activeReviewPrId.value = null;
+    }
+  };
 
   return (
     <aside
@@ -200,10 +216,10 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
         <div class="px-4 py-2 border-t border-gray-200 dark:border-gray-700 shrink-0 flex items-center gap-2">
           {(running || posting) && (
             <button
-              onClick={() => cancelReview()}
-              class="px-2 py-1 text-xs text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded hover:bg-red-50 dark:hover:bg-red-900/30"
+              onClick={cancel}
+              class="px-3 py-1 text-xs text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded font-medium hover:bg-red-50 dark:hover:bg-red-900/30"
             >
-              Cancel
+              Cancel review
             </button>
           )}
           {run.status === "done" && (
@@ -246,26 +262,22 @@ function FindingsList({ projectId, repoId, prId, findings }: FindingsListProps) 
   const [posted, setPosted] = useState<Set<number>>(new Set());
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
 
-  // Group by file, preserving the engine's natural order, and sort each
-  // file's findings by severity (critical → moderate → minor). Each finding
-  // keeps its original index so post-tracking works across the regrouping.
+  // Group by severity (critical → moderate → minor); within each severity,
+  // sort by file path so related files cluster together. Each finding keeps
+  // its original index so post-tracking survives the regrouping.
   const indexed = findings.map((f, i) => ({ f, i }));
-  const fileOrder: string[] = [];
-  const byFile = new Map<string, { f: Finding; i: number }[]>();
+  const bySeverity = new Map<Severity, { f: Finding; i: number }[]>();
   for (const entry of indexed) {
-    const key = entry.f.filePath || "(PR-level)";
-    if (!byFile.has(key)) {
-      byFile.set(key, []);
-      fileOrder.push(key);
-    }
-    byFile.get(key)!.push(entry);
+    const list = bySeverity.get(entry.f.severity) ?? [];
+    list.push(entry);
+    bySeverity.set(entry.f.severity, list);
   }
-  for (const list of byFile.values()) {
-    list.sort(
-      (a, b) =>
-        SEVERITY_ORDER.indexOf(a.f.severity) - SEVERITY_ORDER.indexOf(b.f.severity),
+  for (const list of bySeverity.values()) {
+    list.sort((a, b) =>
+      (a.f.filePath || "").localeCompare(b.f.filePath || ""),
     );
   }
+  const severityOrder = SEVERITY_ORDER.filter((s) => bySeverity.has(s));
 
   const markPosted = (i: number) => {
     setPosted((prev) => {
@@ -282,11 +294,16 @@ function FindingsList({ projectId, repoId, prId, findings }: FindingsListProps) 
         Findings ({findings.length})
       </div>
       <div class="space-y-3">
-        {fileOrder.map((file) => (
-          <div key={file}>
-            <div class="font-mono text-[11px] text-gray-500 mb-1">{file}</div>
+        {severityOrder.map((sev) => (
+          <div key={sev}>
+            <div class="flex items-center gap-1.5 mb-1">
+              <span class={`inline-block w-2 h-2 rounded-full ${severityBadgeClass(sev)}`} />
+              <span class="text-[10px] uppercase tracking-wide text-gray-500">
+                {severityLabel(sev)} ({bySeverity.get(sev)!.length})
+              </span>
+            </div>
             <ul class="space-y-2">
-              {byFile.get(file)!.map(({ f, i }) => (
+              {bySeverity.get(sev)!.map(({ f, i }) => (
                 <FindingRow
                   key={i}
                   finding={f}
@@ -347,9 +364,17 @@ function FindingRow({
           title={severityLabel(finding.severity)}
         />
         <div class="flex-1 min-w-0">
-          <div class="font-mono text-[11px] text-gray-500 truncate">
-            {findingAnchor(finding)}
+          <div class="font-mono text-[11px] text-gray-700 dark:text-gray-300 truncate">
+            {finding.filePath ? `${fileName(finding.filePath)}${lineSuffix(finding)}` : "(PR-level)"}
           </div>
+          {finding.filePath && (
+            <div
+              class="font-mono text-[10px] text-gray-500 truncate"
+              title={finding.filePath}
+            >
+              {finding.filePath}
+            </div>
+          )}
           <div
             onClick={canJump ? jumpToFinding : undefined}
             role={canJump ? "button" : undefined}

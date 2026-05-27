@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "preact/hooks";
+import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { useResizableWidth } from "@/lib/useResizableWidth";
 import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode } from "@/lib/signals";
 import {
@@ -43,38 +43,75 @@ export function PRDetail({ prId }: Props) {
   const projectId = selectedProject.value;
   const repoId = selectedRepo.value;
 
-  // Fetch iterations on mount
+  // Clear cross-PR state on PR switch so a stale `selectedFile` from the
+  // previous PR doesn't kick off a diff load against this PR's commits —
+  // which would otherwise resolve to identical content and surface the
+  // "old/new identical" error before the user picks a real file.
+  useEffect(() => {
+    selectedFile.value = null;
+    currentIteration.value = 1;
+    prFiles.value = [];
+    setDiffHtml("");
+    setDiffPath("");
+    setSourceCommit("");
+    setBaseCommit(null);
+    setOldContent("");
+    setNewContent("");
+    setThreads([]);
+  }, [prId]);
+
+  // Fetch iterations on mount. Default to the LATEST iteration so the file
+  // tree shows the full cumulative changeset — ADO's iterations/{N}/changes
+  // endpoint returns only the files changed through iteration N, so picking
+  // iteration 1 silently hides files added in later pushes.
   useEffect(() => {
     if (projectId && repoId) {
       getIterations(projectId, repoId, prId)
         .then((iters) => {
-          if (iters.length > 0) setIterationCount(iters.length);
+          if (iters.length > 0) {
+            setIterationCount(iters.length);
+            if (currentIteration.value !== iters.length) {
+              currentIteration.value = iters.length;
+            }
+          }
         })
         .catch(() => {}); // Silently fall back to 1
     }
   }, [projectId, repoId, prId]);
 
+  // Concurrent fetches can race when iteration resolves async on mount:
+  // an in-flight iter=1 call can overwrite a fresher iter=N response.
+  // Increment on each call and ignore stale completions.
+  const filesReqId = useRef(0);
+  const diffReqId = useRef(0);
+
   const loadFiles = useCallback(async () => {
     if (!projectId || !repoId) return;
+    const reqId = ++filesReqId.current;
     setLoading(true);
     try {
       const files = await getPrFiles(projectId, repoId, prId, currentIteration.value);
+      if (reqId !== filesReqId.current) return;
       const viewed = await getViewedFiles(projectId, repoId, prId);
+      if (reqId !== filesReqId.current) return;
       const viewedSet = new Set(viewed);
       prFiles.value = files.map((f) => ({ ...f, viewed: viewedSet.has(f.path) }));
     } catch (e) {
+      if (reqId !== filesReqId.current) return;
       console.error("Failed to load PR files:", e);
       prFiles.value = [];
     } finally {
-      setLoading(false);
+      if (reqId === filesReqId.current) setLoading(false);
     }
   }, [projectId, repoId, prId]);
 
   const loadDiff = useCallback(async (path: string) => {
     if (!projectId || !repoId) return;
+    const reqId = ++diffReqId.current;
     setLoading(true);
     try {
       const d = await getFileDiff(projectId, repoId, prId, path, currentIteration.value, diffView.value);
+      if (reqId !== diffReqId.current) return;
       setDiffHtml(d.html);
       setDiffPath(d.path);
       setSourceCommit(d.sourceCommit);
@@ -83,8 +120,10 @@ export function PRDetail({ prId }: Props) {
       setNewContent(d.newContent);
       // Load threads for this file
       const allThreads = await getThreads(projectId, repoId, prId);
+      if (reqId !== diffReqId.current) return;
       setThreads(allThreads.filter((t: any) => t.filePath === d.path));
     } catch (e: any) {
+      if (reqId !== diffReqId.current) return;
       const msg = typeof e === "string" ? e : e?.message ?? String(e);
       console.error("Failed to load file diff:", e);
       setDiffPath(path);
@@ -96,7 +135,7 @@ export function PRDetail({ prId }: Props) {
       );
       setThreads([]);
     } finally {
-      setLoading(false);
+      if (reqId === diffReqId.current) setLoading(false);
     }
   }, [projectId, repoId, prId]);
 
@@ -139,7 +178,7 @@ export function PRDetail({ prId }: Props) {
     lineEnd: number,
     content: string,
   ) => {
-    const thread = await postComment(
+    await postComment(
       projectId,
       repoId,
       prId,
@@ -148,7 +187,10 @@ export function PRDetail({ prId }: Props) {
       lineEnd,
       content,
     );
-    setThreads([...threads, thread]);
+    // Refetch to get the canonical thread (the POST response from ADO sometimes
+    // omits comment content/author fields).
+    const allThreads = await getThreads(projectId, repoId, prId);
+    setThreads(allThreads.filter((t: any) => t.filePath === filePath));
   };
 
   // ---- Keyboard shortcuts ----
@@ -240,7 +282,7 @@ export function PRDetail({ prId }: Props) {
                   ? "Close hunk review sidebar"
                   : "Open hunk review sidebar"
             }
-            class={`text-xs px-3 py-1.5 rounded-lg border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+            class={`text-xs px-3 py-1 rounded border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
               sidebarMode.value === "hunks"
                 ? "border-accent text-accent bg-accent/10"
                 : "border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -279,7 +321,7 @@ export function PRDetail({ prId }: Props) {
           />
         </aside>
 
-        <div class="flex-1 overflow-y-auto">
+        <div class="flex-1 overflow-hidden min-w-0">
           {loading ? (
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>
           ) : diffHtml ? (

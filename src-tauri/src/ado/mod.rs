@@ -244,8 +244,76 @@ impl AdoClient {
         pr_id: i64,
         iteration: i32,
     ) -> Result<PrFilesResult, AppError> {
-        // ADO returns the cumulative changes for an iteration via the iterations/{id}/changes
-        // endpoint. The response uses `changeEntries`, not `changes`.
+        // Resolve the iteration's source HEAD and merge base. We then list
+        // every changed path between those two commits via /diffs/commits,
+        // which is the canonical, full-changeset endpoint and avoids the
+        // iteration-changes endpoint's quirks around compareTo defaults and
+        // incremental-only responses on multi-push PRs.
+        let (commit_id, parent_commit_id) = self
+            .get_iteration_detail(project, repo_id, pr_id, iteration)
+            .await
+            .unwrap_or_else(|_| (String::new(), None));
+
+        let files = if !commit_id.is_empty() && parent_commit_id.is_some() {
+            self.list_diff_files(
+                project,
+                repo_id,
+                parent_commit_id.as_deref().unwrap(),
+                &commit_id,
+            )
+            .await?
+        } else {
+            self.list_iteration_changes(project, repo_id, pr_id, iteration)
+                .await?
+        };
+
+        Ok(PrFilesResult {
+            files,
+            commit_id,
+            parent_commit_id,
+        })
+    }
+
+    async fn list_diff_files(
+        &self,
+        project: &str,
+        repo_id: &str,
+        base_sha: &str,
+        target_sha: &str,
+    ) -> Result<Vec<FileChange>, AppError> {
+        #[derive(serde::Deserialize)]
+        struct DiffsResponse {
+            #[serde(default)]
+            changes: Vec<FileChange>,
+        }
+
+        let resp: DiffsResponse = self
+            .get(&format!(
+                "{}/_apis/git/repositories/{}/diffs/commits?baseVersion={}&baseVersionType=commit&targetVersion={}&targetVersionType=commit&$top=2000&api-version={}",
+                project, repo_id, base_sha, target_sha, self.api_version
+            ))
+            .await?;
+
+        Ok(resp
+            .changes
+            .into_iter()
+            .filter(|f| {
+                f.item
+                    .git_object_type
+                    .as_deref()
+                    .map(|t| t.eq_ignore_ascii_case("blob"))
+                    .unwrap_or(true)
+            })
+            .collect())
+    }
+
+    async fn list_iteration_changes(
+        &self,
+        project: &str,
+        repo_id: &str,
+        pr_id: i64,
+        iteration: i32,
+    ) -> Result<Vec<FileChange>, AppError> {
         #[derive(serde::Deserialize)]
         struct ChangesResponse {
             #[serde(rename = "changeEntries", default)]
@@ -254,13 +322,12 @@ impl AdoClient {
 
         let changes: ChangesResponse = self
             .get(&format!(
-                "{}/_apis/git/repositories/{}/pullRequests/{}/iterations/{}/changes?$top=1000&api-version={}",
+                "{}/_apis/git/repositories/{}/pullRequests/{}/iterations/{}/changes?$top=2000&api-version={}",
                 project, repo_id, pr_id, iteration, self.api_version
             ))
             .await?;
 
-        // Filter to blob (file) entries — iteration changes can include tree entries for renames.
-        let files: Vec<FileChange> = changes
+        Ok(changes
             .change_entries
             .into_iter()
             .filter(|f| {
@@ -270,18 +337,7 @@ impl AdoClient {
                     .map(|t| t.eq_ignore_ascii_case("blob"))
                     .unwrap_or(true)
             })
-            .collect();
-
-        let (commit_id, parent_commit_id) = self
-            .get_iteration_detail(project, repo_id, pr_id, iteration)
-            .await
-            .unwrap_or_else(|_| (String::new(), None));
-
-        Ok(PrFilesResult {
-            files,
-            commit_id,
-            parent_commit_id,
-        })
+            .collect())
     }
 
     pub async fn get_file_diff(
@@ -804,7 +860,11 @@ pub struct PrFilesResult {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Iteration {
     pub id: i64,
-    pub name: String,
+    // ADO omits `name` on some iterations (notably auto-generated "rebase"
+    // or merge-target-update iterations), so this must be optional or the
+    // entire iterations response fails to deserialize.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// Trait for abstracting over Git providers (Azure DevOps, GitHub, etc.)
@@ -856,6 +916,8 @@ pub struct CommentThread {
     pub thread_context: Option<ThreadContext>,
     pub status: Option<String>,
     pub comments: Vec<Comment>,
+    #[serde(rename = "isDeleted", default)]
+    pub is_deleted: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -881,4 +943,6 @@ pub struct Comment {
     pub content: Option<String>,
     #[serde(rename = "publishedDate")]
     pub published_date: Option<String>,
+    #[serde(rename = "isDeleted", default)]
+    pub is_deleted: bool,
 }

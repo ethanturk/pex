@@ -42,6 +42,10 @@ pub struct AppState {
     pub ai_manager: std::sync::Mutex<Option<ai::AiManager>>,
     pub diff_cache: cache::diff_cache::DiffCache,
     pub standards_cache: cache::standards_cache::StandardsCache,
+    /// Flipped to true by `cancel_review`; the review engine checks this
+    /// between LLM calls and bails out early, so in-flight reviews actually
+    /// stop instead of running to completion.
+    pub review_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -74,6 +78,7 @@ pub fn run() {
             ai_manager: std::sync::Mutex::new(None),
             diff_cache: cache::diff_cache::DiffCache::new(),
             standards_cache: cache::standards_cache::StandardsCache::new(),
+            review_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth::login_pat,
