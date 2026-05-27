@@ -119,11 +119,15 @@ export interface ReviewProgress {
 
 export type PRReviewStatus = "running" | "done" | "posting" | "posted" | "error";
 
+export type ReviewMode = "fast" | "thorough";
+
 export interface PRReviewRun {
   projectId: string;
   repoId: string;
   prTitle: string;
   status: PRReviewStatus;
+  /// Review mode the user picked when starting this run.
+  mode?: ReviewMode;
   progress: ReviewProgress | null;
   // Output of the latest completed run; preserved across "posting" so the
   // sidebar can keep showing the summary while we post to ADO.

@@ -1,4 +1,5 @@
 use crate::review::engine::{self, FileInput, ReviewInput, ReviewOutput};
+use crate::review::state::ReviewMode;
 use crate::AppState;
 use crate::cache::standards_cache::StandardsCacheKey;
 use crate::diff::engine::DiffView;
@@ -14,7 +15,9 @@ pub async fn start_review(
     repo_id: String,
     pr_id: i64,
     pr_title: String,
+    mode: Option<ReviewMode>,
 ) -> Result<ReviewOutput, String> {
+    let mode = mode.unwrap_or_default();
     // Gather the ADO client and context
     let (client, org_url) = {
         let ado = state.ado_client.lock().map_err(|e| e.to_string())?;
@@ -93,6 +96,7 @@ pub async fn start_review(
         project_id: project_id.clone(),
         repo_id: repo_id.clone(),
         pr_id,
+        mode,
     };
 
     // Clear any prior cancel signal before starting a fresh run.
@@ -125,7 +129,9 @@ pub async fn start_review_post(
     repo_id: String,
     pr_id: i64,
     pr_title: String,
+    mode: Option<ReviewMode>,
 ) -> Result<(), String> {
+    let mode = mode.unwrap_or_default();
     // Run the review first (reuses start_review logic inline)
     let (client, org_url) = {
         let ado = state.ado_client.lock().map_err(|e| e.to_string())?;
@@ -188,6 +194,7 @@ pub async fn start_review_post(
         project_id: project_id.clone(),
         repo_id: repo_id.clone(),
         pr_id,
+        mode,
     };
 
     state.review_cancel.store(false, Ordering::SeqCst);

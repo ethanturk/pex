@@ -8,6 +8,7 @@ import {
 import {
   startReview,
   startReviewPost,
+  type ReviewMode,
   type ReviewOutput,
 } from "@/lib/api";
 
@@ -54,6 +55,7 @@ export function startBackgroundReview(
   prId: number,
   prTitle: string,
   resuming = false,
+  mode: ReviewMode = "fast",
 ) {
   activeReviewPrId.value = prId;
   const next = new Map(reviewRuns.value);
@@ -69,10 +71,11 @@ export function startBackgroundReview(
       : null,
     output: null,
     error: null,
+    mode,
   });
   reviewRuns.value = next;
 
-  startReview(projectId, repoId, prId, prTitle)
+  startReview(projectId, repoId, prId, prTitle, mode)
     .then((output) => {
       updateReviewRun(prId, { status: "done", output, progress: null });
     })
@@ -89,11 +92,12 @@ export function postBackgroundReview(
   repoId: string,
   prId: number,
   prTitle: string,
+  mode: ReviewMode = "fast",
 ) {
   activeReviewPrId.value = prId;
   updateReviewRun(prId, { status: "posting", error: null });
 
-  startReviewPost(projectId, repoId, prId, prTitle)
+  startReviewPost(projectId, repoId, prId, prTitle, mode)
     .catch((e: unknown) => {
       updateReviewRun(prId, { status: "error", error: String(e) });
     })

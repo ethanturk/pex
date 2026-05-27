@@ -2,6 +2,17 @@ use crate::AppError;
 use crate::review::engine::FileAggregateResult;
 use serde::{Deserialize, Serialize};
 
+/// Which review strategy to run.
+/// - `Fast`: single generalist pass per hunk (original behavior).
+/// - `Thorough`: multiple specialist passes per hunk (slower, broader coverage).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewMode {
+    #[default]
+    Fast,
+    Thorough,
+}
+
 /// Serializable progress state for resumable PR reviews.
 /// Persisted to SQLite so the user can continue after cancellation or crash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,6 +20,10 @@ use serde::{Deserialize, Serialize};
 pub struct ReviewState {
     /// The PR URL or identifier
     pub pr_key: String,
+    /// Which review strategy this run is using. Defaults to Fast so older
+    /// persisted states still deserialize.
+    #[serde(default)]
+    pub mode: ReviewMode,
     /// Phase: "hunk-review", "batch-aggregate", "synthesis", "done"
     pub phase: String,
     /// All file paths being reviewed (sorted largest first)
@@ -34,10 +49,11 @@ pub struct ReviewState {
 }
 
 impl ReviewState {
-    pub fn new(pr_key: String, file_paths: Vec<String>) -> Self {
+    pub fn new(pr_key: String, file_paths: Vec<String>, mode: ReviewMode) -> Self {
         let total_batches = (file_paths.len() + 4) / 5; // ceil division by 5
         Self {
             pr_key,
+            mode,
             phase: "hunk-review".into(),
             file_paths,
             current_file_idx: 0,

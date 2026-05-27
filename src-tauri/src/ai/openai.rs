@@ -1,79 +1,129 @@
 use crate::ai::{AiProvider, ChatMessage};
 use crate::AppError;
-use async_openai::types::chat::{
-    ChatCompletionRequestAssistantMessage, ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage,
-    CreateChatCompletionRequestArgs,
-};
+use serde::{Deserialize, Serialize};
 
-/// OpenAI-compatible provider backed by the `async-openai` crate.
-/// Works with any endpoint that speaks the OpenAI chat completions API
-/// (OpenAI, Azure OpenAI, Ollama, OpenRouter, vLLM, etc.).
+/// OpenAI-compatible provider — hits any endpoint that speaks the OpenAI chat
+/// completions API (OpenAI, Azure OpenAI, Ollama, OpenRouter, vLLM, LM Studio).
+///
+/// Uses a direct `reqwest` client (rather than `async-openai`) so we can wire
+/// separate `connect_timeout` and `read_timeout`. The previous async-openai
+/// integration only exposed a total-request timeout — that killed long but
+/// healthy generations from slow local models, while the model kept burning
+/// cycles on the dropped request.
 pub struct OpenAiProvider {
-    client: async_openai::Client<async_openai::config::OpenAIConfig>,
+    endpoint: String,
     model: String,
-    request_timeout: std::time::Duration,
+    api_key: String,
+    http: reqwest::Client,
 }
 
 impl OpenAiProvider {
-    pub fn new(endpoint: String, model: String, api_key: String, request_timeout_secs: u64) -> Self {
-        let config = async_openai::config::OpenAIConfig::default()
-            .with_api_base(endpoint)
-            .with_api_key(api_key);
-
-        let client = async_openai::Client::with_config(config);
+    /// `connect_timeout_secs` bounds the TCP/TLS handshake.
+    /// `read_timeout_secs` bounds the time between successive bytes from the
+    /// server — it does NOT bound total wall-clock generation time.
+    pub fn new(
+        endpoint: String,
+        model: String,
+        api_key: String,
+        connect_timeout_secs: u64,
+        read_timeout_secs: u64,
+    ) -> Self {
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(connect_timeout_secs))
+            .read_timeout(std::time::Duration::from_secs(read_timeout_secs))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            client,
+            endpoint,
             model,
-            // async-openai pins its own reqwest version, so we can't inject a
-            // timeout-configured client. Enforce the timeout at the call boundary instead.
-            request_timeout: std::time::Duration::from_secs(request_timeout_secs),
+            api_key,
+            http,
         }
     }
 }
 
+#[derive(Serialize)]
+struct OpenAiRequest<'a> {
+    model: &'a str,
+    messages: Vec<OpenAiMessage<'a>>,
+}
+
+#[derive(Serialize)]
+struct OpenAiMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+#[derive(Deserialize)]
+struct OpenAiResponse {
+    choices: Vec<OpenAiChoice>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChoice {
+    message: OpenAiResponseMessage,
+}
+
+#[derive(Deserialize)]
+struct OpenAiResponseMessage {
+    #[serde(default)]
+    content: String,
+}
+
 #[async_trait::async_trait]
 impl AiProvider for OpenAiProvider {
-    async fn chat(&self, messages: &[ChatMessage]) -> Result<String, AppError> {
-        let openai_messages: Vec<ChatCompletionRequestMessage> = messages
+    async fn chat_with_model(
+        &self,
+        messages: &[ChatMessage],
+        model_override: Option<&str>,
+    ) -> Result<String, AppError> {
+        let openai_messages: Vec<OpenAiMessage> = messages
             .iter()
-            .map(|m| match m.role {
-                crate::ai::ChatRole::System => {
-                    ChatCompletionRequestSystemMessage::from(m.content.clone()).into()
-                }
-                crate::ai::ChatRole::User => {
-                    ChatCompletionRequestUserMessage::from(m.content.clone()).into()
-                }
-                crate::ai::ChatRole::Assistant => {
-                    ChatCompletionRequestAssistantMessage::from(m.content.clone()).into()
-                }
+            .map(|m| OpenAiMessage {
+                role: match m.role {
+                    crate::ai::ChatRole::System => "system",
+                    crate::ai::ChatRole::User => "user",
+                    crate::ai::ChatRole::Assistant => "assistant",
+                },
+                content: &m.content,
             })
             .collect();
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages(openai_messages)
-            .build()
-            .map_err(|e| AppError::Ai(format!("Failed to build request: {}", e)))?;
+        let model = model_override.unwrap_or(&self.model);
+        let body = OpenAiRequest {
+            model,
+            messages: openai_messages,
+        };
 
-        let response = tokio::time::timeout(
-            self.request_timeout,
-            self.client.chat().create(request),
-        )
-        .await
-        .map_err(|_| {
-            AppError::Ai(format!(
-                "OpenAI request timed out after {}s",
-                self.request_timeout.as_secs()
-            ))
-        })?
-        .map_err(|e| AppError::Ai(format!("OpenAI request failed: {}", e)))?;
+        let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Ai(format!("OpenAI request failed: {}", e)))?;
 
-        let content = response
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(AppError::Ai(format!(
+                "OpenAI request returned {}: {}",
+                status, text
+            )));
+        }
+
+        let parsed: OpenAiResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Ai(format!("Failed to parse OpenAI response: {}", e)))?;
+
+        let content = parsed
             .choices
             .into_iter()
             .next()
-            .and_then(|c| c.message.content)
+            .map(|c| c.message.content)
             .unwrap_or_default();
 
         Ok(content)
