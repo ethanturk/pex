@@ -94,6 +94,7 @@ pub fn run() {
             commands::pr::get_iterations,
             commands::files::get_pr_files,
             commands::files::get_file_diff,
+            commands::files::prefetch_pr_diffs,
             commands::files::get_file_lines,
             commands::files::mark_file_viewed,
             commands::files::get_viewed_files,

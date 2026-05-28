@@ -1,7 +1,9 @@
 use crate::AppError;
 use keyring::Entry;
+use std::collections::BTreeMap;
 
 const SERVICE_NAME: &str = "pex-pr-reviewer";
+const AI_CREDENTIALS_ACCOUNT: &str = "pex-ai-credentials";
 
 pub struct KeyringStore;
 
@@ -100,5 +102,61 @@ impl KeyringStore {
             },
             Err(e) => Err(AppError::Keyring(e)),
         }
+    }
+
+    /// Save an AI provider token into one bundled keychain item. Keeping all AI
+    /// provider keys under one account avoids one OS prompt per provider key.
+    pub fn save_ai_token(provider: &str, token: &str) -> Result<(), AppError> {
+        let mut bundle = Self::get_ai_token_bundle()?;
+        bundle.insert(provider.to_string(), token.to_string());
+        Self::save_ai_token_bundle(&bundle)
+    }
+
+    /// Retrieve an AI provider token from the bundled keychain item.
+    ///
+    /// Backward compatibility: if the bundle does not contain the requested
+    /// provider, try the legacy per-provider key and migrate that value into
+    /// the bundle.
+    pub fn get_ai_token(provider: &str) -> Result<Option<String>, AppError> {
+        let mut bundle = Self::get_ai_token_bundle()?;
+        if let Some(token) = bundle.get(provider).filter(|t| !t.is_empty()) {
+            return Ok(Some(token.clone()));
+        }
+
+        let legacy_service = match provider {
+            "openai" => "pex-ai-openai",
+            "anthropic" => "pex-ai-anthropic",
+            _ => return Ok(None),
+        };
+        if let Some(token) = Self::get_token(legacy_service)? {
+            if !token.is_empty() {
+                bundle.insert(provider.to_string(), token.clone());
+                Self::save_ai_token_bundle(&bundle)?;
+                return Ok(Some(token));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn get_ai_token_bundle() -> Result<BTreeMap<String, String>, AppError> {
+        let entry = Entry::new(SERVICE_NAME, AI_CREDENTIALS_ACCOUNT);
+        match entry {
+            Ok(e) => match e.get_password() {
+                Ok(raw) => serde_json::from_str(&raw)
+                    .map_err(|e| AppError::Auth(format!("Invalid AI credentials bundle: {}", e))),
+                Err(keyring::Error::NoEntry) => Ok(BTreeMap::new()),
+                Err(e) => Err(AppError::Keyring(e)),
+            },
+            Err(e) => Err(AppError::Keyring(e)),
+        }
+    }
+
+    fn save_ai_token_bundle(bundle: &BTreeMap<String, String>) -> Result<(), AppError> {
+        let entry = Entry::new(SERVICE_NAME, AI_CREDENTIALS_ACCOUNT)?;
+        let payload = serde_json::to_string(bundle)
+            .map_err(|e| AppError::Auth(format!("Failed to serialize AI credentials: {}", e)))?;
+        entry.set_password(&payload)?;
+        Ok(())
     }
 }

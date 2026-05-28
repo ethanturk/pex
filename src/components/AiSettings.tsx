@@ -2,7 +2,6 @@ import { useState, useEffect } from "preact/hooks";
 import {
   getAiSettings,
   saveAiSettings,
-  testAiConnection,
   getAiPrompts,
   saveAiPrompt,
   resetAiPrompt,
@@ -18,6 +17,16 @@ interface Props {
 
 type Tab = "ai" | "prompts";
 
+const DEFAULT_STANDARDS_MAX_CHARS = 8000;
+const MIN_STANDARDS_MAX_CHARS = 500;
+const MAX_STANDARDS_MAX_CHARS = 65535;
+
+function normalizeStandardsMaxChars(value: string | number): number {
+  const n = typeof value === "number" ? value : parseInt(value, 10);
+  if (!Number.isFinite(n)) return DEFAULT_STANDARDS_MAX_CHARS;
+  return Math.min(MAX_STANDARDS_MAX_CHARS, Math.max(MIN_STANDARDS_MAX_CHARS, n));
+}
+
 export function AiSettings({ open, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("ai");
 
@@ -29,11 +38,12 @@ export function AiSettings({ open, onClose }: Props) {
   const [connectTimeoutSecs, setConnectTimeoutSecs] = useState(10);
   const [readTimeoutSecs, setReadTimeoutSecs] = useState(60);
   const [hunkConcurrency, setHunkConcurrency] = useState(1);
-  const [standardsMaxChars, setStandardsMaxChars] = useState(8000);
+  const [standardsMaxChars, setStandardsMaxChars] = useState(String(DEFAULT_STANDARDS_MAX_CHARS));
   const [retryCount, setRetryCount] = useState(1);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [testing, setTesting] = useState(false);
+  const [backdropMouseDown, setBackdropMouseDown] = useState(false);
 
   // ---- Prompts tab ----
   const [prompts, setPrompts] = useState<AiPromptInfo[]>([]);
@@ -63,7 +73,7 @@ export function AiSettings({ open, onClose }: Props) {
       setConnectTimeoutSecs(settings.connectTimeoutSecs || 10);
       setReadTimeoutSecs(settings.readTimeoutSecs || 60);
       setHunkConcurrency(settings.hunkConcurrency || 1);
-      setStandardsMaxChars(settings.standardsMaxChars || 8000);
+      setStandardsMaxChars(String(settings.standardsMaxChars || DEFAULT_STANDARDS_MAX_CHARS));
       // retryCount of 0 is valid ("no retries"), so don't fall back to a default
       // when the user has explicitly chosen 0.
       setRetryCount(
@@ -97,6 +107,9 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const m = await listAiModels(true);
       setAvailableModels(m);
+      if (m.length > 0 && model && !m.includes(model)) {
+        setModel(m[0]);
+      }
     } catch (e: unknown) {
       setModelsError(String(e));
     } finally {
@@ -157,7 +170,9 @@ export function AiSettings({ open, onClose }: Props) {
     setSaving(true);
     setMessage(null);
     try {
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, standardsMaxChars, retryCount);
+      const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
+      setStandardsMaxChars(String(normalizedStandardsMaxChars));
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount);
       setMessage({ text: "AI settings saved.", ok: true });
     } catch (e: any) {
       setMessage({ text: String(e), ok: false });
@@ -167,13 +182,34 @@ export function AiSettings({ open, onClose }: Props) {
   };
 
   const handleTestConnection = async () => {
-    // Save settings first so the backend can configure the provider
     setTesting(true);
     setMessage(null);
+    setModelsError(null);
     try {
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, standardsMaxChars, retryCount);
-      const result = await testAiConnection();
-      setMessage({ text: result, ok: true });
+      const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
+      setStandardsMaxChars(String(normalizedStandardsMaxChars));
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount);
+      const models = await listAiModels(true);
+      setAvailableModels(models);
+
+      const selectedModel = models.includes(model) ? model : models[0] ?? "";
+      if (selectedModel !== model) {
+        setModel(selectedModel);
+        if (selectedModel) {
+          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount);
+          setMessage({
+            text: `Connected. Model changed to ${selectedModel} because the previous model is not available from this provider.`,
+            ok: true,
+          });
+        } else {
+          setMessage({
+            text: "Connected, but this provider did not return any models. Select a model after refreshing the model list.",
+            ok: true,
+          });
+        }
+      } else {
+        setMessage({ text: `Connected. Found ${models.length} model${models.length === 1 ? "" : "s"}.`, ok: true });
+      }
     } catch (e: any) {
       setMessage({ text: String(e), ok: false });
     } finally {
@@ -184,10 +220,18 @@ export function AiSettings({ open, onClose }: Props) {
   if (!open) return null;
 
   return (
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onMouseDown={(e) => setBackdropMouseDown(e.target === e.currentTarget)}
+      onMouseUp={(e) => {
+        if (backdropMouseDown && e.target === e.currentTarget) {
+          onClose();
+        }
+        setBackdropMouseDown(false);
+      }}
+    >
       <div
         class="bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
@@ -213,7 +257,13 @@ export function AiSettings({ open, onClose }: Props) {
                 <Field label="Provider">
                   <select
                     value={provider}
-                    onChange={(e) => setProvider(e.currentTarget.value)}
+                    onChange={(e) => {
+                      setProvider(e.currentTarget.value);
+                      setModel("");
+                      setAvailableModels(null);
+                      setModelsError(null);
+                      setMessage(null);
+                    }}
                     class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
                   >
                     <option value="openai">OpenAI-compatible</option>
@@ -225,30 +275,79 @@ export function AiSettings({ open, onClose }: Props) {
                   <input
                     type="url"
                     value={endpoint}
-                    onInput={(e) => setEndpoint(e.currentTarget.value)}
+                    onInput={(e) => {
+                      setEndpoint(e.currentTarget.value);
+                      setModel("");
+                      setAvailableModels(null);
+                      setModelsError(null);
+                      setMessage(null);
+                    }}
                     placeholder={provider === "openai" ? "https://api.openai.com" : "https://api.anthropic.com"}
                     class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
                   />
                 </Field>
 
-                <Field label="Model">
-                  <input
-                    type="text"
-                    value={model}
-                    onInput={(e) => setModel(e.currentTarget.value)}
-                    placeholder={provider === "openai" ? "gpt-4.1" : "claude-sonnet-4-20250514"}
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
-                  />
+                <Field label="API Key">
+                  <div class="flex items-center gap-2">
+                    <input
+                      type="password"
+                      value={apiKey}
+                      onInput={(e) => {
+                        setApiKey(e.currentTarget.value);
+                        setAvailableModels(null);
+                        setModelsError(null);
+                        setMessage(null);
+                      }}
+                      placeholder="Enter API key"
+                      class="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleTestConnection}
+                      disabled={testing || !endpoint}
+                      class="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                    >
+                      {testing ? "Testing..." : "Test"}
+                    </button>
+                  </div>
                 </Field>
 
-                <Field label="API Key">
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onInput={(e) => setApiKey(e.currentTarget.value)}
-                    placeholder="Enter API key"
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
-                  />
+                <Field label="Model">
+                  {(() => {
+                    const modelOptions = availableModels ?? [];
+                    const showOrphan = !!model && !modelOptions.includes(model);
+                    return (
+                      <div class="flex items-center gap-2">
+                        <select
+                          value={model}
+                          onChange={(e) => setModel(e.currentTarget.value)}
+                          class="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                        >
+                          {!model && <option value="">Select a model…</option>}
+                          {showOrphan && (
+                            <option value={model}>{model} (not in list)</option>
+                          )}
+                          {modelOptions.map((m) => (
+                            <option value={m}>{m}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleRefreshModels}
+                          disabled={modelsRefreshing}
+                          title="Re-fetch the available models from your provider"
+                          class="text-xs px-2 py-1 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                        >
+                          {modelsRefreshing ? "Refreshing…" : "Refresh"}
+                        </button>
+                      </div>
+                    );
+                  })()}
+                  {modelsError && (
+                    <p class="text-xs text-red-600 dark:text-red-400 mt-1">
+                      Couldn't load models: {modelsError}
+                    </p>
+                  )}
                 </Field>
 
                 <Field label="Connect timeout (seconds)">
@@ -301,7 +400,7 @@ export function AiSettings({ open, onClose }: Props) {
                     class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Maximum number of hunks "Review All" sends to the model at once. Default 1 = sequential. Increase only if your provider can handle parallel requests.
+                    Maximum number of hunks a PR review or "Review All" sends to the model at once. Default 1 = sequential. Increase only if your provider can handle parallel requests.
                   </p>
                 </Field>
 
@@ -311,13 +410,9 @@ export function AiSettings({ open, onClose }: Props) {
                     min={500}
                     max={65535}
                     value={standardsMaxChars}
-                    onInput={(e) => {
-                      const n = parseInt(e.currentTarget.value, 10);
-                      if (!Number.isFinite(n)) {
-                        setStandardsMaxChars(8000);
-                      } else {
-                        setStandardsMaxChars(Math.min(65535, Math.max(500, n)));
-                      }
+                    onInput={(e) => setStandardsMaxChars(e.currentTarget.value)}
+                    onBlur={() => {
+                      setStandardsMaxChars(String(normalizeStandardsMaxChars(standardsMaxChars)));
                     }}
                     placeholder="8000"
                     class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
@@ -358,13 +453,6 @@ export function AiSettings({ open, onClose }: Props) {
                 class="mt-3 px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium disabled:opacity-50"
               >
                 {saving ? "Saving..." : "Save AI Settings"}
-              </button>
-              <button
-                onClick={handleTestConnection}
-                disabled={testing || !endpoint || !model || !apiKey}
-                class="mt-3 ml-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-              >
-                {testing ? "Testing..." : "Test Connection"}
               </button>
             </section>
           )}

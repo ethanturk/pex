@@ -265,14 +265,11 @@ impl AiManager {
         };
 
         let kind: AiProviderKind = provider_str.parse()?;
-        let api_key = match kind {
-            AiProviderKind::OpenAI => {
-                crate::auth::keyring_store::KeyringStore::get_token("pex-ai-openai")?
-            }
-            AiProviderKind::Anthropic => {
-                crate::auth::keyring_store::KeyringStore::get_token("pex-ai-anthropic")?
-            }
+        let provider_key = match kind {
+            AiProviderKind::OpenAI => "openai",
+            AiProviderKind::Anthropic => "anthropic",
         };
+        let api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)?;
 
         let Some(api_key) = api_key else {
             return Ok(false);

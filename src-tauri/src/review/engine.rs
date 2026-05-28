@@ -6,6 +6,7 @@ use crate::review::state::{self, ReviewMode, ReviewState};
 use crate::AppError;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::Semaphore;
 use tauri::Emitter;
 
 fn cancelled(flag: &AtomicBool) -> Result<(), AppError> {
@@ -153,6 +154,13 @@ pub async fn run_review(
         Ok(c) => crate::ai::read_retry_count(&c).unwrap_or(crate::ai::DEFAULT_RETRY_COUNT),
         Err(_) => crate::ai::DEFAULT_RETRY_COUNT,
     };
+    let hunk_concurrency = match db.lock() {
+        Ok(c) => crate::ai::read_hunk_concurrency(&c)
+            .unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY),
+        Err(_) => crate::ai::DEFAULT_HUNK_CONCURRENCY,
+    }
+    .max(1) as usize;
+    let llm_permits = Arc::new(Semaphore::new(hunk_concurrency));
 
     // Resolve specialist system prompts + per-specialist model overrides once for
     // the run (Thorough mode only). Resolved up front so user edits in Settings
@@ -212,142 +220,89 @@ pub async fn run_review(
             }),
         );
 
-        let mut messages: Vec<ChatMessage> = vec![ChatMessage {
-            role: ChatRole::System,
-            content: format!(
-                "{}\n\n{}",
-                prompts::REVIEW_HUNK_SYSTEM,
-                if input.standards.is_empty() {
-                    String::new()
-                } else {
-                    format!("Project standards:\n{}", input.standards)
-                }
-            ),
-        }];
-
         while state.current_hunk < total_hunks {
             cancelled(&cancel)?;
-            let hunk = &hunks[state.current_hunk];
 
-            let hunk_text: String = hunk
-                .lines
-                .iter()
-                .map(|l| format!("{}{}", l.kind, l.content))
-                .collect::<Vec<_>>()
-                .join("");
+            let batch_start = state.current_hunk;
+            let batch_end = (batch_start + hunk_concurrency).min(total_hunks);
+            let mut handles = Vec::new();
 
-            let context_note = prompts::hunk_context_note(
-                &file.path,
-                state.current_hunk + 1,
-                total_hunks,
-            );
-            let user_msg = prompts::hunk_user_message(
-                &file.path,
-                &hunk.header,
-                &hunk_text,
-                "",
-            );
-
-            // Either run the single generalist pass (Fast) or fan out to all
-            // specialists (Thorough). For Thorough, each specialist gets a
-            // fresh message list so prompts don't bleed across passes.
-            let combined_response: Result<String, AppError> = if input.mode == ReviewMode::Thorough {
-                let mut outputs: Vec<String> = Vec::new();
-                let mut last_err: Option<AppError> = None;
-                for (key, sys_text, model_override) in &specialist_prompts {
-                    let pass_messages = vec![
-                        ChatMessage {
-                            role: ChatRole::System,
-                            content: if input.standards.is_empty() {
-                                sys_text.clone()
-                            } else {
-                                format!("{}\n\nProject standards:\n{}", sys_text, input.standards)
-                            },
-                        },
-                        ChatMessage {
-                            role: ChatRole::User,
-                            content: context_note.clone(),
-                        },
-                        ChatMessage {
-                            role: ChatRole::User,
-                            content: user_msg.clone(),
-                        },
-                    ];
-                    match chat_with_retries_and_model(&provider, &pass_messages, model_override.as_deref(), retry_count).await {
-                        Ok(r) => {
-                            if r.trim() != "No issues found." && !r.trim().is_empty() {
-                                outputs.push(format!("[{}]\n{}", key.specialist_label(), r.trim()));
-                            }
-                        }
-                        Err(e) => {
-                            last_err = Some(e);
-                        }
-                    }
-                }
-                if outputs.is_empty() {
-                    if let Some(e) = last_err {
-                        Err(e)
-                    } else {
-                        Ok("No issues found.".to_string())
-                    }
-                } else {
-                    Ok(outputs.join("\n\n"))
-                }
-            } else {
-                messages.push(ChatMessage {
-                    role: ChatRole::User,
-                    content: context_note.clone(),
-                });
-                messages.push(ChatMessage {
-                    role: ChatRole::User,
-                    content: user_msg.clone(),
-                });
-                let r = chat_with_retries(&provider, &messages, retry_count).await;
-                if let Ok(ref response) = r {
-                    messages.push(ChatMessage {
-                        role: ChatRole::Assistant,
-                        content: response.clone(),
-                    });
-                }
-                r
-            };
-
-            let response = match combined_response {
-                Ok(r) => r,
-                Err(e) => {
-                    let skip_msg = format!("[skipped — error: {}]", e);
-                    emit_progress(
-                        &app,
-                        "hunk-skipped",
-                        &format!("Hunk {}/{} in {} failed: {}", state.current_hunk + 1, total_hunks, file.path, e),
-                        serde_json::json!({}),
-                    );
-                    state.current_file_findings.push((state.current_hunk + 1, skip_msg));
-                    state.current_hunk += 1;
-                    messages.truncate(1);
-                    continue;
-                }
-            };
-
-            if response.trim() != "No issues found." {
-                state.current_file_findings.push((state.current_hunk + 1, response));
+            for hunk_idx in batch_start..batch_end {
+                let provider = provider.clone();
+                let hunk = hunks[hunk_idx].clone();
+                let file_path = file.path.clone();
+                let standards = input.standards.clone();
+                let specialist_prompts = specialist_prompts.clone();
+                let llm_permits = llm_permits.clone();
+                let mode = input.mode;
+                handles.push((
+                    hunk_idx,
+                    tokio::spawn(async move {
+                        review_single_hunk(
+                            provider,
+                            mode,
+                            file_path,
+                            hunk_idx,
+                            total_hunks,
+                            hunk,
+                            standards,
+                            specialist_prompts,
+                            retry_count,
+                            llm_permits,
+                        )
+                        .await
+                    }),
+                ));
             }
 
-            state.current_hunk += 1;
+            let mut batch_results = Vec::new();
+            for (hunk_idx, handle) in handles {
+                let result = match handle.await {
+                    Ok(result) => result,
+                    Err(e) => Err(AppError::Ai(format!("Hunk review task failed: {}", e))),
+                };
+                batch_results.push((hunk_idx, result));
+            }
+            batch_results.sort_by_key(|(hunk_idx, _)| *hunk_idx);
 
-            emit_progress(
-                &app,
-                "hunk-review",
-                &format!("{} ({}/{})", file.path, state.current_file_idx + 1, file_entries.len()),
-                serde_json::json!({
-                    "fileNum": state.current_file_idx + 1,
-                    "totalFiles": file_entries.len(),
-                    "hunk": state.current_hunk,
-                    "totalHunks": total_hunks,
-                }),
-            );
+            for (hunk_idx, result) in batch_results {
+                let response = match result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let skip_msg = format!("[skipped — error: {}]", e);
+                        emit_progress(
+                            &app,
+                            "hunk-skipped",
+                            &format!("Hunk {}/{} in {} failed: {}", hunk_idx + 1, total_hunks, file.path, e),
+                            serde_json::json!({}),
+                        );
+                        state.current_file_findings.push((hunk_idx + 1, skip_msg));
+                        state.current_hunk = hunk_idx + 1;
+                        save_state_to_db(db, &state);
+                        continue;
+                    }
+                };
 
-            save_state_to_db(db, &state);
+                if response.trim() != "No issues found." {
+                    state.current_file_findings.push((hunk_idx + 1, response));
+                }
+
+                state.current_hunk = hunk_idx + 1;
+
+                emit_progress(
+                    &app,
+                    "hunk-review",
+                    &format!("{} ({}/{})", file.path, state.current_file_idx + 1, file_entries.len()),
+                    serde_json::json!({
+                        "fileNum": state.current_file_idx + 1,
+                        "totalFiles": file_entries.len(),
+                        "hunk": state.current_hunk,
+                        "totalHunks": total_hunks,
+                    }),
+                );
+
+                save_state_to_db(db, &state);
+            }
         }
 
         // ---- File Aggregate ----
@@ -356,7 +311,10 @@ pub async fn run_review(
                 &app,
                 "file-aggregate",
                 &format!("Summarizing {}", file.path),
-                serde_json::json!({}),
+                serde_json::json!({
+                    "fileNum": state.current_file_idx + 1,
+                    "totalFiles": file_entries.len(),
+                }),
             );
 
             let agg_messages = vec![
@@ -438,6 +396,8 @@ pub async fn run_review(
                 "batch": state.current_batch,
                 "totalBatches": total_batches,
                 "fileCount": batch_files.len(),
+                "fileNum": file_entries.len(),
+                "totalFiles": file_entries.len(),
             }),
         );
 
@@ -473,8 +433,27 @@ pub async fn run_review(
         &app,
         "synthesis",
         "Producing final review summary...",
-        serde_json::json!({}),
+        serde_json::json!({
+            "fileNum": file_entries.len(),
+            "totalFiles": file_entries.len(),
+        }),
     );
+
+    // Flatten per-file findings into a single list, injecting the file path
+    // onto each one so the frontend can render and post them independently.
+    let findings: Vec<Finding> = state
+        .completed_files
+        .iter()
+        .flat_map(|(file_path, agg)| {
+            agg.findings.iter().map(move |f| Finding {
+                file_path: file_path.clone(),
+                severity: f.severity,
+                line_start: f.line_start,
+                line_end: f.line_end,
+                comment: f.comment.clone(),
+            })
+        })
+        .collect();
 
     let final_messages = vec![
         ChatMessage {
@@ -495,22 +474,7 @@ pub async fn run_review(
     let final_review = chat_with_retries(&provider, &final_messages, retry_count)
         .await
         .unwrap_or_else(|e| format!("[final synthesis failed — {}]", e));
-
-    // Flatten per-file findings into a single list, injecting the file path
-    // onto each one so the frontend can render and post them independently.
-    let findings: Vec<Finding> = state
-        .completed_files
-        .iter()
-        .flat_map(|(file_path, agg)| {
-            agg.findings.iter().map(move |f| Finding {
-                file_path: file_path.clone(),
-                severity: f.severity,
-                line_start: f.line_start,
-                line_end: f.line_end,
-                comment: f.comment.clone(),
-            })
-        })
-        .collect();
+    let final_review = append_exact_statistics(&final_review, file_entries.len(), &findings);
 
     state.phase = "done".into();
     state.final_review = Some(final_review.clone());
@@ -532,12 +496,178 @@ pub async fn run_review(
     })
 }
 
+fn append_exact_statistics(summary: &str, files_reviewed: usize, findings: &[Finding]) -> String {
+    let without_stats = strip_statistics_section(summary).trim().to_string();
+    let critical = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Critical)
+        .count();
+    let moderate = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Moderate)
+        .count();
+    let minor = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Minor)
+        .count();
+
+    format!(
+        "{}\n\n## Statistics\n- Files reviewed: {}\n- Issues found: {} critical, {} moderate, {} minor",
+        without_stats, files_reviewed, critical, moderate, minor
+    )
+}
+
+fn strip_statistics_section(summary: &str) -> &str {
+    if let Some(idx) = summary.find("\n## Statistics") {
+        &summary[..idx]
+    } else if summary.starts_with("## Statistics") {
+        ""
+    } else {
+        summary
+    }
+}
+
 async fn chat_with_retries(
     provider: &Arc<dyn AiProvider>,
     messages: &[ChatMessage],
     retries: u32,
 ) -> Result<String, AppError> {
     chat_with_retries_and_model(provider, messages, None, retries).await
+}
+
+async fn review_single_hunk(
+    provider: Arc<dyn AiProvider>,
+    mode: ReviewMode,
+    file_path: String,
+    hunk_idx: usize,
+    total_hunks: usize,
+    hunk: crate::diff::engine::DiffHunk,
+    standards: String,
+    specialist_prompts: Vec<(PromptKey, String, Option<String>)>,
+    retry_count: u32,
+    llm_permits: Arc<Semaphore>,
+) -> Result<String, AppError> {
+    let hunk_text: String = hunk
+        .lines
+        .iter()
+        .map(|l| format!("{}{}", l.kind, l.content))
+        .collect::<Vec<_>>()
+        .join("");
+
+    let context_note = prompts::hunk_context_note(&file_path, hunk_idx + 1, total_hunks);
+    let user_msg = prompts::hunk_user_message(&file_path, &hunk.header, &hunk_text, "");
+
+    if mode == ReviewMode::Thorough {
+        let mut handles = Vec::new();
+        for (idx, (key, sys_text, model_override)) in specialist_prompts.into_iter().enumerate() {
+            let provider = provider.clone();
+            let standards = standards.clone();
+            let context_note = context_note.clone();
+            let user_msg = user_msg.clone();
+            let llm_permits = llm_permits.clone();
+            handles.push((
+                idx,
+                tokio::spawn(async move {
+                    let pass_messages = vec![
+                        ChatMessage {
+                            role: ChatRole::System,
+                            content: if standards.is_empty() {
+                                sys_text
+                            } else {
+                                format!("{}\n\nProject standards:\n{}", sys_text, standards)
+                            },
+                        },
+                        ChatMessage {
+                            role: ChatRole::User,
+                            content: context_note,
+                        },
+                        ChatMessage {
+                            role: ChatRole::User,
+                            content: user_msg,
+                        },
+                    ];
+                    let result = match llm_permits.acquire_owned().await {
+                        Ok(_permit) => {
+                            chat_with_retries_and_model(
+                                &provider,
+                                &pass_messages,
+                                model_override.as_deref(),
+                                retry_count,
+                            )
+                            .await
+                        }
+                        Err(_) => Err(AppError::Ai("LLM concurrency limiter closed".into())),
+                    };
+                    (key, result)
+                }),
+            ));
+        }
+
+        let mut pass_results = Vec::new();
+        for (idx, handle) in handles {
+            let result = match handle.await {
+                Ok(result) => result,
+                Err(e) => (
+                    PromptKey::ReviewCodeReviewerSystem,
+                    Err(AppError::Ai(format!("Specialist review task failed: {}", e))),
+                ),
+            };
+            pass_results.push((idx, result));
+        }
+        pass_results.sort_by_key(|(idx, _)| *idx);
+
+        let mut outputs: Vec<String> = Vec::new();
+        let mut last_err: Option<AppError> = None;
+        for (_, (key, result)) in pass_results {
+            match result {
+                Ok(r) => {
+                    if r.trim() != "No issues found." && !r.trim().is_empty() {
+                        outputs.push(format!("[{}]\n{}", key.specialist_label(), r.trim()));
+                    }
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                }
+            }
+        }
+        if outputs.is_empty() {
+            if let Some(e) = last_err {
+                Err(e)
+            } else {
+                Ok("No issues found.".to_string())
+            }
+        } else {
+            Ok(outputs.join("\n\n"))
+        }
+    } else {
+        let messages = vec![
+            ChatMessage {
+                role: ChatRole::System,
+                content: format!(
+                    "{}\n\n{}",
+                    prompts::REVIEW_HUNK_SYSTEM,
+                    if standards.is_empty() {
+                        String::new()
+                    } else {
+                        format!("Project standards:\n{}", standards)
+                    }
+                ),
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                content: context_note,
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                content: user_msg,
+            },
+        ];
+        let _permit = llm_permits
+            .acquire_owned()
+            .await
+            .map_err(|_| AppError::Ai("LLM concurrency limiter closed".into()))?;
+        chat_with_retries(&provider, &messages, retry_count).await
+    }
 }
 
 /// Calls `provider.chat_with_model` up to `1 + retries` times (initial attempt

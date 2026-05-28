@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { useResizableWidth } from "@/lib/useResizableWidth";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick } from "@/lib/signals";
 import {
   getPrFiles,
   getViewedFiles,
   markFileViewed,
   getFileDiff,
+  prefetchPrDiffs,
   updateReviewerStatus,
   getThreads,
   postComment,
@@ -84,6 +85,7 @@ export function PRDetail({ prId }: Props) {
   // Increment on each call and ignore stale completions.
   const filesReqId = useRef(0);
   const diffReqId = useRef(0);
+  const prefetchKey = useRef("");
 
   const loadFiles = useCallback(async () => {
     if (!projectId || !repoId) return;
@@ -95,7 +97,16 @@ export function PRDetail({ prId }: Props) {
       const viewed = await getViewedFiles(projectId, repoId, prId);
       if (reqId !== filesReqId.current) return;
       const viewedSet = new Set(viewed);
-      prFiles.value = files.map((f) => ({ ...f, viewed: viewedSet.has(f.path) }));
+      const filesWithViewed = files.map((f) => ({ ...f, viewed: viewedSet.has(f.path) }));
+      prFiles.value = filesWithViewed;
+
+      const paths = filesWithViewed.map((f) => f.path);
+      const key = `${projectId}|${repoId}|${prId}|${currentIteration.value}|${paths.join("\n")}`;
+      if (paths.length > 0 && prefetchKey.current !== key) {
+        prefetchKey.current = key;
+        prefetchPrDiffs(projectId, repoId, prId, currentIteration.value, paths)
+          .catch((e) => console.debug("Background diff prefetch failed:", e));
+      }
     } catch (e) {
       if (reqId !== filesReqId.current) return;
       console.error("Failed to load PR files:", e);
@@ -152,8 +163,19 @@ export function PRDetail({ prId }: Props) {
     const unsub3 = diffView.subscribe(() => {
       if (selectedFile.value) loadDiff(selectedFile.value);
     });
-    return () => { unsub1(); unsub2(); unsub3(); };
-  }, [loadDiff, loadFiles]);
+    // When a thread is posted from outside the diff view (e.g. the PR review
+    // sidebar's "Create comment"), refetch threads for the current file so the
+    // Comments pane reflects what's actually in ADO.
+    let firstTick = true;
+    const unsub4 = threadsRefreshTick.subscribe(() => {
+      if (firstTick) { firstTick = false; return; }
+      if (!projectId || !repoId || !diffPath) return;
+      getThreads(projectId, repoId, prId)
+        .then((all) => setThreads(all.filter((t: any) => t.filePath === diffPath)))
+        .catch((e) => console.error("Failed to refresh threads:", e));
+    });
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
+  }, [loadDiff, loadFiles, projectId, repoId, prId, diffPath]);
 
   const handleToggleViewed = async (path: string, viewed: boolean) => {
     if (!projectId || !repoId) return;

@@ -101,6 +101,11 @@ export const pendingScrollLine = signal<number | null>(null);
 // what the user actually sees.
 export const visibleFilePaths = signal<string[]>([]);
 
+// Bumped whenever a PR comment thread is created outside the DiffViewer flow
+// (e.g. posting a single finding from the PR review sidebar). PRDetail watches
+// this to refetch threads so the Comments pane stays in sync with ADO.
+export const threadsRefreshTick = signal<number>(0);
+
 // ---- PR Review (background, per-PR) ----
 // The Rust engine runs a review serially (one resumable state at a time), so we
 // track a single "active" PR — but each PR keeps its last result so a user can

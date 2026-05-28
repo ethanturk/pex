@@ -93,10 +93,7 @@ Format:
 ### <Theme>
 - ...
 
-## Statistics
-- Files reviewed: <N>
-- Issues found: <N> critical, <N> moderate, <N> minor
-
+Do not include a Statistics section; the app appends exact counts from structured findings.
 Do not include greetings or sign-offs."#;
 
 /// Build a user message for a hunk review, including the hunk text and file context.

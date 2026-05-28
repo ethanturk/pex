@@ -113,6 +113,29 @@
 .diff-row--selected .diff-cell .diff-lineno { @apply text-blue-700 dark:text-blue-300; }
 .diff-expander--split { grid-column: 1 / -1; }
 
+/* ===== PR review markdown ===== */
+.pr-review-markdown h1 { @apply text-base font-semibold mt-0 mb-3 text-gray-900 dark:text-gray-100; }
+.pr-review-markdown h2 { @apply text-sm font-semibold mt-4 mb-2 text-gray-900 dark:text-gray-100; }
+.pr-review-markdown h3 { @apply text-xs font-semibold mt-3 mb-1.5 text-gray-800 dark:text-gray-200; }
+.pr-review-markdown p { @apply my-2; }
+.pr-review-markdown ul,
+.pr-review-markdown ol { @apply my-2 pl-5; }
+.pr-review-markdown ul { @apply list-disc; }
+.pr-review-markdown ol { @apply list-decimal; }
+.pr-review-markdown li { @apply my-1; }
+.pr-review-markdown strong { @apply font-semibold text-gray-900 dark:text-gray-100; }
+.pr-review-markdown code { @apply px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-800 font-mono text-[0.9em]; }
+.pr-review-markdown pre { @apply my-2 p-2 rounded bg-gray-100 dark:bg-gray-800 overflow-x-auto; }
+.pr-review-markdown pre code { @apply p-0 bg-transparent; }
+.pr-review-markdown blockquote { @apply my-2 pl-3 border-l-2 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400; }
+.pr-review-markdown table { @apply my-2 w-full border-collapse text-xs; }
+.pr-review-markdown th,
+.pr-review-markdown td { @apply border border-gray-200 dark:border-gray-700 px-2 py-1 align-top; }
+.pr-review-markdown th { @apply bg-gray-100 dark:bg-gray-800 font-semibold; }
+.pr-review-markdown hr { @apply my-3 border-gray-200 dark:border-gray-700; }
+.pr-review-markdown > :first-child { @apply mt-0; }
+.pr-review-markdown > :last-child { @apply mb-0; }
+
 /* ===== File tree ===== */
 .file-tree-item { @apply flex items-center gap-1.5 px-2 py-1 text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded; }
 .file-tree-item--viewed { @apply opacity-60; }

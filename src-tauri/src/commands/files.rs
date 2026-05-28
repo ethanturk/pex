@@ -83,6 +83,101 @@ pub async fn get_file_diff(
 }
 
 #[tauri::command]
+pub async fn prefetch_pr_diffs(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+    iteration: i32,
+    file_paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let client = get_client(&state)?;
+    let org_url = client.org_url.clone();
+    let concurrency = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        crate::ai::read_hunk_concurrency(&db)
+            .unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY)
+            .max(1) as usize
+    };
+
+    let mut cached = 0usize;
+    let mut fetched = 0usize;
+    let mut failed = 0usize;
+    let mut misses = Vec::new();
+
+    for file_path in file_paths {
+        let file_path = file_path.strip_prefix('/').unwrap_or(&file_path).to_string();
+        let cache_key = crate::cache::diff_cache::DiffCacheKey {
+            org_url: org_url.clone(),
+            project_id: project_id.clone(),
+            repo_id: repo_id.clone(),
+            pr_id,
+            file_path: file_path.clone(),
+            view: "inline".to_string(),
+            iteration,
+        };
+
+        if state.diff_cache.get(&cache_key).is_some() {
+            cached += 1;
+        } else {
+            misses.push(file_path);
+        }
+    }
+
+    for chunk in misses.chunks(concurrency) {
+        let mut handles = Vec::new();
+        for file_path in chunk {
+            let client = client.clone();
+            let project_id = project_id.clone();
+            let repo_id = repo_id.clone();
+            let file_path = file_path.clone();
+            handles.push((
+                file_path.clone(),
+                tokio::spawn(async move {
+                    client
+                        .get_file_diff(
+                            &project_id,
+                            &repo_id,
+                            pr_id,
+                            &file_path,
+                            iteration,
+                            crate::diff::engine::DiffView::Inline,
+                        )
+                        .await
+                }),
+            ));
+        }
+
+        for (file_path, handle) in handles {
+            match handle.await {
+                Ok(Ok(diff)) => {
+                    let cache_key = crate::cache::diff_cache::DiffCacheKey {
+                        org_url: org_url.clone(),
+                        project_id: project_id.clone(),
+                        repo_id: repo_id.clone(),
+                        pr_id,
+                        file_path,
+                        view: "inline".to_string(),
+                        iteration,
+                    };
+                    state.diff_cache.put(cache_key, diff);
+                    fetched += 1;
+                }
+                Ok(Err(_)) | Err(_) => {
+                    failed += 1;
+                }
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "cached": cached,
+        "fetched": fetched,
+        "failed": failed,
+    }))
+}
+
+#[tauri::command]
 pub async fn get_file_lines(
     state: State<'_, AppState>,
     project_id: String,

@@ -114,14 +114,23 @@ pub async fn save_ai_settings(
     crate::cache::set_setting(&db, "ai_standards_max_chars", &std_chars.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
 
-    // Save API key to keyring
-    let service = match provider.as_str() {
-        "openai" => "pex-ai-openai",
-        "anthropic" => "pex-ai-anthropic",
+    // Save API key to keyring when the user provided one. The UI intentionally
+    // does not echo stored keys back into the password field, so an empty value
+    // means "keep the existing key" instead of "overwrite with blank".
+    let provider_key = match provider.as_str() {
+        "openai" => "openai",
+        "anthropic" => "anthropic",
         _ => return Err(format!("Unknown provider: {}", provider)),
     };
-    crate::auth::keyring_store::KeyringStore::save_token(service, &api_key)
-        .map_err(|e: crate::AppError| e.to_string())?;
+    let api_key = if api_key.trim().is_empty() {
+        crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)
+            .map_err(|e: crate::AppError| e.to_string())?
+            .unwrap_or_default()
+    } else {
+        crate::auth::keyring_store::KeyringStore::save_ai_token(provider_key, &api_key)
+            .map_err(|e: crate::AppError| e.to_string())?;
+        api_key
+    };
 
     // Reconfigure the AI manager
     let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;

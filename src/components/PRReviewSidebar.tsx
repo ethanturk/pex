@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { marked } from "marked";
 import {
   reviewRuns,
   activeReviewPrId,
   sidebarMode,
   selectedFile,
   pendingScrollLine,
+  threadsRefreshTick,
   type PRReviewRun,
   type ReviewProgress,
 } from "@/lib/signals";
-import { postBackgroundReview, startBackgroundReview } from "@/lib/reviewBus";
+import { startBackgroundReview } from "@/lib/reviewBus";
 import { cancelReview, postReviewFinding, type Severity } from "@/lib/api";
 import { useResizableWidth } from "@/lib/useResizableWidth";
 
@@ -39,6 +41,27 @@ function lineSuffix(f: Finding): string {
   return `:${f.lineStart}-${f.lineEnd}`;
 }
 
+function renderMarkdown(markdown: string): string {
+  return marked.parse(markdown, {
+    async: false,
+    breaks: true,
+    gfm: true,
+  }) as string;
+}
+
+function stripStatisticsSection(markdown: string): string {
+  const idx = markdown.search(/^##\s+Statistics\s*$/im);
+  return idx >= 0 ? markdown.slice(0, idx).trim() : markdown;
+}
+
+function findingCounts(findings: Finding[]) {
+  return {
+    critical: findings.filter((f) => f.severity === "critical").length,
+    moderate: findings.filter((f) => f.severity === "moderate").length,
+    minor: findings.filter((f) => f.severity === "minor").length,
+  };
+}
+
 interface Props {
   projectId: string;
   repoId: string;
@@ -50,6 +73,7 @@ function progressText(p: ReviewProgress | null): string {
   if (!p) return "Starting review...";
   switch (p.phase) {
     case "resume": return "Resuming from saved progress...";
+    case "diff-fetch": return p.detail;
     case "hunk-review": return `Reviewing ${p.detail} — hunk ${p.hunk}/${p.totalHunks}`;
     case "file-aggregate":
     case "batch-aggregate": return p.detail;
@@ -62,15 +86,27 @@ function progressText(p: ReviewProgress | null): string {
 
 function progressPercent(p: ReviewProgress | null): number {
   if (!p) return 0;
+  if (p.phase === "diff-fetch" && p.totalFiles) {
+    return Math.round(((p.fileNum || 0) / p.totalFiles) * 100);
+  }
   if (p.phase === "hunk-review" && p.totalFiles && p.fileNum) {
     return Math.round(
       ((p.fileNum - 1 + (p.hunk || 0) / (p.totalHunks || 1)) / p.totalFiles) * 100,
     );
   }
+  if (p.totalFiles && p.fileNum) {
+    return Math.round((Math.min(p.fileNum, p.totalFiles) / p.totalFiles) * 100);
+  }
   if (p.phase === "batch-aggregate" && p.totalBatches) {
     return Math.round(((p.batch || 0) / p.totalBatches) * 100);
   }
   return 0;
+}
+
+function progressFileCount(p: ReviewProgress | null): string {
+  if (!p?.totalFiles) return "";
+  const fileNum = Math.min(p.fileNum ?? 0, p.totalFiles);
+  return `${fileNum}/${p.totalFiles}`;
 }
 
 export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
@@ -98,8 +134,80 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     activeReviewPrId.value !== null && activeReviewPrId.value !== prId;
 
   const restart = () => startBackgroundReview(projectId, repoId, prId, prTitle);
-  const post = () => postBackgroundReview(projectId, repoId, prId, prTitle);
   const close = () => (sidebarMode.value = null);
+
+  // Selection + posted state lives here so the footer's "Post N to ADO"
+  // button can drive a per-finding post loop over the user's selection.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [posted, setPosted] = useState<Set<number>>(new Set());
+  const [bulkPosting, setBulkPosting] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+
+  const findings = run?.output?.findings ?? [];
+
+  // Drop selection/posted state if the run is replaced (re-review, cancel).
+  useEffect(() => {
+    setSelected(new Set());
+    setPosted(new Set());
+    setBulkError(null);
+  }, [run?.output]);
+
+  const toggleSelected = (i: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  };
+
+  const markPosted = (i: number) => {
+    setPosted((prev) => {
+      if (prev.has(i)) return prev;
+      const next = new Set(prev);
+      next.add(i);
+      return next;
+    });
+    setSelected((prev) => {
+      if (!prev.has(i)) return prev;
+      const next = new Set(prev);
+      next.delete(i);
+      return next;
+    });
+  };
+
+  const postSelected = async () => {
+    const indices = Array.from(selected).filter((i) => !posted.has(i));
+    if (indices.length === 0) return;
+    setBulkPosting(true);
+    setBulkError(null);
+    let firstError: string | null = null;
+    let anyPosted = false;
+    for (const i of indices) {
+      const f = findings[i];
+      if (!f) continue;
+      try {
+        await postReviewFinding(
+          projectId,
+          repoId,
+          prId,
+          f.filePath || null,
+          f.lineStart ?? null,
+          f.lineEnd ?? null,
+          f.comment,
+        );
+        markPosted(i);
+        anyPosted = true;
+      } catch (e) {
+        if (!firstError) firstError = e instanceof Error ? e.message : String(e);
+      }
+    }
+    if (anyPosted) {
+      threadsRefreshTick.value = threadsRefreshTick.value + 1;
+    }
+    if (firstError) setBulkError(firstError);
+    setBulkPosting(false);
+  };
 
   const cancel = async () => {
     try {
@@ -171,19 +279,35 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
         ) : (
           <>
             {(running || posting) && (
-              <div class="mb-4">
-                <div class="flex items-center gap-2 text-gray-400">
-                  <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
-                  <span>{progressText(run.progress)}</span>
+              <div class="mb-4 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2">
+                <div class="flex items-center gap-2">
+                  <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full shrink-0" />
+                  <span class="text-xs font-semibold text-gray-700 dark:text-gray-200">
+                    Review in Progress
+                  </span>
+                  {progressFileCount(run.progress) && (
+                    <span class="ml-auto text-xs font-mono text-gray-500 dark:text-gray-400">
+                      {progressFileCount(run.progress)}
+                    </span>
+                  )}
+                  {running && (
+                    <button
+                      onClick={cancel}
+                      class="ml-2 px-2 py-0.5 text-[11px] text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded font-medium hover:bg-red-50 dark:hover:bg-red-900/30"
+                    >
+                      Cancel
+                    </button>
+                  )}
                 </div>
-                {run.progress && progressPercent(run.progress) > 0 && (
-                  <div class="mt-2 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      class="bg-accent h-full rounded-full transition-all duration-300"
-                      style={{ width: `${progressPercent(run.progress)}%` }}
-                    />
-                  </div>
-                )}
+                <div class="mt-2 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    class="bg-accent h-full rounded-full transition-all duration-300"
+                    style={{ width: `${progressPercent(run.progress)}%` }}
+                  />
+                </div>
+                <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                  {progressText(run.progress)}
+                </div>
               </div>
             )}
 
@@ -194,8 +318,15 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
             )}
 
             {run.output?.summary && (
-              <div class="whitespace-pre-wrap text-gray-700 dark:text-gray-300 leading-relaxed">
-                {run.output.summary}
+              <>
+                <MarkdownSummary markdown={stripStatisticsSection(run.output.summary)} />
+                <ExactStatistics findings={run.output.findings} />
+              </>
+            )}
+
+            {bulkError && (
+              <div class="mt-3 text-red-600 dark:text-red-400 whitespace-pre-wrap text-xs">
+                {bulkError}
               </div>
             )}
 
@@ -205,6 +336,10 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
                 repoId={repoId}
                 prId={prId}
                 findings={run.output.findings}
+                selected={selected}
+                posted={posted}
+                onToggleSelected={toggleSelected}
+                onPosted={markPosted}
               />
             )}
           </>
@@ -214,23 +349,25 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
       {/* Footer actions */}
       {run && (
         <div class="px-4 py-2 border-t border-gray-200 dark:border-gray-700 shrink-0 flex items-center gap-2">
-          {(running || posting) && (
-            <button
-              onClick={cancel}
-              class="px-3 py-1 text-xs text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded font-medium hover:bg-red-50 dark:hover:bg-red-900/30"
-            >
-              Cancel review
-            </button>
-          )}
-          {run.status === "done" && (
-            <button
-              onClick={post}
-              disabled={busyElsewhere}
-              class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Post findings to ADO
-            </button>
-          )}
+          {run.status === "done" && (() => {
+            const selectableCount = Array.from(selected).filter((i) => !posted.has(i)).length;
+            const disabled = busyElsewhere || bulkPosting || selectableCount === 0;
+            const label = bulkPosting
+              ? `Posting${selectableCount > 0 ? ` ${selectableCount}` : ""}...`
+              : selectableCount > 0
+                ? `Post ${selectableCount} finding${selectableCount === 1 ? "" : "s"} to ADO`
+                : "Post findings to ADO";
+            return (
+              <button
+                onClick={postSelected}
+                disabled={disabled}
+                title={selectableCount === 0 ? "Select at least one finding to enable" : undefined}
+                class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {label}
+              </button>
+            );
+          })()}
           {(run.status === "done" || run.status === "error" || run.status === "posted") && (
             <button
               onClick={restart}
@@ -246,6 +383,29 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   );
 }
 
+function MarkdownSummary({ markdown }: { markdown: string }) {
+  return (
+    <div
+      class="pr-review-markdown text-gray-700 dark:text-gray-300 leading-relaxed"
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(markdown) }}
+    />
+  );
+}
+
+function ExactStatistics({ findings }: { findings: Finding[] }) {
+  const counts = findingCounts(findings);
+  return (
+    <div class="pr-review-markdown text-gray-700 dark:text-gray-300 leading-relaxed mt-4">
+      <h2>Statistics</h2>
+      <ul>
+        <li>
+          Issues found: {counts.critical} critical, {counts.moderate} moderate, {counts.minor} minor
+        </li>
+      </ul>
+    </div>
+  );
+}
+
 // ---- Findings list ----
 
 interface FindingsListProps {
@@ -253,13 +413,22 @@ interface FindingsListProps {
   repoId: string;
   prId: number;
   findings: Finding[];
+  selected: Set<number>;
+  posted: Set<number>;
+  onToggleSelected: (i: number) => void;
+  onPosted: (i: number) => void;
 }
 
-function FindingsList({ projectId, repoId, prId, findings }: FindingsListProps) {
-  // Posted-finding tracker is local component state (in-memory): when the user
-  // posts a finding we want a checkmark, but we don't persist it across app
-  // restarts (run results aren't persisted either).
-  const [posted, setPosted] = useState<Set<number>>(new Set());
+function FindingsList({
+  projectId,
+  repoId,
+  prId,
+  findings,
+  selected,
+  posted,
+  onToggleSelected,
+  onPosted,
+}: FindingsListProps) {
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
 
   // Group by severity (critical → moderate → minor); within each severity,
@@ -279,12 +448,8 @@ function FindingsList({ projectId, repoId, prId, findings }: FindingsListProps) 
   }
   const severityOrder = SEVERITY_ORDER.filter((s) => bySeverity.has(s));
 
-  const markPosted = (i: number) => {
-    setPosted((prev) => {
-      const next = new Set(prev);
-      next.add(i);
-      return next;
-    });
+  const handlePosted = (i: number) => {
+    onPosted(i);
     setEditingIdx(null);
   };
 
@@ -311,10 +476,12 @@ function FindingsList({ projectId, repoId, prId, findings }: FindingsListProps) 
                   repoId={repoId}
                   prId={prId}
                   isPosted={posted.has(i)}
+                  isSelected={selected.has(i)}
+                  onToggleSelected={() => onToggleSelected(i)}
                   isEditing={editingIdx === i}
                   onEdit={() => setEditingIdx(i)}
                   onCancel={() => setEditingIdx(null)}
-                  onPosted={() => markPosted(i)}
+                  onPosted={() => handlePosted(i)}
                 />
               ))}
             </ul>
@@ -331,6 +498,8 @@ interface FindingRowProps {
   repoId: string;
   prId: number;
   isPosted: boolean;
+  isSelected: boolean;
+  onToggleSelected: () => void;
   isEditing: boolean;
   onEdit: () => void;
   onCancel: () => void;
@@ -343,6 +512,8 @@ function FindingRow({
   repoId,
   prId,
   isPosted,
+  isSelected,
+  onToggleSelected,
   isEditing,
   onEdit,
   onCancel,
@@ -350,15 +521,31 @@ function FindingRow({
 }: FindingRowProps) {
   const jumpToFinding = () => {
     if (!finding.filePath) return;
-    if (selectedFile.value !== finding.filePath) {
+    const sameFile = selectedFile.value === finding.filePath;
+    if (!sameFile) {
       selectedFile.value = finding.filePath;
     }
     pendingScrollLine.value = finding.lineStart ?? null;
+    // If the file was already open, the loadDiff subscription in PRDetail
+    // won't fire — but the user may have posted comments since the file was
+    // first loaded, so force a refresh of the Comments pane.
+    if (sameFile) {
+      threadsRefreshTick.value = threadsRefreshTick.value + 1;
+    }
   };
   const canJump = !!finding.filePath;
   return (
     <li class="text-xs border border-gray-200 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-900">
       <div class="flex items-start gap-2 mb-1">
+        <input
+          type="checkbox"
+          checked={isSelected}
+          disabled={isPosted}
+          onChange={onToggleSelected}
+          aria-label={isPosted ? "Already posted" : "Select to post"}
+          title={isPosted ? "Already posted" : "Select to post"}
+          class="mt-1 shrink-0 accent-accent disabled:opacity-40 disabled:cursor-not-allowed"
+        />
         <span
           class={`inline-block w-2 h-2 rounded-full mt-1 shrink-0 ${severityBadgeClass(finding.severity)}`}
           title={severityLabel(finding.severity)}
@@ -482,6 +669,9 @@ function FindingEditor({
         lineEnd,
         text,
       );
+      // Notify PRDetail so its Comments pane re-fetches threads — without this
+      // the comment lands in ADO but never appears in the diff view.
+      threadsRefreshTick.value = threadsRefreshTick.value + 1;
       onPosted();
     } catch (e: unknown) {
       setError(String(e));

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "preact/hooks";
+import { useState, useMemo, useEffect, useRef } from "preact/hooks";
 import { selectedFile, fileTreeMode, visibleFilePaths } from "@/lib/signals";
 import type { FileEntry } from "@/lib/signals";
 
@@ -77,10 +77,18 @@ function FileRow({
   onToggleViewed: Props["onToggleViewed"];
 }) {
   const activeFile = selectedFile.value;
+  const isActive = activeFile === file.path;
   const label = showFullPath ? file.path : file.path.split("/").pop() || file.path;
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isActive && rowRef.current) {
+      rowRef.current.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [isActive]);
   return (
     <div
-      class={`file-tree-item ${file.viewed ? "file-tree-item--viewed" : ""} ${activeFile === file.path ? "file-tree-item--active" : ""}`}
+      ref={rowRef}
+      class={`file-tree-item ${file.viewed ? "file-tree-item--viewed" : ""} ${isActive ? "file-tree-item--active" : ""}`}
       style={{ paddingLeft: `${depth * 12 + 8}px` }}
     >
       <span
@@ -223,6 +231,25 @@ export function FileTree({ files, onToggleViewed }: Props) {
       return next;
     });
   };
+
+  // When the selected file changes (e.g. via "jump to finding" from the PR
+  // review sidebar), expand any collapsed ancestor folders so the row exists
+  // in the DOM and the active highlight is actually visible.
+  const active = selectedFile.value;
+  useEffect(() => {
+    if (!active) return;
+    const parts = active.split("/").filter((p) => p.length > 0);
+    if (parts.length < 2) return;
+    setCollapsed((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (let i = 0; i < parts.length - 1; i++) {
+        const folderPath = parts.slice(0, i + 1).join("/");
+        if (next.delete(folderPath)) changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [active]);
 
   const mode = fileTreeMode.value;
 

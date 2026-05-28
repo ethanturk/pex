@@ -162,6 +162,28 @@ export async function getFileDiff(
   return invoke<FileDiff>("get_file_diff", { projectId, repoId, prId, filePath, iteration, view });
 }
 
+export interface PrefetchDiffsResult {
+  cached: number;
+  fetched: number;
+  failed: number;
+}
+
+export async function prefetchPrDiffs(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  iteration: number,
+  filePaths: string[],
+): Promise<PrefetchDiffsResult> {
+  return invoke<PrefetchDiffsResult>("prefetch_pr_diffs", {
+    projectId,
+    repoId,
+    prId,
+    iteration,
+    filePaths,
+  });
+}
+
 export async function getFileLines(
   projectId: string,
   repoId: string,

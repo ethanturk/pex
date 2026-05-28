@@ -62,11 +62,11 @@ pub async fn fetch_and_cache(conn_mutex: &std::sync::Mutex<rusqlite::Connection>
         let endpoint = crate::cache::get_setting(&conn, "ai_endpoint")?
             .ok_or_else(|| AppError::Ai("AI endpoint not configured.".to_string()))?;
         let kind: AiProviderKind = provider.parse()?;
-        let service = match kind {
-            AiProviderKind::OpenAI => "pex-ai-openai",
-            AiProviderKind::Anthropic => "pex-ai-anthropic",
+        let provider_key = match kind {
+            AiProviderKind::OpenAI => "openai",
+            AiProviderKind::Anthropic => "anthropic",
         };
-        let api_key = crate::auth::keyring_store::KeyringStore::get_token(service)?
+        let api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)?
             .ok_or_else(|| AppError::Ai("API key not configured.".to_string()))?;
         (kind, endpoint, api_key)
     };
