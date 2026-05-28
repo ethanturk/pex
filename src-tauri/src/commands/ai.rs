@@ -64,7 +64,9 @@ pub async fn save_ai_settings(
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
     // Validate provider
-    let kind: AiProviderKind = provider.parse().map_err(|e: crate::AppError| e.to_string())?;
+    let kind: AiProviderKind = provider
+        .parse()
+        .map_err(|e: crate::AppError| e.to_string())?;
 
     // Clamp timeouts to a sane range; 0 falls back to default.
     let connect_timeout = if connect_timeout_secs == 0 {
@@ -93,9 +95,12 @@ pub async fn save_ai_settings(
     };
 
     // Save non-sensitive settings to SQLite
-    crate::cache::set_setting(&db, "ai_provider", &provider).map_err(|e: crate::AppError| e.to_string())?;
-    crate::cache::set_setting(&db, "ai_endpoint", &endpoint).map_err(|e: crate::AppError| e.to_string())?;
-    crate::cache::set_setting(&db, "ai_model", &model).map_err(|e: crate::AppError| e.to_string())?;
+    crate::cache::set_setting(&db, "ai_provider", &provider)
+        .map_err(|e: crate::AppError| e.to_string())?;
+    crate::cache::set_setting(&db, "ai_endpoint", &endpoint)
+        .map_err(|e: crate::AppError| e.to_string())?;
+    crate::cache::set_setting(&db, "ai_model", &model)
+        .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(&db, "ai_connect_timeout_secs", &connect_timeout.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(&db, "ai_read_timeout_secs", &read_timeout.to_string())
@@ -135,10 +140,24 @@ pub async fn save_ai_settings(
     // Reconfigure the AI manager
     let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
     if let Some(ref mut mgr) = *ai_mgr_lock {
-        mgr.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout);
+        mgr.configure(
+            kind,
+            &endpoint,
+            &model,
+            &api_key,
+            connect_timeout,
+            read_timeout,
+        );
     } else {
         let mut mgr = crate::ai::AiManager::new();
-        mgr.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout);
+        mgr.configure(
+            kind,
+            &endpoint,
+            &model,
+            &api_key,
+            connect_timeout,
+            read_timeout,
+        );
         *ai_mgr_lock = Some(mgr);
     }
 
@@ -157,9 +176,13 @@ pub async fn explain_hunk(
     hunk_index: usize,
 ) -> Result<String, String> {
     let hunks = extract_hunks(&old_content, &new_content);
-    let hunk = hunks
-        .get(hunk_index)
-        .ok_or_else(|| format!("Hunk index {} not found ({} hunks total)", hunk_index, hunks.len()))?;
+    let hunk = hunks.get(hunk_index).ok_or_else(|| {
+        format!(
+            "Hunk index {} not found ({} hunks total)",
+            hunk_index,
+            hunks.len()
+        )
+    })?;
 
     let hunk_text: String = hunk
         .lines
@@ -213,9 +236,7 @@ pub async fn explain_hunk(
 pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, String> {
     let provider = {
         let ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
-        ai_mgr_lock
-            .as_ref()
-            .and_then(|mgr| mgr.provider_clone())
+        ai_mgr_lock.as_ref().and_then(|mgr| mgr.provider_clone())
     };
 
     let provider = match provider {
@@ -255,10 +276,7 @@ pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, St
 
 /// Extract structured diff hunks from old/new content for per-hunk review UI.
 #[tauri::command]
-pub fn get_diff_hunks(
-    old_content: String,
-    new_content: String,
-) -> Result<Vec<DiffHunk>, String> {
+pub fn get_diff_hunks(old_content: String, new_content: String) -> Result<Vec<DiffHunk>, String> {
     Ok(extract_hunks(&old_content, &new_content))
 }
 
@@ -281,9 +299,13 @@ pub async fn review_hunk(
 ) -> Result<String, String> {
     // Extract the specific hunk
     let hunks = extract_hunks(&old_content, &new_content);
-    let hunk = hunks
-        .get(hunk_index)
-        .ok_or_else(|| format!("Hunk index {} not found ({} hunks total)", hunk_index, hunks.len()))?;
+    let hunk = hunks.get(hunk_index).ok_or_else(|| {
+        format!(
+            "Hunk index {} not found ({} hunks total)",
+            hunk_index,
+            hunks.len()
+        )
+    })?;
 
     // Build hunk text: header + each line with its +/-/space prefix
     let hunk_text: String = hunk
@@ -312,8 +334,8 @@ pub async fn review_hunk(
             crate::ai::prompts::PromptKey::ReviewHunkSystem,
         )
         .map_err(|e: crate::AppError| e.to_string())?;
-        let cap = crate::ai::read_standards_max_chars(&db)
-            .map_err(|e: crate::AppError| e.to_string())?;
+        let cap =
+            crate::ai::read_standards_max_chars(&db).map_err(|e: crate::AppError| e.to_string())?;
         (prompt, cap)
     };
 
@@ -474,7 +496,9 @@ pub async fn save_ai_prompt(
         .map_err(|e: crate::AppError| e.to_string())?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err("Prompt cannot be empty. Use the Reset button to restore the default.".to_string());
+        return Err(
+            "Prompt cannot be empty. Use the Reset button to restore the default.".to_string(),
+        );
     }
     let db = state.db.lock().map_err(|e| e.to_string())?;
     crate::ai::prompts::save_prompt(&db, prompt_key, trimmed)
@@ -486,8 +510,7 @@ pub async fn reset_ai_prompt(state: State<'_, AppState>, key: String) -> Result<
     let prompt_key = crate::ai::prompts::PromptKey::from_str(&key)
         .map_err(|e: crate::AppError| e.to_string())?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::ai::prompts::reset_prompt(&db, prompt_key)
-        .map_err(|e: crate::AppError| e.to_string())
+    crate::ai::prompts::reset_prompt(&db, prompt_key).map_err(|e: crate::AppError| e.to_string())
 }
 
 #[tauri::command]
@@ -502,8 +525,7 @@ pub async fn save_ai_prompt_model(
     let db = state.db.lock().map_err(|e| e.to_string())?;
     if trimmed.is_empty() {
         // Empty string means "use the default AI model" — just drop the override.
-        crate::ai::prompts::reset_model(&db, prompt_key)
-            .map_err(|e: crate::AppError| e.to_string())
+        crate::ai::prompts::reset_model(&db, prompt_key).map_err(|e: crate::AppError| e.to_string())
     } else {
         crate::ai::prompts::save_model(&db, prompt_key, trimmed)
             .map_err(|e: crate::AppError| e.to_string())
@@ -515,8 +537,7 @@ pub async fn reset_ai_prompt_model(state: State<'_, AppState>, key: String) -> R
     let prompt_key = crate::ai::prompts::PromptKey::from_str(&key)
         .map_err(|e: crate::AppError| e.to_string())?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::ai::prompts::reset_model(&db, prompt_key)
-        .map_err(|e: crate::AppError| e.to_string())
+    crate::ai::prompts::reset_model(&db, prompt_key).map_err(|e: crate::AppError| e.to_string())
 }
 
 /// Returns the list of models available from the configured provider.

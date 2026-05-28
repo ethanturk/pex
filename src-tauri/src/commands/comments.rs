@@ -1,5 +1,5 @@
-use crate::AppState;
 use crate::ado::CommentThread;
+use crate::AppState;
 use tauri::State;
 
 /// ADO PR comment threads require `threadContext.filePath` to be repo-root
@@ -156,7 +156,10 @@ pub async fn post_review_finding(
     // Try the anchored payload first; on failure, fall back to PR-level with
     // the file path prefixed into the body.
     let thread = match anchored {
-        Some(body) => match client.post_thread(&project_id, &repo_id, pr_id, &body).await {
+        Some(body) => match client
+            .post_thread(&project_id, &repo_id, pr_id, &body)
+            .await
+        {
             Ok(t) => t,
             Err(err) => {
                 let fallback_body = match &file_path {

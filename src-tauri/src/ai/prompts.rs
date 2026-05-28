@@ -212,7 +212,11 @@ pub fn resolve_prompt(conn: &rusqlite::Connection, key: PromptKey) -> Result<Str
 }
 
 /// Persist a user override for a prompt.
-pub fn save_prompt(conn: &rusqlite::Connection, key: PromptKey, value: &str) -> Result<(), AppError> {
+pub fn save_prompt(
+    conn: &rusqlite::Connection,
+    key: PromptKey,
+    value: &str,
+) -> Result<(), AppError> {
     crate::cache::set_setting(conn, &key.db_key(), value)
 }
 
@@ -223,12 +227,19 @@ pub fn reset_prompt(conn: &rusqlite::Connection, key: PromptKey) -> Result<(), A
 
 /// Read the per-prompt model override, if any.
 /// Empty / missing means "use the default AI model from the AI tab".
-pub fn resolve_model(conn: &rusqlite::Connection, key: PromptKey) -> Result<Option<String>, AppError> {
+pub fn resolve_model(
+    conn: &rusqlite::Connection,
+    key: PromptKey,
+) -> Result<Option<String>, AppError> {
     let stored = crate::cache::get_setting(conn, &key.model_db_key())?;
     Ok(stored.filter(|s| !s.is_empty()))
 }
 
-pub fn save_model(conn: &rusqlite::Connection, key: PromptKey, model: &str) -> Result<(), AppError> {
+pub fn save_model(
+    conn: &rusqlite::Connection,
+    key: PromptKey,
+    model: &str,
+) -> Result<(), AppError> {
     crate::cache::set_setting(conn, &key.model_db_key(), model)
 }
 

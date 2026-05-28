@@ -49,11 +49,27 @@ pub async fn resolve(
     let dirs = walk_dirs(file_path);
 
     let agents = find_nearest(
-        client, cache, org_url, project_id, repo_id, commit, &dirs, AGENTS_VARIANTS, max_chars,
+        client,
+        cache,
+        org_url,
+        project_id,
+        repo_id,
+        commit,
+        &dirs,
+        AGENTS_VARIANTS,
+        max_chars,
     )
     .await;
     let style = find_nearest(
-        client, cache, org_url, project_id, repo_id, commit, &dirs, STYLE_VARIANTS, max_chars,
+        client,
+        cache,
+        org_url,
+        project_id,
+        repo_id,
+        commit,
+        &dirs,
+        STYLE_VARIANTS,
+        max_chars,
     )
     .await;
 

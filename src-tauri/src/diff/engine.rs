@@ -274,14 +274,12 @@ fn render_cell(
     css_class: &str,
     is_new_side: bool,
 ) -> String {
-    let conflict_class = if raw.starts_with("<<<<<<<")
-        || raw.starts_with("=======")
-        || raw.starts_with(">>>>>>>")
-    {
-        " diff-conflict"
-    } else {
-        ""
-    };
+    let conflict_class =
+        if raw.starts_with("<<<<<<<") || raw.starts_with("=======") || raw.starts_with(">>>>>>>") {
+            " diff-conflict"
+        } else {
+            ""
+        };
     let ln_text = line_num.map(|n| n.to_string()).unwrap_or_default();
     let data_line_attr = if is_new_side {
         format!(" data-line=\"{}\"", line_num.unwrap_or(0))
@@ -321,12 +319,7 @@ fn expander_html_split(
 
 /// Render an expander control. `old_*` / `new_*` are 1-based inclusive ranges of hidden lines.
 /// When a side has zero hidden lines (e.g. file added → no old side), pass start > end.
-fn expander_html(
-    old_start: usize,
-    old_end: usize,
-    new_start: usize,
-    new_end: usize,
-) -> String {
+fn expander_html(old_start: usize, old_end: usize, new_start: usize, new_end: usize) -> String {
     let new_count = new_end.saturating_sub(new_start.saturating_sub(1));
     let old_count = old_end.saturating_sub(old_start.saturating_sub(1));
     let count = new_count.max(old_count);
@@ -424,16 +417,12 @@ pub fn extract_hunks(old: &str, new: &str) -> Vec<DiffHunk> {
                 .flat_map(|op| diff.iter_changes(op))
                 .map(|change| {
                     let (kind, old_lineno, new_lineno) = match change.tag() {
-                        similar::ChangeTag::Delete => (
-                            "-".to_string(),
-                            change.old_index().map(|i| i + 1),
-                            None,
-                        ),
-                        similar::ChangeTag::Insert => (
-                            "+".to_string(),
-                            None,
-                            change.new_index().map(|i| i + 1),
-                        ),
+                        similar::ChangeTag::Delete => {
+                            ("-".to_string(), change.old_index().map(|i| i + 1), None)
+                        }
+                        similar::ChangeTag::Insert => {
+                            ("+".to_string(), None, change.new_index().map(|i| i + 1))
+                        }
                         similar::ChangeTag::Equal => (
                             " ".to_string(),
                             change.old_index().map(|i| i + 1),
@@ -498,10 +487,20 @@ class EmbeddingReliabilityEvaluator:
 "#;
         let html = highlighted_diff(old, new, "embedding_reliability_evaluator.py");
         eprintln!("PY-INSERT HTML LEN: {}", html.len());
-        eprintln!("PY-INSERT HTML (first 600 chars):\n{}", &html.chars().take(600).collect::<String>());
-        assert!(html.contains("EmbeddingReliabilityEvaluator"), "should contain class name");
+        eprintln!(
+            "PY-INSERT HTML (first 600 chars):\n{}",
+            &html.chars().take(600).collect::<String>()
+        );
+        assert!(
+            html.contains("EmbeddingReliabilityEvaluator"),
+            "should contain class name"
+        );
         assert!(html.contains("diff-add"), "should mark inserts");
-        assert!(html.len() > 500, "html should be substantial, got {} bytes", html.len());
+        assert!(
+            html.len() > 500,
+            "html should be substantial, got {} bytes",
+            html.len()
+        );
     }
 
     #[test]
@@ -551,7 +550,10 @@ class EmbeddingReliabilityEvaluator:
         let old = "alpha\nbeta\n";
         let new = "alpha\nBETA\n";
         let html = split_diff_html(old, new, ".txt");
-        assert!(html.contains("diff-split"), "container has diff-split class");
+        assert!(
+            html.contains("diff-split"),
+            "container has diff-split class"
+        );
         assert!(html.contains("diff-row"), "emits diff-row wrappers");
         assert!(html.contains("diff-remove") && html.contains("beta"));
         assert!(html.contains("diff-add") && html.contains("BETA"));
@@ -564,7 +566,10 @@ class EmbeddingReliabilityEvaluator:
         let old = "line1\n";
         let new = "line1\nline2\n";
         let html = split_diff_html(old, new, ".txt");
-        assert!(html.contains("diff-cell--empty"), "added line gets empty old cell");
+        assert!(
+            html.contains("diff-cell--empty"),
+            "added line gets empty old cell"
+        );
         assert!(html.contains("diff-add"));
     }
 

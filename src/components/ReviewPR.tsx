@@ -49,8 +49,14 @@ function parsePrKey(prKey: string): { projectId: string; repoId: string; prId: n
 function progressPercent(s: ReviewState): number | null {
   const total = s.filePaths.length;
   if (total === 0) return null;
-  const done = Math.min(s.currentFileIdx, total);
-  return Math.round((done / total) * 100);
+  if (s.phase === "done") return null;
+  if (s.phase === "batch-aggregate" || s.phase === "synthesis") return 100;
+
+  const completedFiles = Math.min(s.currentFileIdx, total);
+  const currentFileProgress = s.currentFileHunks > 0
+    ? Math.min(s.currentHunk, s.currentFileHunks) / s.currentFileHunks
+    : 0;
+  return Math.round(((completedFiles + currentFileProgress) / total) * 100);
 }
 
 interface Props {

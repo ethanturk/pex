@@ -42,10 +42,7 @@ pub async fn get_current_user_id(state: State<'_, AppState>) -> Result<String, S
 /// Rehydrate the in-memory ADO client for a saved org by reading credentials
 /// from the keyring. Called on app startup and when switching orgs.
 #[tauri::command]
-pub async fn activate_org(
-    state: State<'_, AppState>,
-    org_url: String,
-) -> Result<bool, String> {
+pub async fn activate_org(state: State<'_, AppState>, org_url: String) -> Result<bool, String> {
     // Look up the saved org to determine token type.
     let token_type = {
         let conn = state.db.lock().unwrap();

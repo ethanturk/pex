@@ -208,7 +208,12 @@ async fn first_changed_file(
         "{org}/{project}/_apis/git/repositories/{repo}/pullRequests/{pr_id}/iterations/{iteration}/changes?$top=20&api-version={API_VERSION}"
     );
     eprintln!("\n[probe] fetch iteration changes\n  {url}");
-    let resp = client.get(&url).headers(headers.clone()).send().await.ok()?;
+    let resp = client
+        .get(&url)
+        .headers(headers.clone())
+        .send()
+        .await
+        .ok()?;
     let status = resp.status();
     let body = resp.text().await.ok()?;
     eprintln!("  status: {status}");
@@ -246,7 +251,12 @@ async fn iteration_commits(
         "{org}/{project}/_apis/git/repositories/{repo}/pullRequests/{pr_id}/iterations/{iteration}?api-version={API_VERSION}"
     );
     eprintln!("\n[probe] fetch iteration detail\n  {url}");
-    let resp = client.get(&url).headers(headers.clone()).send().await.ok()?;
+    let resp = client
+        .get(&url)
+        .headers(headers.clone())
+        .send()
+        .await
+        .ok()?;
     let status = resp.status();
     let body = resp.text().await.ok()?;
     eprintln!("  status: {status}");
@@ -281,7 +291,11 @@ fn variants() -> Vec<Variant> {
         Variant {
             label: "A: rooted path, $format=text, download=true, Accept */*",
             build_url: |org, project, repo, path, commit| {
-                let p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+                let p = if path.starts_with('/') {
+                    path.to_string()
+                } else {
+                    format!("/{path}")
+                };
                 let pe = enc_keep_slash(&p);
                 format!("{org}/{project}/_apis/git/repositories/{repo}/items?path={pe}&versionDescriptor.version={commit}&versionDescriptor.versionType=commit&download=true&$format=text&api-version={API_VERSION}")
             },
@@ -290,7 +304,11 @@ fn variants() -> Vec<Variant> {
         Variant {
             label: "B: rooted path, $format=text, Accept text/plain",
             build_url: |org, project, repo, path, commit| {
-                let p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+                let p = if path.starts_with('/') {
+                    path.to_string()
+                } else {
+                    format!("/{path}")
+                };
                 let pe = enc_keep_slash(&p);
                 format!("{org}/{project}/_apis/git/repositories/{repo}/items?path={pe}&versionDescriptor.version={commit}&versionDescriptor.versionType=commit&$format=text&api-version={API_VERSION}")
             },
@@ -299,7 +317,11 @@ fn variants() -> Vec<Variant> {
         Variant {
             label: "C: rooted path, includeContent=true, Accept application/json",
             build_url: |org, project, repo, path, commit| {
-                let p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+                let p = if path.starts_with('/') {
+                    path.to_string()
+                } else {
+                    format!("/{path}")
+                };
                 let pe = enc_keep_slash(&p);
                 format!("{org}/{project}/_apis/git/repositories/{repo}/items?path={pe}&versionDescriptor.version={commit}&versionDescriptor.versionType=commit&includeContent=true&api-version={API_VERSION}")
             },
@@ -317,7 +339,11 @@ fn variants() -> Vec<Variant> {
         Variant {
             label: "E: %2F-encoded slashes, $format=text",
             build_url: |org, project, repo, path, commit| {
-                let p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+                let p = if path.starts_with('/') {
+                    path.to_string()
+                } else {
+                    format!("/{path}")
+                };
                 let pe = enc_full(&p);
                 format!("{org}/{project}/_apis/git/repositories/{repo}/items?path={pe}&versionDescriptor.version={commit}&versionDescriptor.versionType=commit&$format=text&api-version={API_VERSION}")
             },
@@ -326,7 +352,11 @@ fn variants() -> Vec<Variant> {
         Variant {
             label: "F: scopePath form (path-as-scope, no $format)",
             build_url: |org, project, repo, path, commit| {
-                let p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+                let p = if path.starts_with('/') {
+                    path.to_string()
+                } else {
+                    format!("/{path}")
+                };
                 let pe = enc_keep_slash(&p);
                 format!("{org}/{project}/_apis/git/repositories/{repo}/items?scopePath={pe}&recursionLevel=none&versionDescriptor.version={commit}&versionDescriptor.versionType=commit&includeContent=true&api-version={API_VERSION}")
             },
@@ -346,7 +376,10 @@ enum Verdict {
 fn summarize(status: reqwest::StatusCode, content_type: &str, body: &str) -> (String, Verdict) {
     if !status.is_success() {
         return (
-            format!("HTTP {status}; first 200 chars: {}", body.chars().take(200).collect::<String>()),
+            format!(
+                "HTTP {status}; first 200 chars: {}",
+                body.chars().take(200).collect::<String>()
+            ),
             Verdict::Error(format!("HTTP {status}")),
         );
     }
@@ -356,9 +389,13 @@ fn summarize(status: reqwest::StatusCode, content_type: &str, body: &str) -> (St
             Ok(v) => {
                 let content_state = match v.get("content") {
                     Some(Value::String(s)) if !s.is_empty() => {
-                        let preview: String = s.chars().take(120).collect::<String>().replace('\n', "\\n");
+                        let preview: String =
+                            s.chars().take(120).collect::<String>().replace('\n', "\\n");
                         return (
-                            format!("JSON envelope; content present ({} bytes); preview: {preview}", s.len()),
+                            format!(
+                                "JSON envelope; content present ({} bytes); preview: {preview}",
+                                s.len()
+                            ),
                             Verdict::JsonWithContent { bytes: s.len() },
                         );
                     }
@@ -368,19 +405,29 @@ fn summarize(status: reqwest::StatusCode, content_type: &str, body: &str) -> (St
                     None => "missing".to_string(),
                 };
                 (
-                    format!("JSON envelope; content={content_state}; full preview: {}", body.chars().take(200).collect::<String>()),
+                    format!(
+                        "JSON envelope; content={content_state}; full preview: {}",
+                        body.chars().take(200).collect::<String>()
+                    ),
                     Verdict::JsonNoContent,
                 )
             }
             Err(e) => (
-                format!("looked like JSON but failed to parse ({e}); first 200: {}", body.chars().take(200).collect::<String>()),
+                format!(
+                    "looked like JSON but failed to parse ({e}); first 200: {}",
+                    body.chars().take(200).collect::<String>()
+                ),
                 Verdict::Error("invalid JSON".into()),
             ),
         }
     } else if body.is_empty() {
         ("empty body".to_string(), Verdict::Empty)
     } else {
-        let preview: String = body.chars().take(160).collect::<String>().replace('\n', "\\n");
+        let preview: String = body
+            .chars()
+            .take(160)
+            .collect::<String>()
+            .replace('\n', "\\n");
         (
             format!("raw text, {} bytes; first 160: {preview}", body.len()),
             Verdict::RealText { bytes: body.len() },
@@ -447,7 +494,9 @@ async fn main() {
             }
             eprintln!("If the PR URL spelling differs from one of these (e.g. casing), pass that exact URL instead.");
         } else {
-            eprintln!("(No saved orgs found in {KEYRING_SERVICE} / pex.db — sign in to Pex first.)");
+            eprintln!(
+                "(No saved orgs found in {KEYRING_SERVICE} / pex.db — sign in to Pex first.)"
+            );
         }
         std::process::exit(1);
     };
@@ -551,7 +600,10 @@ async fn main() {
                 best_label = v.label.to_string();
             }
             // Dump full URL only when nothing worked, to keep output tight.
-            if matches!(verdict, Verdict::Error(_) | Verdict::Empty | Verdict::JsonNoContent) {
+            if matches!(
+                verdict,
+                Verdict::Error(_) | Verdict::Empty | Verdict::JsonNoContent
+            ) {
                 println!("  url: {url}");
             }
         }

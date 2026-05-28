@@ -64,7 +64,14 @@ pub async fn get_file_diff(
         hit
     } else {
         let fresh = client
-            .get_file_diff(&project_id, &repo_id, pr_id, &file_path, iteration, view_enum)
+            .get_file_diff(
+                &project_id,
+                &repo_id,
+                pr_id,
+                &file_path,
+                iteration,
+                view_enum,
+            )
             .await
             .map_err(|e| e.to_string())?;
         state.diff_cache.put(cache_key, fresh.clone());
@@ -106,7 +113,10 @@ pub async fn prefetch_pr_diffs(
     let mut misses = Vec::new();
 
     for file_path in file_paths {
-        let file_path = file_path.strip_prefix('/').unwrap_or(&file_path).to_string();
+        let file_path = file_path
+            .strip_prefix('/')
+            .unwrap_or(&file_path)
+            .to_string();
         let cache_key = crate::cache::diff_cache::DiffCacheKey {
             org_url: org_url.clone(),
             project_id: project_id.clone(),
@@ -189,7 +199,14 @@ pub async fn get_file_lines(
 ) -> Result<Vec<String>, String> {
     let client = get_client(&state)?;
     client
-        .get_file_lines(&project_id, &repo_id, &commit_id, &file_path, start_line, end_line)
+        .get_file_lines(
+            &project_id,
+            &repo_id,
+            &commit_id,
+            &file_path,
+            start_line,
+            end_line,
+        )
         .await
         .map_err(|e| e.to_string())
 }

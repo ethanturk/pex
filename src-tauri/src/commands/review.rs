@@ -1,9 +1,9 @@
-use crate::review::engine::{self, FileInput, ReviewInput, ReviewOutput};
-use crate::review::state::ReviewMode;
-use crate::AppState;
 use crate::cache::diff_cache::{DiffCache, DiffCacheKey};
 use crate::cache::standards_cache::StandardsCacheKey;
 use crate::diff::engine::DiffView;
+use crate::review::engine::{self, FileInput, ReviewInput, ReviewOutput};
+use crate::review::state::ReviewMode;
+use crate::AppState;
 use std::sync::atomic::Ordering;
 use tauri::{Emitter, State};
 
@@ -11,8 +11,9 @@ const DEFAULT_DIFF_FETCH_CONCURRENCY: usize = 6;
 
 fn read_diff_fetch_concurrency(db: &std::sync::Mutex<rusqlite::Connection>) -> usize {
     match db.lock() {
-        Ok(c) => crate::ai::read_hunk_concurrency(&c)
-            .unwrap_or(DEFAULT_DIFF_FETCH_CONCURRENCY as u32),
+        Ok(c) => {
+            crate::ai::read_hunk_concurrency(&c).unwrap_or(DEFAULT_DIFF_FETCH_CONCURRENCY as u32)
+        }
         Err(_) => DEFAULT_DIFF_FETCH_CONCURRENCY as u32,
     }
     .max(1) as usize
@@ -106,7 +107,14 @@ async fn fetch_file_inputs(
                 path.clone(),
                 tokio::spawn(async move {
                     client
-                        .get_file_diff(&project_id, &repo_id, pr_id, &path, iteration, DiffView::Inline)
+                        .get_file_diff(
+                            &project_id,
+                            &repo_id,
+                            pr_id,
+                            &path,
+                            iteration,
+                            DiffView::Inline,
+                        )
                         .await
                 }),
             ));
@@ -263,7 +271,8 @@ pub async fn start_review(
     let cancel = state.review_cancel.clone();
 
     // Run review — the engine handles all the streaming
-    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel).await
+    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel)
+        .await
         .map_err(|e| e.to_string())?;
 
     let _ = app.emit(
@@ -364,7 +373,8 @@ pub async fn start_review_post(
 
     state.review_cancel.store(false, Ordering::SeqCst);
     let cancel = state.review_cancel.clone();
-    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel).await
+    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel)
+        .await
         .map_err(|e| e.to_string())?;
 
     // Post to ADO
@@ -376,9 +386,16 @@ pub async fn start_review_post(
         }),
     );
 
-    engine::post_findings(&output.findings, &output.summary, &project_id, &repo_id, pr_id, &client)
-        .await
-        .map_err(|e| e.to_string())?;
+    engine::post_findings(
+        &output.findings,
+        &output.summary,
+        &project_id,
+        &repo_id,
+        pr_id,
+        &client,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let _ = app.emit(
         "review-post-done",
@@ -408,9 +425,17 @@ pub async fn cancel_review(state: State<'_, AppState>) -> Result<(), String> {
 
 /// Check if there's a saved review state that can be resumed.
 #[tauri::command]
-pub async fn get_saved_review(state: State<'_, AppState>) -> Result<Option<crate::review::state::ReviewState>, String> {
+pub async fn get_saved_review(
+    state: State<'_, AppState>,
+) -> Result<Option<crate::review::state::ReviewState>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::review::state::load_state(&db).map_err(|e: crate::AppError| e.to_string())
+    let saved =
+        crate::review::state::load_state(&db).map_err(|e: crate::AppError| e.to_string())?;
+    if saved.as_ref().map(|s| s.is_done()).unwrap_or(false) {
+        crate::review::state::clear_state(&db).map_err(|e: crate::AppError| e.to_string())?;
+        return Ok(None);
+    }
+    Ok(saved)
 }
 
 /// Clear any saved review state.

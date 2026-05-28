@@ -115,6 +115,9 @@ mod tests {
         let mut k2 = sample_key();
         k2.view = "split".into();
         c.put(k1, sample_diff());
-        assert!(c.get(&k2).is_none(), "split view must not reuse inline cache");
+        assert!(
+            c.get(&k2).is_none(),
+            "split view must not reuse inline cache"
+        );
     }
 }

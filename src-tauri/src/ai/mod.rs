@@ -163,7 +163,10 @@ pub fn read_connect_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError
 /// strictly more lenient (slow generation now succeeds where it used to fail).
 pub fn read_read_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError> {
     let new_key = crate::cache::get_setting(conn, "ai_read_timeout_secs")?;
-    if let Some(n) = new_key.and_then(|s| s.parse::<u64>().ok()).filter(|n| *n > 0) {
+    if let Some(n) = new_key
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+    {
         return Ok(n.min(MAX_TIMEOUT_SECS));
     }
     let legacy = crate::cache::get_setting(conn, "ai_request_timeout_secs")?;
@@ -250,17 +253,15 @@ impl AiManager {
     }
 
     /// Try to auto-configure from stored settings in SQLite + keyring.
-    pub fn try_configure_from_db(
-        &mut self,
-        conn: &rusqlite::Connection,
-    ) -> Result<bool, AppError> {
+    pub fn try_configure_from_db(&mut self, conn: &rusqlite::Connection) -> Result<bool, AppError> {
         let provider_str = crate::cache::get_setting(conn, "ai_provider")?;
         let endpoint = crate::cache::get_setting(conn, "ai_endpoint")?;
         let model = crate::cache::get_setting(conn, "ai_model")?;
         let connect_timeout = read_connect_timeout(conn)?;
         let read_timeout = read_read_timeout(conn)?;
 
-        let (Some(provider_str), Some(endpoint), Some(model)) = (provider_str, endpoint, model) else {
+        let (Some(provider_str), Some(endpoint), Some(model)) = (provider_str, endpoint, model)
+        else {
             return Ok(false);
         };
 
@@ -275,7 +276,14 @@ impl AiManager {
             return Ok(false);
         };
 
-        self.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout);
+        self.configure(
+            kind,
+            &endpoint,
+            &model,
+            &api_key,
+            connect_timeout,
+            read_timeout,
+        );
         Ok(true)
     }
 

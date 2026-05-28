@@ -50,7 +50,9 @@ pub fn get_cached(conn: &rusqlite::Connection) -> Result<Option<Vec<String>>, Ap
 
 /// Fetch the live model list from the provider's /models endpoint and persist
 /// it to the cache. Requires AI settings to be fully configured.
-pub async fn fetch_and_cache(conn_mutex: &std::sync::Mutex<rusqlite::Connection>) -> Result<Vec<String>, AppError> {
+pub async fn fetch_and_cache(
+    conn_mutex: &std::sync::Mutex<rusqlite::Connection>,
+) -> Result<Vec<String>, AppError> {
     // Read the settings we need under a short lock, then drop the guard before
     // doing network I/O so other DB consumers aren't blocked on the request.
     let (kind, endpoint, api_key) = {

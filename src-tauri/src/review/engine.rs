@@ -1,13 +1,13 @@
-use crate::ai::{AiProvider, ChatMessage, ChatRole};
 use crate::ai::prompts::{resolve_prompt, PromptKey};
+use crate::ai::{AiProvider, ChatMessage, ChatRole};
 use crate::diff::engine::extract_hunks;
 use crate::review::prompts;
 use crate::review::state::{self, ReviewMode, ReviewState};
 use crate::AppError;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::Semaphore;
+use std::sync::Arc;
 use tauri::Emitter;
+use tokio::sync::Semaphore;
 
 fn cancelled(flag: &AtomicBool) -> Result<(), AppError> {
     if flag.load(Ordering::SeqCst) {
@@ -93,7 +93,10 @@ fn parse_file_aggregate(raw: &str) -> Result<FileAggregateResult, String> {
         .strip_prefix("```json")
         .or_else(|| trimmed.strip_prefix("```"))
     {
-        stripped.trim_start_matches('\n').trim_end_matches("```").trim()
+        stripped
+            .trim_start_matches('\n')
+            .trim_end_matches("```")
+            .trim()
     } else {
         trimmed
     };
@@ -155,8 +158,9 @@ pub async fn run_review(
         Err(_) => crate::ai::DEFAULT_RETRY_COUNT,
     };
     let hunk_concurrency = match db.lock() {
-        Ok(c) => crate::ai::read_hunk_concurrency(&c)
-            .unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY),
+        Ok(c) => {
+            crate::ai::read_hunk_concurrency(&c).unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY)
+        }
         Err(_) => crate::ai::DEFAULT_HUNK_CONCURRENCY,
     }
     .max(1) as usize;
@@ -168,30 +172,37 @@ pub async fn run_review(
     //
     // Each tuple: (key, system prompt text, optional model override).
     // `None` model override means: fall back to the provider's configured model.
-    let specialist_prompts: Vec<(PromptKey, String, Option<String>)> = if input.mode == ReviewMode::Thorough {
-        let mut out = Vec::new();
-        for key in PromptKey::THOROUGH_SPECIALISTS {
-            let (text, model) = match db.lock() {
-                Ok(c) => {
-                    let t = resolve_prompt(&c, *key).unwrap_or_else(|_| key.default_text().to_string());
-                    let m = crate::ai::prompts::resolve_model(&c, *key).unwrap_or(None);
-                    (t, m)
-                }
-                Err(_) => (key.default_text().to_string(), None),
-            };
-            out.push((*key, text, model));
-        }
-        out
-    } else {
-        Vec::new()
-    };
+    let specialist_prompts: Vec<(PromptKey, String, Option<String>)> =
+        if input.mode == ReviewMode::Thorough {
+            let mut out = Vec::new();
+            for key in PromptKey::THOROUGH_SPECIALISTS {
+                let (text, model) = match db.lock() {
+                    Ok(c) => {
+                        let t = resolve_prompt(&c, *key)
+                            .unwrap_or_else(|_| key.default_text().to_string());
+                        let m = crate::ai::prompts::resolve_model(&c, *key).unwrap_or(None);
+                        (t, m)
+                    }
+                    Err(_) => (key.default_text().to_string(), None),
+                };
+                out.push((*key, text, model));
+            }
+            out
+        } else {
+            Vec::new()
+        };
 
     // Check for resumable state
     if let Ok(db_lock) = db.lock() {
         if let Ok(Some(saved)) = state::load_state(&db_lock) {
             if saved.pr_key == state.pr_key && !saved.is_done() {
                 state = saved;
-                emit_progress(&app, "resume", "Resuming from saved progress...", serde_json::json!({}));
+                emit_progress(
+                    &app,
+                    "resume",
+                    "Resuming from saved progress...",
+                    serde_json::json!({}),
+                );
             }
         }
     }
@@ -211,7 +222,12 @@ pub async fn run_review(
         emit_progress(
             &app,
             "hunk-review",
-            &format!("{} ({}/{})", file.path, state.current_file_idx + 1, file_entries.len()),
+            &format!(
+                "{} ({}/{})",
+                file.path,
+                state.current_file_idx + 1,
+                file_entries.len()
+            ),
             serde_json::json!({
                 "fileNum": state.current_file_idx + 1,
                 "totalFiles": file_entries.len(),
@@ -273,7 +289,13 @@ pub async fn run_review(
                         emit_progress(
                             &app,
                             "hunk-skipped",
-                            &format!("Hunk {}/{} in {} failed: {}", hunk_idx + 1, total_hunks, file.path, e),
+                            &format!(
+                                "Hunk {}/{} in {} failed: {}",
+                                hunk_idx + 1,
+                                total_hunks,
+                                file.path,
+                                e
+                            ),
                             serde_json::json!({}),
                         );
                         state.current_file_findings.push((hunk_idx + 1, skip_msg));
@@ -292,7 +314,12 @@ pub async fn run_review(
                 emit_progress(
                     &app,
                     "hunk-review",
-                    &format!("{} ({}/{})", file.path, state.current_file_idx + 1, file_entries.len()),
+                    &format!(
+                        "{} ({}/{})",
+                        file.path,
+                        state.current_file_idx + 1,
+                        file_entries.len()
+                    ),
                     serde_json::json!({
                         "fileNum": state.current_file_idx + 1,
                         "totalFiles": file_entries.len(),
@@ -307,6 +334,8 @@ pub async fn run_review(
 
         // ---- File Aggregate ----
         if !state.current_file_findings.is_empty() {
+            state.phase = "file-aggregate".into();
+            save_state_to_db(db, &state);
             emit_progress(
                 &app,
                 "file-aggregate",
@@ -332,9 +361,9 @@ pub async fn run_review(
                 },
             ];
 
-            let raw = chat_with_retries(&provider, &agg_messages, retry_count).await.unwrap_or_else(|e| {
-                format!("[aggregate failed — {}]", e)
-            });
+            let raw = chat_with_retries(&provider, &agg_messages, retry_count)
+                .await
+                .unwrap_or_else(|e| format!("[aggregate failed — {}]", e));
 
             let aggregate = parse_file_aggregate(&raw).unwrap_or_else(|err| {
                 // Log to stderr so the user can see what the model produced.
@@ -365,6 +394,11 @@ pub async fn run_review(
         state.current_file_hunks = 0;
         state.current_hunk = 0;
         state.current_file_findings.clear();
+        state.phase = if state.current_file_idx >= file_entries.len() {
+            "batch-aggregate".into()
+        } else {
+            "hunk-review".into()
+        };
 
         save_state_to_db(db, &state);
     }
@@ -372,6 +406,10 @@ pub async fn run_review(
     // ---- Phase 2: Batch Aggregation ----
     let batch_size = 5;
     let total_batches = state.total_batches;
+    if state.current_batch <= total_batches {
+        state.phase = "batch-aggregate".into();
+        save_state_to_db(db, &state);
+    }
 
     while state.current_batch <= total_batches {
         cancelled(&cancel)?;
@@ -391,7 +429,12 @@ pub async fn run_review(
         emit_progress(
             &app,
             "batch-aggregate",
-            &format!("Batch {}/{} ({} files)", state.current_batch, total_batches, batch_files.len()),
+            &format!(
+                "Batch {}/{} ({} files)",
+                state.current_batch,
+                total_batches,
+                batch_files.len()
+            ),
             serde_json::json!({
                 "batch": state.current_batch,
                 "totalBatches": total_batches,
@@ -429,6 +472,8 @@ pub async fn run_review(
 
     // ---- Phase 3: Final Synthesis ----
     cancelled(&cancel)?;
+    state.phase = "synthesis".into();
+    save_state_to_db(db, &state);
     emit_progress(
         &app,
         "synthesis",
@@ -478,7 +523,7 @@ pub async fn run_review(
 
     state.phase = "done".into();
     state.final_review = Some(final_review.clone());
-    save_state_to_db(db, &state);
+    clear_state_from_db(db);
 
     emit_progress(
         &app,
@@ -609,7 +654,10 @@ async fn review_single_hunk(
                 Ok(result) => result,
                 Err(e) => (
                     PromptKey::ReviewCodeReviewerSystem,
-                    Err(AppError::Ai(format!("Specialist review task failed: {}", e))),
+                    Err(AppError::Ai(format!(
+                        "Specialist review task failed: {}",
+                        e
+                    ))),
                 ),
             };
             pass_results.push((idx, result));
@@ -700,6 +748,12 @@ fn save_state_to_db(db: &std::sync::Mutex<rusqlite::Connection>, state: &ReviewS
     }
 }
 
+fn clear_state_from_db(db: &std::sync::Mutex<rusqlite::Connection>) {
+    if let Ok(db_lock) = db.lock() {
+        let _ = state::clear_state(&db_lock);
+    }
+}
+
 /// Post review findings to ADO as PR comments.
 pub async fn post_findings(
     findings: &[Finding],
@@ -732,7 +786,10 @@ pub async fn post_findings(
         }
 
         let prefix = severity_prefix(finding.severity);
-        let body = format!("{} **{}**\n\n{}", prefix, finding.file_path, finding.comment);
+        let body = format!(
+            "{} **{}**\n\n{}",
+            prefix, finding.file_path, finding.comment
+        );
 
         let thread = if let (Some(lo), Some(hi)) = (finding.line_start, finding.line_end) {
             let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };

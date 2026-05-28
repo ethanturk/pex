@@ -180,10 +180,7 @@ pub fn final_synthesis_user_message(
     batch_summaries: &[String],
     standards: &str,
 ) -> String {
-    let mut msg = format!(
-        "PR: {}\nTotal files changed: {}\n\n",
-        pr_title, total_files
-    );
+    let mut msg = format!("PR: {}\nTotal files changed: {}\n\n", pr_title, total_files);
 
     for (i, summary) in batch_summaries.iter().enumerate() {
         msg.push_str(&format!("--- Batch {} ---\n{}\n\n", i + 1, summary));

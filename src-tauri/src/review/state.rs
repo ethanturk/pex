@@ -1,5 +1,5 @@
-use crate::AppError;
 use crate::review::engine::FileAggregateResult;
+use crate::AppError;
 use serde::{Deserialize, Serialize};
 
 /// Which review strategy to run.
@@ -24,7 +24,7 @@ pub struct ReviewState {
     /// persisted states still deserialize.
     #[serde(default)]
     pub mode: ReviewMode,
-    /// Phase: "hunk-review", "batch-aggregate", "synthesis", "done"
+    /// Phase: "hunk-review", "file-aggregate", "batch-aggregate", "synthesis", "done"
     pub phase: String,
     /// All file paths being reviewed (sorted largest first)
     pub file_paths: Vec<String>,

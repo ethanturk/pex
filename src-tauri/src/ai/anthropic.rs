@@ -44,10 +44,7 @@ impl AiProvider for AnthropicProvider {
         messages: &[ChatMessage],
         model_override: Option<&str>,
     ) -> Result<String, AppError> {
-        let url = format!(
-            "{}/v1/messages",
-            self.endpoint.trim_end_matches('/')
-        );
+        let url = format!("{}/v1/messages", self.endpoint.trim_end_matches('/'));
 
         // Anthropic API separates system message from the messages array.
         // Our ChatMessage uses ChatRole::System — extract it.

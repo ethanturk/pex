@@ -360,9 +360,10 @@ impl AdoClient {
             .await?;
 
         let old_snap = match &base_commit {
-            Some(bid) => self
-                .get_file_content(project, repo_id, file_path, bid)
-                .await?,
+            Some(bid) => {
+                self.get_file_content(project, repo_id, file_path, bid)
+                    .await?
+            }
             None => FileSnapshot::Missing,
         };
 
@@ -489,7 +490,10 @@ impl AdoClient {
             self.org_url, project, repo_id, path_for_url, commit_id, self.api_version
         );
 
-        match self.fetch_item_body(&text_url, file_path, commit_id).await? {
+        match self
+            .fetch_item_body(&text_url, file_path, commit_id)
+            .await?
+        {
             FetchOutcome::Text(s) => return Ok(FileSnapshot::Present(s)),
             FetchOutcome::Empty200 => return Ok(FileSnapshot::Present(String::new())),
             FetchOutcome::Missing => return Ok(FileSnapshot::Missing),
@@ -501,7 +505,10 @@ impl AdoClient {
             "{}/{}/_apis/git/repositories/{}/items?path={}&versionDescriptor.version={}&versionDescriptor.versionType=commit&includeContent=true&api-version={}",
             self.org_url, project, repo_id, path_for_url, commit_id, self.api_version
         );
-        match self.fetch_item_body(&json_url, file_path, commit_id).await? {
+        match self
+            .fetch_item_body(&json_url, file_path, commit_id)
+            .await?
+        {
             FetchOutcome::Text(s) => Ok(FileSnapshot::Present(s)),
             FetchOutcome::Empty200 => Ok(FileSnapshot::Present(String::new())),
             FetchOutcome::Missing => Ok(FileSnapshot::Missing),
@@ -563,7 +570,11 @@ impl AdoClient {
             .map_err(|e| AppError::Ado(format!("Read file body failed: {}", e)))?;
 
         if debug {
-            let preview: String = body.chars().take(160).collect::<String>().replace('\n', "\\n");
+            let preview: String = body
+                .chars()
+                .take(160)
+                .collect::<String>()
+                .replace('\n', "\\n");
             eprintln!("[pex]   body: {} bytes; preview: {}", body.len(), preview);
         }
 
@@ -747,10 +758,7 @@ fn urlencoding(s: &str) -> String {
 /// Percent-encode a path for use as a query-string value, leaving '/' intact.
 /// ADO's items endpoint accepts both forms but is more reliable with raw slashes.
 fn encode_path_preserve_slash(s: &str) -> String {
-    s.split('/')
-        .map(urlencoding)
-        .collect::<Vec<_>>()
-        .join("/")
+    s.split('/').map(urlencoding).collect::<Vec<_>>().join("/")
 }
 
 /// Cap an error-body snippet so we don't log megabytes of binary content.
