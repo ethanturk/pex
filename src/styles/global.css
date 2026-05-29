@@ -177,6 +177,15 @@
 .status-abandoned { @apply bg-red-100 dark:bg-red-800/40 text-red-800 dark:text-red-300; }
 .status-conflict { @apply bg-orange-100 dark:bg-orange-800/40 text-orange-800 dark:text-orange-300; }
 
+/* ===== PR check status ===== */
+.pr-check-spin-slow {
+  animation: pr-check-spin 4s linear infinite;
+}
+@keyframes pr-check-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* ===== Scrollbar ===== */
 ::-webkit-scrollbar { @apply w-2 h-2; }
 ::-webkit-scrollbar-track { @apply bg-transparent; }

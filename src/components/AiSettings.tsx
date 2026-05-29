@@ -1,4 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
+import { showPrChecks } from "@/lib/signals";
 import {
   getAiSettings,
   saveAiSettings,
@@ -15,7 +16,7 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "ai" | "prompts";
+type Tab = "ai" | "prompts" | "pr-list";
 
 const DEFAULT_STANDARDS_MAX_CHARS = 8000;
 const MIN_STANDARDS_MAX_CHARS = 500;
@@ -235,7 +236,7 @@ export function AiSettings({ open, onClose }: Props) {
       >
         {/* Header */}
         <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 class="text-base font-semibold">AI Settings</h2>
+          <h2 class="text-base font-semibold">Settings</h2>
           <button
             class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none"
             onClick={onClose}
@@ -248,6 +249,7 @@ export function AiSettings({ open, onClose }: Props) {
         <div class="flex border-b border-gray-200 dark:border-gray-700 px-5">
           <TabButton label="AI" active={tab === "ai"} onClick={() => setTab("ai")} />
           <TabButton label="Prompts" active={tab === "prompts"} onClick={() => setTab("prompts")} />
+          <TabButton label="PR List" active={tab === "pr-list"} onClick={() => setTab("pr-list")} />
         </div>
 
         <div class="px-5 py-4 space-y-5">
@@ -577,6 +579,27 @@ export function AiSettings({ open, onClose }: Props) {
                   );
                 })}
               </div>
+            </section>
+          )}
+
+          {tab === "pr-list" && (
+            <section class="space-y-4">
+              <label class="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={showPrChecks.value}
+                  onChange={(e) => (showPrChecks.value = e.currentTarget.checked)}
+                  class="mt-1"
+                />
+                <span>
+                  <span class="block text-sm font-medium text-gray-900 dark:text-gray-100">
+                    Show PR build checks
+                  </span>
+                  <span class="block text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Fetch Azure DevOps policy evaluations for each PR and show required/optional check status in the PR list. This adds extra API calls when the PR list loads or refreshes.
+                  </span>
+                </span>
+              </label>
             </section>
           )}
 

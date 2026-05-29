@@ -1,6 +1,13 @@
-import { useState, useEffect, useMemo } from "preact/hooks";
-import { currentView, selectedProject, selectedRepo } from "@/lib/signals";
-import { listProjects, listRepositories, listPullRequests, getCurrentUserId, type Project, type Repository, type PullRequest } from "@/lib/api";
+import { useState, useEffect, useMemo, useCallback, useRef } from "preact/hooks";
+import { currentView, selectedProject, selectedRepo, showPrChecks } from "@/lib/signals";
+import { listProjects, listRepositories, listPullRequests, getCurrentUserId, getPrChecks, type Project, type Repository, type PullRequest, type PRCheck } from "@/lib/api";
+import { getPrCheckRollup } from "@/lib/prChecks";
+
+interface PRChecksState {
+  loading: boolean;
+  checks: PRCheck[];
+  error: string;
+}
 
 const VOTE_TAG: Record<number, { label: string; class: string }> = {
   10: { label: "Approved", class: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300" },
@@ -24,12 +31,62 @@ const STATUS_LABEL: Record<string, string> = {
   abandoned: "Abandoned",
 };
 
+function PRCheckSummary({ state }: { state: PRChecksState | undefined }) {
+  if (!state || state.loading) {
+    return (
+      <div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
+        ↻ Loading checks...
+      </div>
+    );
+  }
+  if (state.error) {
+    return (
+      <div class="mt-2 text-xs text-red-500 dark:text-red-400" title={state.error}>
+        Checks unavailable
+      </div>
+    );
+  }
+  if (state.checks.length === 0) {
+    return (
+      <div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
+        No configured build checks
+      </div>
+    );
+  }
+
+  const rollup = getPrCheckRollup(state.checks);
+  const tone =
+    rollup.status === "fail"
+      ? "text-red-600 dark:text-red-400"
+      : rollup.status === "running"
+        ? "text-blue-600 dark:text-blue-400"
+        : "text-green-600 dark:text-green-400";
+  const icon = rollup.status === "fail" ? "×" : rollup.status === "running" ? "↻" : "✓";
+
+  return (
+    <div
+      class={`mt-2 text-xs ${tone}`}
+      title={rollup.tooltip}
+    >
+      <span class="inline-flex items-center gap-1">
+        <span class="inline-flex items-center justify-center w-4 h-4 rounded-full border border-current text-[10px]">
+          {icon}
+        </span>
+        <span>{rollup.requiredText}{rollup.optionalText ? ` · ${rollup.optionalText}` : ""}</span>
+      </span>
+    </div>
+  );
+}
+
 export function PRList() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [repos, setRepos] = useState<Repository[]>([]);
   const [prs, setPrs] = useState<PullRequest[]>([]);
+  const [prChecks, setPrChecks] = useState<Record<number, PRChecksState>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const checksReqId = useRef(0);
+  const checksEnabled = showPrChecks.value;
 
   // Filter state
   const [statusFilter, setStatusFilter] = useState("all");
@@ -53,22 +110,72 @@ export function PRList() {
     }
   }, [selectedProject.value]);
 
+  const refreshPullRequests = useCallback(() => {
+    if (!selectedProject.value || !selectedRepo.value) return;
+    setLoading(true);
+    setError("");
+    listPullRequests(selectedProject.value, selectedRepo.value)
+      .then((list) => {
+        setPrs(list);
+        setError("");
+      })
+      .catch((e) => {
+        setPrs([]);
+        setError(typeof e === "string" ? e : e?.message ?? String(e));
+      })
+      .finally(() => setLoading(false));
+  }, [selectedProject.value, selectedRepo.value]);
+
   useEffect(() => {
-    if (selectedProject.value && selectedRepo.value) {
-      setLoading(true);
-      setError("");
-      listPullRequests(selectedProject.value, selectedRepo.value)
-        .then((list) => {
-          setPrs(list);
-          setError("");
-        })
-        .catch((e) => {
-          setPrs([]);
-          setError(typeof e === "string" ? e : e?.message ?? String(e));
-        })
-        .finally(() => setLoading(false));
+    refreshPullRequests();
+  }, [refreshPullRequests]);
+
+  const loadChecksForPrs = useCallback((list: PullRequest[]) => {
+    const reqId = ++checksReqId.current;
+    if (!checksEnabled || !selectedProject.value || list.length === 0) {
+      setPrChecks({});
+      return;
     }
-  }, [selectedRepo.value]);
+
+    const projectId = selectedProject.value;
+    setPrChecks(
+      Object.fromEntries(
+        list.map((pr) => [pr.pullRequestId, { loading: true, checks: [], error: "" }]),
+      ),
+    );
+
+    let nextIndex = 0;
+    const workerCount = Math.min(4, list.length);
+    const runWorker = async () => {
+      while (nextIndex < list.length) {
+        const pr = list[nextIndex++];
+        try {
+          const checks = await getPrChecks(projectId, pr.pullRequestId);
+          if (reqId !== checksReqId.current) return;
+          setPrChecks((prev) => ({
+            ...prev,
+            [pr.pullRequestId]: { loading: false, checks, error: "" },
+          }));
+        } catch (e) {
+          if (reqId !== checksReqId.current) return;
+          setPrChecks((prev) => ({
+            ...prev,
+            [pr.pullRequestId]: {
+              loading: false,
+              checks: [],
+              error: typeof e === "string" ? e : e instanceof Error ? e.message : String(e),
+            },
+          }));
+        }
+      }
+    };
+
+    void Promise.all(Array.from({ length: workerCount }, runWorker));
+  }, [checksEnabled, selectedProject.value]);
+
+  useEffect(() => {
+    loadChecksForPrs(prs);
+  }, [prs, loadChecksForPrs]);
 
   // Client-side filtering
   const filteredPrs = useMemo(() => {
@@ -142,6 +249,15 @@ export function PRList() {
                 <option key={value} value={value}>{label}</option>
               ))}
             </select>
+            <button
+              onClick={refreshPullRequests}
+              disabled={loading}
+              title="Refresh pull requests"
+              aria-label="Refresh pull requests"
+              class="w-8 h-8 shrink-0 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              ↻
+            </button>
             <input
               type="text"
               value={searchQuery}
@@ -189,6 +305,9 @@ export function PRList() {
                 <span>→</span>
                 <span class="font-mono">{pr.targetRefName.replace("refs/heads/", "")}</span>
               </div>
+              {checksEnabled && (
+                <PRCheckSummary state={prChecks[pr.pullRequestId]} />
+              )}
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
               {(() => {

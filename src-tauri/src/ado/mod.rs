@@ -181,6 +181,34 @@ impl AdoClient {
         .await
     }
 
+    pub async fn list_pr_policy_evaluations(
+        &self,
+        project: &str,
+        pr_id: i64,
+    ) -> Result<Vec<PrCheck>, AppError> {
+        #[derive(serde::Deserialize)]
+        struct Response {
+            value: Vec<PolicyEvaluationRecord>,
+        }
+
+        let artifact_id = format!("vstfs:///CodeReview/CodeReviewId/{}/{}", project, pr_id);
+        let encoded_artifact_id: String =
+            url::form_urlencoded::byte_serialize(artifact_id.as_bytes()).collect();
+        let resp: Response = self
+            .get(&format!(
+                "{}/_apis/policy/evaluations?artifactId={}&api-version=7.1-preview.1",
+                project, encoded_artifact_id
+            ))
+            .await?;
+
+        Ok(resp
+            .value
+            .into_iter()
+            .filter(PolicyEvaluationRecord::is_build_validation)
+            .map(PrCheck::from)
+            .collect())
+    }
+
     pub async fn get_iterations(
         &self,
         project: &str,
@@ -860,6 +888,138 @@ pub struct Reviewer {
     pub vote: i32,
     #[serde(rename = "isRequired", default)]
     pub is_required: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PrCheck {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    #[serde(rename = "isRequired")]
+    pub is_required: bool,
+    pub description: String,
+    #[serde(rename = "startedDate")]
+    pub started_date: Option<String>,
+    #[serde(rename = "completedDate")]
+    pub completed_date: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct PolicyEvaluationRecord {
+    #[serde(rename = "evaluationId")]
+    evaluation_id: String,
+    status: String,
+    configuration: PolicyConfiguration,
+    #[serde(default)]
+    context: serde_json::Value,
+    #[serde(rename = "startedDate", default)]
+    started_date: Option<String>,
+    #[serde(rename = "completedDate", default)]
+    completed_date: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct PolicyConfiguration {
+    #[serde(rename = "isBlocking", default)]
+    is_blocking: bool,
+    #[serde(default)]
+    settings: serde_json::Value,
+    #[serde(rename = "type")]
+    policy_type: PolicyTypeRef,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct PolicyTypeRef {
+    #[serde(rename = "displayName", default)]
+    display_name: Option<String>,
+}
+
+impl PolicyEvaluationRecord {
+    fn is_build_validation(&self) -> bool {
+        if self
+            .configuration
+            .policy_type
+            .display_name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("build"))
+        {
+            return true;
+        }
+
+        self.configuration
+            .settings
+            .get("buildDefinitionId")
+            .is_some()
+            || self
+                .configuration
+                .settings
+                .get("buildDefinitionName")
+                .is_some()
+            || self
+                .configuration
+                .settings
+                .get("buildDefinitionDisplayName")
+                .is_some()
+    }
+}
+
+impl From<PolicyEvaluationRecord> for PrCheck {
+    fn from(record: PolicyEvaluationRecord) -> Self {
+        let name = first_string(
+            &record.configuration.settings,
+            &[
+                "displayName",
+                "buildDefinitionName",
+                "statusName",
+                "filenamePatterns",
+            ],
+        )
+        .or_else(|| {
+            first_string(
+                &record.context,
+                &["name", "displayName", "buildDefinitionName", "statusName"],
+            )
+        })
+        .or(record.configuration.policy_type.display_name)
+        .unwrap_or_else(|| "Policy".to_string());
+
+        let description =
+            first_string(&record.context, &["description", "message"]).unwrap_or_default();
+
+        Self {
+            id: record.evaluation_id,
+            name,
+            status: record.status,
+            is_required: record.configuration.is_blocking,
+            description,
+            started_date: record.started_date,
+            completed_date: record.completed_date,
+        }
+    }
+}
+
+fn first_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        let item = value.get(*key)?;
+        if let Some(s) = item.as_str() {
+            if !s.trim().is_empty() {
+                return Some(s.to_string());
+            }
+        }
+        item.as_array().and_then(|items| {
+            let joined = items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if joined.is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
+        })
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

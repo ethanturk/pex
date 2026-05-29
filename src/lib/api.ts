@@ -20,6 +20,16 @@ export interface PullRequest {
   iterationCount: number;
 }
 
+export interface PRCheck {
+  id: string;
+  name: string;
+  status: "queued" | "running" | "approved" | "rejected" | "notApplicable" | "broken" | string;
+  isRequired: boolean;
+  description: string;
+  startedDate: string | null;
+  completedDate: string | null;
+}
+
 export interface Reviewer {
   id: string;
   displayName: string;
@@ -123,6 +133,13 @@ export async function listPullRequests(
   repoId: string,
 ): Promise<PullRequest[]> {
   return invoke<PullRequest[]>("list_pull_requests", { projectId, repoId });
+}
+
+export async function getPrChecks(
+  projectId: string,
+  prId: number,
+): Promise<PRCheck[]> {
+  return invoke<PRCheck[]>("get_pr_checks", { projectId, prId });
 }
 
 // ============= Iterations =============

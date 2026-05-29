@@ -74,6 +74,33 @@ pub async fn list_pull_requests(
 }
 
 #[tauri::command]
+pub async fn get_pr_checks(
+    state: State<'_, AppState>,
+    project_id: String,
+    pr_id: i64,
+) -> Result<Vec<serde_json::Value>, String> {
+    let client = get_client(&state)?;
+    let checks = client
+        .list_pr_policy_evaluations(&project_id, pr_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(checks
+        .into_iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.id,
+                "name": c.name,
+                "status": c.status,
+                "isRequired": c.is_required,
+                "description": c.description,
+                "startedDate": c.started_date,
+                "completedDate": c.completed_date,
+            })
+        })
+        .collect())
+}
+
+#[tauri::command]
 pub async fn get_iterations(
     state: State<'_, AppState>,
     project_id: String,

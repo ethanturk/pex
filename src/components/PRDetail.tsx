@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { useResizableWidth } from "@/lib/useResizableWidth";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick, showPrChecks } from "@/lib/signals";
 import {
+  getPrChecks,
   getPrFiles,
   getViewedFiles,
   markFileViewed,
@@ -12,7 +13,9 @@ import {
   postComment,
   getIterations,
   type CommentThread,
+  type PRCheck,
 } from "@/lib/api";
+import { getPrCheckRollup } from "@/lib/prChecks";
 import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
 import { HunkReview } from "@/components/HunkReview";
@@ -21,6 +24,71 @@ import { ReviewPR } from "@/components/ReviewPR";
 import { ApprovalBar } from "@/components/ApprovalBar";
 
 interface Props { prId: number; }
+
+interface PRChecksState {
+  loading: boolean;
+  checks: PRCheck[];
+  error: string;
+}
+
+function PRDetailCheckIcon({
+  state,
+  onRefresh,
+}: {
+  state: PRChecksState;
+  onRefresh: () => void;
+}) {
+  if (state.loading) {
+    return (
+      <button
+        type="button"
+        onClick={onRefresh}
+        class="inline-flex items-center justify-center w-6 h-6 rounded text-base text-blue-600 dark:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+        title="Loading build checks."
+        aria-label="Loading build checks"
+      >
+        <span class="pr-check-spin-slow">↻</span>
+      </button>
+    );
+  }
+  if (state.error) {
+    return (
+      <button
+        type="button"
+        onClick={onRefresh}
+        class="inline-flex items-center justify-center w-6 h-6 rounded text-base font-semibold text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+        title={`Build checks unavailable: ${state.error}`}
+        aria-label="Build checks unavailable"
+      >
+        !
+      </button>
+    );
+  }
+
+  const rollup = getPrCheckRollup(state.checks);
+  if (rollup.status === "none") return null;
+
+  const className =
+    rollup.status === "fail"
+      ? "text-red-600 dark:text-red-400"
+      : rollup.status === "running"
+        ? "text-blue-600 dark:text-blue-400"
+        : "text-green-600 dark:text-green-400";
+  const icon = rollup.status === "fail" ? "×" : rollup.status === "running" ? "↻" : "✓";
+  const sizeClass = rollup.status === "running" ? "text-base pr-check-spin-slow" : "text-base font-semibold";
+
+  return (
+    <button
+      type="button"
+      onClick={onRefresh}
+      class={`inline-flex items-center justify-center w-6 h-6 rounded hover:bg-gray-100 dark:hover:bg-gray-800 ${sizeClass} ${className}`}
+      title={`${rollup.tooltip}\nClick to refresh build checks.`}
+      aria-label={`${rollup.tooltip} Click to refresh build checks.`}
+    >
+      {icon}
+    </button>
+  );
+}
 
 export function PRDetail({ prId }: Props) {
   const [diffHtml, setDiffHtml] = useState<string>("");
@@ -34,6 +102,11 @@ export function PRDetail({ prId }: Props) {
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [copied, setCopied] = useState(false);
+  const [checksState, setChecksState] = useState<PRChecksState>({
+    loading: false,
+    checks: [],
+    error: "",
+  });
   const fileTreeResize = useResizableWidth({
     storageKey: "pex-filetree-width",
     defaultWidth: 256,
@@ -44,6 +117,25 @@ export function PRDetail({ prId }: Props) {
 
   const projectId = selectedProject.value;
   const repoId = selectedRepo.value;
+  const checksEnabled = showPrChecks.value;
+
+  const loadChecks = useCallback(async () => {
+    if (!checksEnabled || !projectId) {
+      setChecksState({ loading: false, checks: [], error: "" });
+      return;
+    }
+    setChecksState({ loading: true, checks: [], error: "" });
+    try {
+      const checks = await getPrChecks(projectId, prId);
+      setChecksState({ loading: false, checks, error: "" });
+    } catch (e) {
+      setChecksState({
+        loading: false,
+        checks: [],
+        error: typeof e === "string" ? e : e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, [checksEnabled, projectId, prId]);
 
   // Clear cross-PR state on PR switch so a stale `selectedFile` from the
   // previous PR doesn't kick off a diff load against this PR's commits —
@@ -61,7 +153,33 @@ export function PRDetail({ prId }: Props) {
     setOldContent("");
     setNewContent("");
     setThreads([]);
+    setChecksState({ loading: false, checks: [], error: "" });
   }, [prId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!checksEnabled || !projectId) {
+      setChecksState({ loading: false, checks: [], error: "" });
+    } else {
+      setChecksState({ loading: true, checks: [], error: "" });
+      getPrChecks(projectId, prId)
+        .then((checks) => {
+          if (!cancelled) setChecksState({ loading: false, checks, error: "" });
+        })
+        .catch((e) => {
+          if (!cancelled) {
+            setChecksState({
+              loading: false,
+              checks: [],
+              error: typeof e === "string" ? e : e instanceof Error ? e.message : String(e),
+            });
+          }
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [checksEnabled, projectId, prId]);
 
   // Fetch iterations on mount. Default to the LATEST iteration so the file
   // tree shows the full cumulative changeset — ADO's iterations/{N}/changes
@@ -281,6 +399,7 @@ export function PRDetail({ prId }: Props) {
           >
             {copied ? "✓" : "📋"}
           </button>
+          {checksEnabled && <PRDetailCheckIcon state={checksState} onRefresh={loadChecks} />}
           {iterationCount > 1 && (
             <select
               value={currentIteration.value}

@@ -68,12 +68,12 @@ export function App() {
         </div>
         <div class="flex items-center gap-2">
           <button
-            class="text-sm px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 leading-none"
+            class="text-xl px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 leading-none"
             onClick={() => setShowAiSettings(true)}
-            title="AI Settings"
-            aria-label="AI Settings"
+            title="Settings"
+            aria-label="Settings"
           >
-            🤖🔧
+            ⚙
           </button>
           {activeOrg.value && (
             <button

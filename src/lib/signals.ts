@@ -34,6 +34,12 @@ export const fileTreeMode = signal<FileTreeMode>(
 );
 fileTreeMode.subscribe((v) => localStorage.setItem("pex-file-tree-mode", v));
 
+// ---- PR list settings ----
+export const showPrChecks = signal<boolean>(
+  localStorage.getItem("pex-show-pr-checks") === "true",
+);
+showPrChecks.subscribe((v) => localStorage.setItem("pex-show-pr-checks", String(v)));
+
 // ---- Auth ----
 export interface OrgCredential {
   orgUrl: string;
