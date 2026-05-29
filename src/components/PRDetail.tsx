@@ -25,6 +25,7 @@ interface Props { prId: number; }
 export function PRDetail({ prId }: Props) {
   const [diffHtml, setDiffHtml] = useState<string>("");
   const [diffPath, setDiffPath] = useState<string>("");
+  const [diffStatus, setDiffStatus] = useState<string>("");
   const [sourceCommit, setSourceCommit] = useState<string>("");
   const [baseCommit, setBaseCommit] = useState<string | null>(null);
   const [oldContent, setOldContent] = useState<string>("");
@@ -54,6 +55,7 @@ export function PRDetail({ prId }: Props) {
     prFiles.value = [];
     setDiffHtml("");
     setDiffPath("");
+    setDiffStatus("");
     setSourceCommit("");
     setBaseCommit(null);
     setOldContent("");
@@ -125,6 +127,7 @@ export function PRDetail({ prId }: Props) {
       if (reqId !== diffReqId.current) return;
       setDiffHtml(d.html);
       setDiffPath(d.path);
+      setDiffStatus(d.status);
       setSourceCommit(d.sourceCommit);
       setBaseCommit(d.baseCommit);
       setOldContent(d.oldContent);
@@ -138,6 +141,7 @@ export function PRDetail({ prId }: Props) {
       const msg = typeof e === "string" ? e : e?.message ?? String(e);
       console.error("Failed to load file diff:", e);
       setDiffPath(path);
+      setDiffStatus("");
       setDiffHtml(
         `<div class="p-4 text-sm text-red-600 dark:text-red-400 break-words">Failed to load diff: ${msg
           .replace(/&/g, "&amp;")
@@ -350,6 +354,7 @@ export function PRDetail({ prId }: Props) {
             <DiffViewer
               html={diffHtml}
               path={diffPath}
+              status={diffStatus}
               threads={threads}
               onComment={handlePostComment}
               projectId={projectId!}
@@ -357,6 +362,8 @@ export function PRDetail({ prId }: Props) {
               sourceCommit={sourceCommit}
               baseCommit={baseCommit}
               view={diffView.value}
+              oldContent={oldContent}
+              newContent={newContent}
             />
           ) : (
             <div class="flex items-center justify-center h-full text-gray-400 text-sm">

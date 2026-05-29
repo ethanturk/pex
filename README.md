@@ -1,31 +1,20 @@
 # Pex
 
-**Azure DevOps PR Reviewer** — a fast, native desktop app for code reviews.
+**Pex is a fast, native desktop app for Azure DevOps pull request reviews.**
 
-Built with [Tauri](https://tauri.app) (Rust backend) and Preact.
+It gives you a focused PR list, a high-performance diff viewer, inline comments,
+reviewer vote actions, file tracking, and optional AI-assisted PR review in one
+Tauri desktop app.
 
 <p align="center">
-  <img src="src-tauri/icons/128x128.png" alt="Pex icon" width="96" />
+  <img src="docs/pex-screenshot.png" alt="Pex first-run Azure DevOps connection screen" width="900" />
 </p>
 
-## Features
+## Quick Start
 
-- **View PRs** — org/project/repo picker; list PRs by status and author
-- **Diff viewer** — syntax-highlighted, side-by-side diffs with virtual scrolling
-- **File tracking** — mark files as viewed; `j`/`k` keyboard navigation
-- **Inline comments** — post and reply to comment threads on specific diff lines
-- **PR actions** — approve (+10), approve with suggestions (+5), wait for author (−5), reject (−10)
-- **Multi-org** — quick switcher; credentials per org stored in OS keyring
-- **Auth** — PAT token entry or browser-based OAuth 2.0 (AAD device code)
-- **Dark + light theme** — respects system preference, toggleable
-- **Iteration support** — iteration dropdown recalculates diffs per base commit
-- **Conflict markers** — inline `<<<<<<<`/`>>>>>>>` highlighted in red
+Install Pex, connect it to Azure DevOps, then pick a project, repo, and PR.
 
-## Install
-
-### Quick install (recommended)
-
-One-liner — no clone required. The script fetches the source, checks prerequisites, builds, and installs.
+### Install
 
 **Linux / macOS**
 
@@ -33,113 +22,193 @@ One-liner — no clone required. The script fetches the source, checks prerequis
 curl -fsSL https://raw.githubusercontent.com/ethanturk/pex/master/install.sh | bash
 ```
 
-**Windows (PowerShell)**
+**Windows PowerShell**
 
 ```powershell
 iwr -useb https://raw.githubusercontent.com/ethanturk/pex/master/install.ps1 | iex
 ```
 
-Or, from a cloned repo:
+From a cloned repo:
 
 ```bash
 ./install.sh        # Linux / macOS
 .\install.ps1       # Windows
 ```
 
-Pin a specific tag or branch with `PEX_REF` (e.g. `PEX_REF=v0.2.0 curl … | bash`).
-
-### Manual build
+To force a from-source install from a specific tag or branch, set `PEX_FROM_SOURCE`
+and `PEX_REF` on the shell that runs the installer:
 
 ```bash
-# 1. Install prerequisites
-#    - Rust  (https://rustup.rs)
-#    - Node.js >= 18  (https://nodejs.org)
-#    - Linux: webkit2gtk-4.1, gtk4, libsoup-3.0 (see below)
-
-# 2. Build
-npm install
-npm run tauri build
-
-# 3. Install
-#    Linux:   sudo dpkg -i src-tauri/target/release/bundle/deb/*.deb
-#    macOS:   open src-tauri/target/release/bundle/dmg/*.dmg
-#    Windows: src-tauri/target/release/bundle/msi/*.msi
+curl -fsSL https://raw.githubusercontent.com/ethanturk/pex/master/install.sh | PEX_FROM_SOURCE=1 PEX_REF=v0.4.1 bash
 ```
 
-### Linux system dependencies
+### First Run
 
-| Distro | Command |
-|--------|---------|
-| **Fedora** | `sudo dnf install webkit2gtk4.1-devel gtk4-devel libsoup3-devel libappindicator-gtk3-devel` |
-| **Ubuntu/Debian** | `sudo apt install libwebkit2gtk-4.1-dev libgtk-4-dev libsoup-3.0-dev libappindicator3-dev` |
-| **Arch** | `sudo pacman -S webkit2gtk-4.1 gtk4 libsoup3 libappindicator-gtk3 base-devel` |
+1. Enter your Azure DevOps organization URL, for example `https://dev.azure.com/your-org`.
+2. Sign in with either a Personal Access Token or browser OAuth.
+3. Choose a project and repository.
+4. Open a pull request and review files from the diff view.
 
-## Auth setup
+Pex stores credentials in your OS keyring:
 
-Pex connects to Azure DevOps using:
+- macOS: Keychain
+- Linux: Secret Service
+- Windows: Credential Manager
 
-- **PAT** — paste a Personal Access Token with `Code (Read & Write)` scope
-- **OAuth 2.0** — "Sign in with browser" opens the Azure AD device code flow
+## Common Workflows
 
-Credentials are stored in your OS keyring (Keychain on macOS, Secret Service on Linux, Credential Manager on Windows).
+### Review a Pull Request
 
-### Registering a Microsoft Entra ID app (for OAuth)
+- Use the PR list to filter by status and author.
+- Open a PR to view files, changed lines, comments, and reviewer actions.
+- Use `j` / `k` to move through files quickly.
+- Press `v` to mark the current file viewed.
+- Use the approval bar to approve, approve with suggestions, wait for author, or reject.
 
-1. Go to https://app.vsaex.visualstudio.com/app/register
+### Comment on Code
+
+- Click a diff line to start or reply to an Azure DevOps comment thread.
+- Existing threads are shown inline with the diff.
+- File viewed state is synced per PR.
+
+### Use AI Review
+
+Pex can run an AI-assisted review across the PR and produce markdown findings.
+
+1. Open AI settings from the top bar.
+2. Choose a provider and enter the provider URL, API key, and model.
+3. Click **Test** to verify the provider and model list.
+4. Set hunk review concurrency based on what your provider can handle.
+5. Start **Review PR** from the PR toolbar and choose **Fast** or **Thorough**.
+
+Fast mode uses a single review pass per hunk. Thorough mode runs multiple
+specialist passes and is slower, but can catch more subtle issues.
+
+## Features
+
+- **Native desktop app** built with Tauri and Preact.
+- **Azure DevOps PR list** with org, project, repo, status, and author selection.
+- **Fast diff viewer** with side-by-side and inline diff modes.
+- **Inline comments** for creating and replying to ADO comment threads.
+- **Reviewer votes** for approve, approve with suggestions, wait for author, and reject.
+- **File tracking** for viewed files and keyboard-driven review flow.
+- **Iteration support** for reviewing changes across PR iterations.
+- **Conflict highlighting** for inline `<<<<<<<` / `>>>>>>>` markers.
+- **AI PR review** with resumable progress, markdown summaries, and postable findings.
+- **Configurable AI providers** for OpenAI-compatible endpoints and Anthropic.
+- **Dark and light themes** with system preference support.
+- **Multi-org credentials** stored in the operating system keyring.
+
+## Authentication
+
+Pex supports two Azure DevOps auth paths.
+
+### Personal Access Token
+
+Create a PAT in Azure DevOps and grant at least:
+
+- `Code (Read & Write)`
+
+Paste the PAT into the first-run connection screen.
+
+### OAuth
+
+Browser OAuth requires a Microsoft Entra ID app registration.
+
+1. Go to https://app.vsaex.visualstudio.com/app/register.
 2. Register a new app with:
    - **Redirect URL:** `http://localhost:14820/callback`
    - **Scopes:** `Code (Read & Write)`, `Work Items (Read)`
-3. Copy the client ID into `~/.config/pex/client_id`
+3. Save the client ID to `~/.config/pex/client_id`.
+4. Use **Sign in with browser (OAuth)** in Pex.
 
-## Keyboard shortcuts
+## Build From Source
+
+Install prerequisites:
+
+- Rust from https://rustup.rs
+- Node.js 18 or newer from https://nodejs.org
+- Linux only: WebKitGTK, GTK, Soup, and appindicator packages listed below
+
+Then build:
+
+```bash
+npm install
+npm run tauri build
+```
+
+Install the generated package:
+
+```bash
+# Linux
+sudo dpkg -i src-tauri/target/release/bundle/deb/*.deb
+
+# macOS
+open src-tauri/target/release/bundle/dmg/*.dmg
+
+# Windows
+src-tauri/target/release/bundle/msi/*.msi
+```
+
+Run in development:
+
+```bash
+npm install
+npm run tauri dev
+```
+
+### Linux System Dependencies
+
+| Distro | Command |
+|--------|---------|
+| Fedora | `sudo dnf install webkit2gtk4.1-devel gtk4-devel libsoup3-devel libappindicator-gtk3-devel` |
+| Ubuntu/Debian | `sudo apt install libwebkit2gtk-4.1-dev libgtk-4-dev libsoup-3.0-dev libappindicator3-dev` |
+| Arch | `sudo pacman -S webkit2gtk-4.1 gtk4 libsoup3 libappindicator-gtk3 base-devel` |
+
+## Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
-| `j` | Next file in diff |
-| `k` | Previous file in diff |
-| `v` | Toggle file as viewed |
+| `j` | Next file |
+| `k` | Previous file |
+| `v` | Toggle file viewed |
 | `a` | Approve PR |
 
-## Tech stack
+## Tech Stack
 
-- **Rust** — Tauri v2, reqwest, similarity (diffs), syntect (highlighting), rusqlite (cache), keyring
-- **Frontend** — Preact, TypeScript, Tailwind CSS v4, Signals
-- **Packaging** — `.deb` / `.rpm` / `.AppImage` (Linux), `.dmg` (macOS), `.msi` (Windows)
-- **Auto-updater** — tauri-plugin-updater via GitHub Releases
+- **Rust**: Tauri v2, reqwest, similarity, syntect, rusqlite, keyring
+- **Frontend**: Preact, TypeScript, Tailwind CSS v4, Signals
+- **Packaging**: `.deb`, `.rpm`, `.AppImage`, `.dmg`, `.msi`
+- **Updates**: `tauri-plugin-updater` with GitHub Releases
 
 ## Releases
 
-Releases are built automatically via GitHub Actions when a `v*` tag is pushed.
+Releases are built by GitHub Actions when a `v*` tag is pushed.
 
-### One-time setup
+### One-Time Release Setup
 
-1. **Generate a signing key pair** — the updater uses this to verify that updates are authentic:
-
-   ```bash
-   cargo tauri signer generate -w ~/.tauri/pex.key
-   ```
-
-   This prints a public key (starts with `dW50cnVzdGVk...`) and saves the private key to `~/.tauri/pex.key`.
-
-2. **Set the public key** in `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`.
-
-3. **Add the private key as a GitHub Secret:**
-
-   - Go to your repo → Settings → Secrets and variables → Actions
-   - Add `TAURI_SIGNING_PRIVATE_KEY` with the content of `~/.tauri/pex.key`
-   - If you set a password, add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` as well
-
-### Cutting a release
+Generate an updater signing key:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+cargo tauri signer generate -w ~/.tauri/pex.key
 ```
 
-The GitHub Action builds for Linux, macOS, and Windows, signs everything, and creates a draft GitHub Release with all platform installers + updater artifacts.
+Then:
 
-Existing installs will detect the new version via the updater plugin and prompt to update.
+1. Put the public key in `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`.
+2. Add the private key to GitHub Actions secrets as `TAURI_SIGNING_PRIVATE_KEY`.
+3. If the private key has a password, add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+
+### Cut a Release
+
+```bash
+git tag v0.4.1
+git push origin v0.4.1
+```
+
+The release workflow builds platform installers, signs updater artifacts, and
+creates a draft GitHub Release.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

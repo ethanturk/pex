@@ -113,6 +113,35 @@
 .diff-row--selected .diff-cell .diff-lineno { @apply text-blue-700 dark:text-blue-300; }
 .diff-expander--split { grid-column: 1 / -1; }
 
+/* ===== Markdown diff preview ===== */
+.diff-markdown-preview {
+  @apply max-w-4xl mx-auto px-8 py-8 text-sm leading-7 text-gray-800 dark:text-gray-200;
+}
+.diff-markdown-preview h1 { @apply text-3xl font-semibold mt-0 mb-5 text-gray-950 dark:text-gray-50; }
+.diff-markdown-preview h2 { @apply text-2xl font-semibold mt-8 mb-4 text-gray-950 dark:text-gray-50; }
+.diff-markdown-preview h3 { @apply text-xl font-semibold mt-6 mb-3 text-gray-900 dark:text-gray-100; }
+.diff-markdown-preview h4 { @apply text-base font-semibold mt-5 mb-2 text-gray-900 dark:text-gray-100; }
+.diff-markdown-preview p { @apply my-4; }
+.diff-markdown-preview ul,
+.diff-markdown-preview ol { @apply my-4 pl-6; }
+.diff-markdown-preview ul { @apply list-disc; }
+.diff-markdown-preview ol { @apply list-decimal; }
+.diff-markdown-preview li { @apply my-1.5; }
+.diff-markdown-preview a { @apply text-accent hover:underline; }
+.diff-markdown-preview strong { @apply font-semibold text-gray-950 dark:text-gray-50; }
+.diff-markdown-preview code { @apply px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 font-mono text-[0.9em]; }
+.diff-markdown-preview pre { @apply my-4 p-4 rounded bg-gray-100 dark:bg-gray-800 overflow-x-auto leading-6; }
+.diff-markdown-preview pre code { @apply p-0 bg-transparent; }
+.diff-markdown-preview blockquote { @apply my-4 pl-4 border-l-4 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400; }
+.diff-markdown-preview table { @apply my-4 w-full border-collapse text-sm; }
+.diff-markdown-preview th,
+.diff-markdown-preview td { @apply border border-gray-200 dark:border-gray-700 px-3 py-2 align-top; }
+.diff-markdown-preview th { @apply bg-gray-100 dark:bg-gray-800 font-semibold; }
+.diff-markdown-preview hr { @apply my-6 border-gray-200 dark:border-gray-700; }
+.diff-markdown-preview img { @apply max-w-full rounded; }
+.diff-markdown-preview > :first-child { @apply mt-0; }
+.diff-markdown-preview > :last-child { @apply mb-0; }
+
 /* ===== PR review markdown ===== */
 .pr-review-markdown h1 { @apply text-base font-semibold mt-0 mb-3 text-gray-900 dark:text-gray-100; }
 .pr-review-markdown h2 { @apply text-sm font-semibold mt-4 mb-2 text-gray-900 dark:text-gray-100; }

@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useCallback } from "preact/hooks";
+import { useState, useRef, useEffect, useCallback, useMemo } from "preact/hooks";
+import { marked } from "marked";
 import type { CommentThread } from "@/lib/api";
 import { getFileLines } from "@/lib/api";
 import { pendingScrollLine, type DiffView } from "@/lib/signals";
@@ -6,6 +7,7 @@ import { pendingScrollLine, type DiffView } from "@/lib/signals";
 interface Props {
   html: string;
   path: string;
+  status: string;
   threads: CommentThread[];
   onComment: (
     filePath: string,
@@ -18,6 +20,8 @@ interface Props {
   sourceCommit: string;
   baseCommit: string | null;
   view: DiffView;
+  oldContent: string;
+  newContent: string;
 }
 
 const EXPAND_CHUNK = 10;
@@ -69,9 +73,22 @@ function normalize(r: Range): Range {
   return r.start <= r.end ? r : { start: r.end, end: r.start };
 }
 
+function isMarkdownPath(path: string): boolean {
+  return /\.(md|markdown|mdown|mkd|mkdn)$/i.test(path);
+}
+
+function renderMarkdown(markdown: string): string {
+  return marked.parse(markdown, {
+    async: false,
+    breaks: true,
+    gfm: true,
+  }) as string;
+}
+
 export function DiffViewer({
   html,
   path,
+  status,
   threads,
   onComment,
   projectId,
@@ -79,6 +96,8 @@ export function DiffViewer({
   sourceCommit,
   baseCommit: _baseCommit,
   view,
+  oldContent,
+  newContent,
 }: Props) {
   const diffRef = useRef<HTMLDivElement>(null);
   const dragAnchorRef = useRef<number | null>(null);
@@ -90,6 +109,7 @@ export function DiffViewer({
   const [commentText, setCommentText] = useState("");
   const [posting, setPosting] = useState(false);
   const [postError, setPostError] = useState("");
+  const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
 
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpInput, setJumpInput] = useState("");
@@ -105,6 +125,15 @@ export function DiffViewer({
   // Matches are recomputed on every query change; held in a ref so prev/next
   // navigation doesn't trigger a re-scan.
   const searchMatchesRef = useRef<HTMLElement[]>([]);
+  const isMarkdown = isMarkdownPath(path);
+  const markdownPreviewHtml = useMemo(() => {
+    if (!isMarkdown) return "";
+    return renderMarkdown(status === "delete" ? oldContent : newContent);
+  }, [isMarkdown, status, newContent, oldContent]);
+
+  useEffect(() => {
+    setShowMarkdownPreview(isMarkdown);
+  }, [isMarkdown, path]);
 
   // ---- selection highlight on the DOM (cheap; avoids re-rendering injected HTML)
   const setHighlight = useCallback((lo: number, hi: number) => {
@@ -466,7 +495,15 @@ export function DiffViewer({
     : "";
 
   return (
-    <div class="h-full flex flex-col overflow-hidden">
+    <div class="h-full flex flex-col overflow-hidden relative">
+      {isMarkdown && (
+        <button
+          onClick={() => setShowMarkdownPreview((v) => !v)}
+          class="absolute top-2 right-3 z-30 px-3 py-1.5 rounded bg-white/75 dark:bg-gray-900/75 border border-gray-300/70 dark:border-gray-600/70 shadow-sm backdrop-blur text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-gray-900/90"
+        >
+          {showMarkdownPreview ? "View Raw" : "View Preview"}
+        </button>
+      )}
       {/* The diff scrolls inside this container so the comments bar below
           remains visible without scrolling. */}
       <div class="flex-1 overflow-auto relative">
@@ -528,15 +565,22 @@ export function DiffViewer({
       {/* Selection + popup live inside this relative container so the popup
           can be positioned with absolute coords against the diff content. */}
       <div class="relative">
-        <div
-          ref={diffRef}
-          dangerouslySetInnerHTML={{ __html: html }}
-          onMouseDown={onMouseDown}
-          onMouseMove={onMouseMove}
-          onClick={onClickContainer}
-        />
+        {showMarkdownPreview ? (
+          <div
+            class="diff-markdown-preview"
+            dangerouslySetInnerHTML={{ __html: markdownPreviewHtml }}
+          />
+        ) : (
+          <div
+            ref={diffRef}
+            dangerouslySetInnerHTML={{ __html: html }}
+            onMouseDown={onMouseDown}
+            onMouseMove={onMouseMove}
+            onClick={onClickContainer}
+          />
+        )}
 
-        {range && popupPos && (
+        {!showMarkdownPreview && range && popupPos && (
           <div
             class="comment-popup absolute z-20 w-[min(520px,calc(100%-2rem))] shadow-lg rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 p-3"
             style={{ top: `${popupPos.top + 4}px`, left: `${popupPos.left}px` }}
