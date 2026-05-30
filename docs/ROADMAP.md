@@ -72,7 +72,9 @@ and, in Phase 3, the dial we tune *with evidence*.
 
 ---
 
-## Phase 1 — Make findings REAL (precision foundation) ← **start here**
+## Phase 1 — Make findings REAL (precision foundation) ✅ shipped
+
+Implemented — see [`design/phase-1-precision.md`](./design/phase-1-precision.md).
 
 The prerequisite for everything else. Two structural weaknesses cap quality
 today.
@@ -126,10 +128,11 @@ scores present on every finding, threshold filtering live, harness green.
 
 ---
 
-## Phase 2 — Pull forward / push back (triage)
+## Phase 2 — Pull forward / push back (triage) ✅ shipped
 
-Final synthesis groups "by theme" today; triage needs a strict ordering. Add a
-triage stage that ranks on `severity × confidence × blast-radius` into tiers:
+Implemented — see [`design/phase-2-triage.md`](./design/phase-2-triage.md).
+
+Findings are ranked on `severity × confidence × blast-radius` into tiers:
 
 - **Blocking** — high-severity, high-confidence. *Pulled forward*: top of the
   summary, posted as active threads, optionally auto-set reviewer vote to

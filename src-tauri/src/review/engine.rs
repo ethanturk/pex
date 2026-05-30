@@ -53,6 +53,76 @@ pub fn default_confidence() -> u8 {
     crate::ai::DEFAULT_CONFIDENCE_THRESHOLD
 }
 
+/// Triage tier for a finding, derived deterministically from severity,
+/// confidence, and whether it is line-anchored (a proxy for blast radius —
+/// file-level findings can't be actioned on a specific line). Drives ordering,
+/// which findings are "pulled forward" as individual comments, and which are
+/// "pushed back" into a single rollup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Tier {
+    /// High-impact, high-confidence — surfaced first, posted individually.
+    Blocking,
+    /// Real and worth fixing, but not gating.
+    ShouldFix,
+    /// Low-impact polish — collapsed into a rollup so it never buries signal.
+    Nit,
+    /// File-level / informational — no specific line to act on.
+    Fyi,
+}
+
+impl Tier {
+    /// Lower rank sorts first (Blocking → FYI).
+    pub fn rank(self) -> u8 {
+        match self {
+            Tier::Blocking => 0,
+            Tier::ShouldFix => 1,
+            Tier::Nit => 2,
+            Tier::Fyi => 3,
+        }
+    }
+
+    /// Whether this tier is "pulled forward": surfaced prominently and posted
+    /// as its own comment. The rest are "pushed back" into a single rollup.
+    pub fn is_actionable(self) -> bool {
+        matches!(self, Tier::Blocking | Tier::ShouldFix)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tier::Blocking => "Blocking",
+            Tier::ShouldFix => "Should fix",
+            Tier::Nit => "Nit",
+            Tier::Fyi => "FYI",
+        }
+    }
+}
+
+/// Default tier used only when deserializing a finding that lacks one. Defaults
+/// to `ShouldFix` so an un-tiered finding is treated as actionable rather than
+/// silently hidden in the rollup.
+pub fn default_tier() -> Tier {
+    Tier::ShouldFix
+}
+
+/// Compute the triage tier for a finding. Critical findings are always
+/// actionable (Blocking when confident, else Should-fix) regardless of anchor;
+/// non-critical findings with no line anchor are informational (FYI).
+pub fn tier_for(severity: Severity, confidence: u8, line_start: Option<usize>) -> Tier {
+    match severity {
+        Severity::Critical => {
+            if confidence >= 85 {
+                Tier::Blocking
+            } else {
+                Tier::ShouldFix
+            }
+        }
+        _ if line_start.is_none() => Tier::Fyi,
+        Severity::Moderate if confidence >= 80 => Tier::ShouldFix,
+        _ => Tier::Nit,
+    }
+}
+
 /// A single review finding produced by the engine. Each finding is intended to
 /// become one ADO comment, anchored to a line range when possible.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -64,6 +134,9 @@ pub struct Finding {
     /// `severity` (how bad it is if real).
     #[serde(default = "default_confidence")]
     pub confidence: u8,
+    /// Triage tier (Blocking → FYI), derived from severity + confidence + anchor.
+    #[serde(default = "default_tier")]
+    pub tier: Tier,
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
     pub comment: String,
@@ -568,7 +641,10 @@ pub async fn run_review(
 
     // Flatten per-file findings into a single list, injecting the file path
     // onto each one so the frontend can render and post them independently.
-    let findings: Vec<Finding> = state
+    // Compute each finding's triage tier, then order strictly by tier
+    // (Blocking first) so high-priority fixes are pulled forward; within a tier,
+    // higher confidence first, then by file for locality.
+    let mut findings: Vec<Finding> = state
         .completed_files
         .iter()
         .flat_map(|(file_path, agg)| {
@@ -576,12 +652,21 @@ pub async fn run_review(
                 file_path: file_path.clone(),
                 severity: f.severity,
                 confidence: f.confidence,
+                tier: tier_for(f.severity, f.confidence, f.line_start),
                 line_start: f.line_start,
                 line_end: f.line_end,
                 comment: f.comment.clone(),
             })
         })
         .collect();
+    findings.sort_by(|a, b| {
+        a.tier
+            .rank()
+            .cmp(&b.tier.rank())
+            .then(b.confidence.cmp(&a.confidence))
+            .then_with(|| a.file_path.cmp(&b.file_path))
+            .then(a.line_start.cmp(&b.line_start))
+    });
 
     let final_messages = vec![
         ChatMessage {
@@ -725,10 +810,19 @@ fn append_exact_statistics(summary: &str, files_reviewed: usize, findings: &[Fin
         .iter()
         .filter(|f| f.severity == Severity::Minor)
         .count();
+    let tier = |t: Tier| findings.iter().filter(|f| f.tier == t).count();
 
     format!(
-        "{}\n\n## Statistics\n- Files reviewed: {}\n- Issues found: {} critical, {} moderate, {} minor",
-        without_stats, files_reviewed, critical, moderate, minor
+        "{}\n\n## Statistics\n- Files reviewed: {}\n- Issues found: {} critical, {} moderate, {} minor\n- Triage: {} blocking, {} should-fix, {} nit, {} FYI",
+        without_stats,
+        files_reviewed,
+        critical,
+        moderate,
+        minor,
+        tier(Tier::Blocking),
+        tier(Tier::ShouldFix),
+        tier(Tier::Nit),
+        tier(Tier::Fyi),
     )
 }
 
@@ -964,26 +1058,29 @@ pub async fn post_findings(
         .post_thread(project_id, repo_id, pr_id, &summary_thread)
         .await?;
 
-    // Post each finding. Anchor to the source line range when the LLM
-    // supplied one; otherwise fall back to a PR-level comment with the file
-    // path bolded into the body (file-level threadContext is attempted first
-    // by the dedicated `post_review_finding` command; the batch path keeps
-    // things simple).
+    // Triage split: actionable findings (Blocking, Should-fix) are PULLED
+    // FORWARD as their own comments; low-priority findings (Nit, FYI) are
+    // PUSHED BACK into a single rollup comment so they never bury the signal.
+    // `findings` arrives already ordered by tier, so blocking issues post first.
+    let mut pushed_back: Vec<&Finding> = Vec::new();
+
     for finding in findings {
         if finding.comment.trim().is_empty() {
             continue;
         }
+        if !finding.tier.is_actionable() {
+            pushed_back.push(finding);
+            continue;
+        }
 
-        let prefix = severity_prefix(finding.severity);
-        let body = format!(
-            "{} **{}**\n\n{}",
-            prefix, finding.file_path, finding.comment
-        );
+        let prefix = tier_prefix(finding.tier);
+        let body = format!("{} **{}**\n\n{}", prefix, finding.file_path, finding.comment);
+        let inline = format!("{} {}", prefix, finding.comment);
 
         let thread = if let (Some(lo), Some(hi)) = (finding.line_start, finding.line_end) {
             let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
             serde_json::json!({
-                "comments": [{ "parentCommentId": 0, "content": finding.comment, "commentType": 1 }],
+                "comments": [{ "parentCommentId": 0, "content": inline, "commentType": 1 }],
                 "status": 1,
                 "threadContext": {
                     "filePath": if finding.file_path.starts_with('/') {
@@ -1007,14 +1104,50 @@ pub async fn post_findings(
             .await?;
     }
 
+    // One rollup comment for everything pushed back.
+    if !pushed_back.is_empty() {
+        let rollup = build_rollup_comment(&pushed_back);
+        let thread = serde_json::json!({
+            "comments": [{ "parentCommentId": 0, "content": rollup, "commentType": 1 }],
+            "status": "active",
+        });
+        client
+            .post_thread(project_id, repo_id, pr_id, &thread)
+            .await?;
+    }
+
     Ok(())
 }
 
-fn severity_prefix(s: Severity) -> &'static str {
-    match s {
-        Severity::Critical => "🔴 CRITICAL —",
-        Severity::Moderate => "🟡 MODERATE —",
-        Severity::Minor => "⚪ MINOR —",
+/// Build the single "pushed back" rollup comment listing low-priority findings,
+/// so they live in one place instead of N individual threads.
+fn build_rollup_comment(findings: &[&Finding]) -> String {
+    let mut out = format!(
+        "## ⚪ Lower-priority findings ({})\n_Grouped into one comment to keep the review focused on higher-priority issues._\n\n",
+        findings.len()
+    );
+    for f in findings {
+        let loc = match (f.line_start, f.line_end) {
+            (Some(lo), Some(hi)) if hi != lo => format!("{}:{}-{}", f.file_path, lo, hi),
+            (Some(lo), _) => format!("{}:{}", f.file_path, lo),
+            _ => f.file_path.clone(),
+        };
+        out.push_str(&format!(
+            "- **{}** ({}) — {}\n",
+            loc,
+            f.tier.label(),
+            f.comment.trim()
+        ));
+    }
+    out
+}
+
+fn tier_prefix(t: Tier) -> &'static str {
+    match t {
+        Tier::Blocking => "🔴 BLOCKING —",
+        Tier::ShouldFix => "🟡 SHOULD FIX —",
+        Tier::Nit => "⚪ NIT —",
+        Tier::Fyi => "💬 FYI —",
     }
 }
 
@@ -1103,6 +1236,67 @@ mod tests {
         let dropped = apply_finding_guards(&mut agg, "f.rs", 0, &hunks);
         assert_eq!(dropped, 0);
         assert_eq!(agg.findings.len(), 2);
+    }
+
+    #[test]
+    fn tier_critical_is_always_actionable() {
+        // Critical with high confidence blocks; lower confidence is still
+        // actionable (should-fix), never demoted to a nit, and never FYI even
+        // without a line anchor.
+        assert_eq!(tier_for(Severity::Critical, 90, Some(5)), Tier::Blocking);
+        assert_eq!(tier_for(Severity::Critical, 84, Some(5)), Tier::ShouldFix);
+        assert_eq!(tier_for(Severity::Critical, 99, None), Tier::Blocking);
+        assert!(tier_for(Severity::Critical, 50, None).is_actionable());
+    }
+
+    #[test]
+    fn tier_moderate_splits_on_confidence_and_anchor() {
+        assert_eq!(tier_for(Severity::Moderate, 85, Some(5)), Tier::ShouldFix);
+        assert_eq!(tier_for(Severity::Moderate, 79, Some(5)), Tier::Nit);
+        // Non-critical with no line anchor is informational.
+        assert_eq!(tier_for(Severity::Moderate, 95, None), Tier::Fyi);
+    }
+
+    #[test]
+    fn tier_minor_is_nit_or_fyi() {
+        assert_eq!(tier_for(Severity::Minor, 100, Some(5)), Tier::Nit);
+        assert_eq!(tier_for(Severity::Minor, 100, None), Tier::Fyi);
+        assert!(!tier_for(Severity::Minor, 100, Some(5)).is_actionable());
+    }
+
+    #[test]
+    fn tier_rank_orders_blocking_first() {
+        assert!(Tier::Blocking.rank() < Tier::ShouldFix.rank());
+        assert!(Tier::ShouldFix.rank() < Tier::Nit.rank());
+        assert!(Tier::Nit.rank() < Tier::Fyi.rank());
+    }
+
+    #[test]
+    fn rollup_lists_each_pushed_back_finding() {
+        let nit = Finding {
+            file_path: "a.rs".into(),
+            severity: Severity::Minor,
+            confidence: 90,
+            tier: Tier::Nit,
+            line_start: Some(3),
+            line_end: Some(3),
+            comment: "rename x".into(),
+        };
+        let fyi = Finding {
+            file_path: "b.rs".into(),
+            severity: Severity::Moderate,
+            confidence: 88,
+            tier: Tier::Fyi,
+            line_start: None,
+            line_end: None,
+            comment: "consider a test file".into(),
+        };
+        let body = build_rollup_comment(&[&nit, &fyi]);
+        assert!(body.contains("Lower-priority findings (2)"));
+        assert!(body.contains("a.rs:3"));
+        assert!(body.contains("(Nit)"));
+        assert!(body.contains("b.rs"));
+        assert!(body.contains("(FYI)"));
     }
 
     #[test]

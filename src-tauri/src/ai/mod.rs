@@ -127,6 +127,16 @@ pub const MAX_CONFIDENCE_THRESHOLD: u8 = 100;
 /// kill the most common false positives. Not user-configurable in Phase 1.
 pub const FILE_CONTEXT_MAX_CHARS: usize = 12000;
 
+/// Whether posting a review with at least one Blocking finding also casts a
+/// "wait for author" reviewer vote. Off by default — auto-voting is a visible
+/// side effect, so it is strictly opt-in.
+pub const DEFAULT_AUTO_VOTE_ON_BLOCKING: bool = false;
+
+/// ADO reviewer vote value for "wait for author". Used by the opt-in
+/// auto-vote-on-blocking behavior. (10 approve, 5 approve w/ suggestions,
+/// 0 none, -5 wait for author, -10 reject.)
+pub const VOTE_WAIT_FOR_AUTHOR: i32 = -5;
+
 /// AI settings stored in SQLite + keyring.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiSettings {
@@ -155,6 +165,9 @@ pub struct AiSettingsNoKey {
     pub retry_count: u32,
     /// Minimum confidence (0–100) a finding must reach to be reported.
     pub confidence_threshold: u8,
+    /// Opt-in: cast a "wait for author" vote when posting a review that has at
+    /// least one Blocking finding.
+    pub auto_vote_on_blocking: bool,
 }
 
 /// Read the TCP/TLS connect timeout (seconds), defaulting if missing.
@@ -222,6 +235,15 @@ pub fn read_confidence_threshold(conn: &rusqlite::Connection) -> Result<u8, AppE
         .and_then(|s| s.parse::<u8>().ok())
         .map(|n| n.min(MAX_CONFIDENCE_THRESHOLD))
         .unwrap_or(DEFAULT_CONFIDENCE_THRESHOLD))
+}
+
+/// Read whether posting a review should auto-cast a "wait for author" vote when
+/// there is at least one Blocking finding. Defaults to off.
+pub fn read_auto_vote_on_blocking(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_vote_on_blocking")?;
+    Ok(raw
+        .map(|s| s == "true")
+        .unwrap_or(DEFAULT_AUTO_VOTE_ON_BLOCKING))
 }
 
 /// Read the configured per-file size cap for injected AGENTS.md / STYLE.md content.

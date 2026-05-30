@@ -93,6 +93,14 @@ and every finding is scored 0–100 for confidence. An adjudication pass verifie
 findings against the file before they surface; anything below the confidence
 threshold, or anchored to a line outside the changed region, is dropped.
 
+Findings are then triaged into tiers — **Blocking**, **Should fix**, **Nit**,
+and **FYI** — and ordered blocking-first. Blocking and should-fix findings are
+pulled forward (shown expanded, pre-selected for posting, and posted as
+individual comments); nits and FYIs are pushed back (collapsed in the sidebar
+and posted as a single rollup comment) so they never bury the important issues.
+Optionally, posting a review that contains a blocking finding can also cast a
+"wait for author" vote.
+
 ## Features
 
 - **Native desktop app** built with Tauri and Preact.

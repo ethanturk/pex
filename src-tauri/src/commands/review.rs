@@ -397,6 +397,31 @@ pub async fn start_review_post(
     .await
     .map_err(|e| e.to_string())?;
 
+    // Opt-in "pull forward": when the review found a blocking issue and the user
+    // enabled auto-vote, cast a "wait for author" vote so the PR can't be
+    // approved out from under an unaddressed blocker.
+    let auto_vote = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        crate::ai::read_auto_vote_on_blocking(&db).unwrap_or(false)
+    };
+    let has_blocking = output
+        .findings
+        .iter()
+        .any(|f| f.tier == crate::review::engine::Tier::Blocking);
+    if auto_vote && has_blocking {
+        if let Ok(me) = client.get_authenticated_user_id().await {
+            let _ = client
+                .update_reviewer_status(
+                    &project_id,
+                    &repo_id,
+                    pr_id,
+                    &me,
+                    crate::ai::VOTE_WAIT_FOR_AUTHOR,
+                )
+                .await;
+        }
+    }
+
     let _ = app.emit(
         "review-post-done",
         serde_json::json!({

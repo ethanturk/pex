@@ -42,6 +42,7 @@ export function AiSettings({ open, onClose }: Props) {
   const [standardsMaxChars, setStandardsMaxChars] = useState(String(DEFAULT_STANDARDS_MAX_CHARS));
   const [retryCount, setRetryCount] = useState(1);
   const [confidenceThreshold, setConfidenceThreshold] = useState(80);
+  const [autoVoteOnBlocking, setAutoVoteOnBlocking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -85,6 +86,7 @@ export function AiSettings({ open, onClose }: Props) {
       setConfidenceThreshold(
         Number.isFinite(settings.confidenceThreshold) ? settings.confidenceThreshold : 80,
       );
+      setAutoVoteOnBlocking(!!settings.autoVoteOnBlocking);
       setApiKey("");
       setPrompts(ps);
       setPromptDrafts(Object.fromEntries(ps.map((p) => [p.key, p.value])));
@@ -178,7 +180,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, autoVoteOnBlocking);
       setMessage({ text: "AI settings saved.", ok: true });
     } catch (e: any) {
       setMessage({ text: String(e), ok: false });
@@ -194,7 +196,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, autoVoteOnBlocking);
       const models = await listAiModels(true);
       setAvailableModels(models);
 
@@ -202,7 +204,7 @@ export function AiSettings({ open, onClose }: Props) {
       if (selectedModel !== model) {
         setModel(selectedModel);
         if (selectedModel) {
-          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold);
+          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, autoVoteOnBlocking);
           setMessage({
             text: `Connected. Model changed to ${selectedModel} because the previous model is not available from this provider.`,
             ok: true,
@@ -475,6 +477,23 @@ export function AiSettings({ open, onClose }: Props) {
                     Minimum confidence a PR review finding must reach to be surfaced. The default <strong>80</strong> filters out likely false positives and low-impact nits. Lower it to see more (noisier) findings; raise it for only the highest-confidence issues. Set to <strong>0</strong> to surface everything.
                   </p>
                 </Field>
+
+                <label class="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={autoVoteOnBlocking}
+                    onChange={(e) => setAutoVoteOnBlocking(e.currentTarget.checked)}
+                    class="mt-1 accent-accent"
+                  />
+                  <span>
+                    <span class="block text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Auto-vote "wait for author" on blocking findings
+                    </span>
+                    <span class="block text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      When you <strong>post a review to ADO</strong> and it contains at least one <strong>blocking</strong> finding, also cast a "wait for author" reviewer vote so the PR can't be approved with an unaddressed blocker. Off by default — this casts a vote on your behalf.
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <button

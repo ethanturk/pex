@@ -308,6 +308,9 @@ export interface AiSettingsNoKey {
   /// Minimum confidence (0–100) a finding must reach to be reported.
   /// 0 surfaces everything; higher values raise the precision bar.
   confidenceThreshold: number;
+  /// Opt-in: cast a "wait for author" vote when posting a review that has at
+  /// least one blocking finding.
+  autoVoteOnBlocking: boolean;
 }
 
 export async function getAiSettings(): Promise<AiSettingsNoKey> {
@@ -325,6 +328,7 @@ export async function saveAiSettings(
   standardsMaxChars: number,
   retryCount: number,
   confidenceThreshold: number,
+  autoVoteOnBlocking: boolean,
 ): Promise<void> {
   return invoke("save_ai_settings", {
     provider,
@@ -337,6 +341,7 @@ export async function saveAiSettings(
     standardsMaxChars,
     retryCount,
     confidenceThreshold,
+    autoVoteOnBlocking,
   });
 }
 
@@ -403,12 +408,18 @@ export async function testAiConnection(): Promise<string> {
 
 export type Severity = "critical" | "moderate" | "minor";
 
+/// Triage tier derived from severity + confidence + anchor. Blocking and
+/// should-fix are "pulled forward"; nit and fyi are "pushed back".
+export type Tier = "blocking" | "should-fix" | "nit" | "fyi";
+
 export interface ReviewFinding {
   filePath: string;
   severity: Severity;
   /// How sure the reviewer is the finding is real (0–100), distinct from
   /// severity (how bad it is if real).
   confidence: number;
+  /// Triage tier (blocking → fyi).
+  tier: Tier;
   lineStart: number | null;
   lineEnd: number | null;
   comment: string;

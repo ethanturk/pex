@@ -148,6 +148,7 @@ export interface PRReviewRun {
       filePath: string;
       severity: "critical" | "moderate" | "minor";
       confidence: number;
+      tier: "blocking" | "should-fix" | "nit" | "fyi";
       lineStart: number | null;
       lineEnd: number | null;
       comment: string;

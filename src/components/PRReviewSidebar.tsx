@@ -11,12 +11,13 @@ import {
   type ReviewProgress,
 } from "@/lib/signals";
 import { startBackgroundReview } from "@/lib/reviewBus";
-import { cancelReview, postReviewFinding, type Severity } from "@/lib/api";
+import { cancelReview, postReviewFinding, type Severity, type Tier } from "@/lib/api";
 import { useResizableWidth } from "@/lib/useResizableWidth";
 
 type Finding = NonNullable<PRReviewRun["output"]>["findings"][number];
 
-const SEVERITY_ORDER: Severity[] = ["critical", "moderate", "minor"];
+// Triage order: blocking issues first (pulled forward), informational last.
+const TIER_ORDER: Tier[] = ["blocking", "should-fix", "nit", "fyi"];
 
 function severityBadgeClass(s: Severity): string {
   switch (s) {
@@ -28,6 +29,30 @@ function severityBadgeClass(s: Severity): string {
 
 function severityLabel(s: Severity): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function tierLabel(t: Tier): string {
+  switch (t) {
+    case "blocking":   return "Blocking";
+    case "should-fix": return "Should fix";
+    case "nit":        return "Nit";
+    case "fyi":        return "FYI";
+  }
+}
+
+function tierBadgeClass(t: Tier): string {
+  switch (t) {
+    case "blocking":   return "bg-red-500";
+    case "should-fix": return "bg-amber-500";
+    case "nit":        return "bg-gray-400";
+    case "fyi":        return "bg-sky-400";
+  }
+}
+
+// Blocking + should-fix are surfaced expanded and pre-selected for posting;
+// nit + fyi are "pushed back" — collapsed and unselected by default.
+function tierIsActionable(t: Tier): boolean {
+  return t === "blocking" || t === "should-fix";
 }
 
 function fileName(path: string): string {
@@ -59,6 +84,15 @@ function findingCounts(findings: Finding[]) {
     critical: findings.filter((f) => f.severity === "critical").length,
     moderate: findings.filter((f) => f.severity === "moderate").length,
     minor: findings.filter((f) => f.severity === "minor").length,
+  };
+}
+
+function tierCounts(findings: Finding[]) {
+  return {
+    blocking: findings.filter((f) => f.tier === "blocking").length,
+    "should-fix": findings.filter((f) => f.tier === "should-fix").length,
+    nit: findings.filter((f) => f.tier === "nit").length,
+    fyi: findings.filter((f) => f.tier === "fyi").length,
   };
 }
 
@@ -145,9 +179,16 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
 
   const findings = run?.output?.findings ?? [];
 
-  // Drop selection/posted state if the run is replaced (re-review, cancel).
+  // When a run's output is (re)set, pre-select the actionable findings
+  // (blocking + should-fix) so the default "Post" action pulls them forward;
+  // nits and FYIs start unselected and pushed back.
   useEffect(() => {
-    setSelected(new Set());
+    const fs = run?.output?.findings ?? [];
+    const preselect = new Set<number>();
+    fs.forEach((f, i) => {
+      if (tierIsActionable(f.tier)) preselect.add(i);
+    });
+    setSelected(preselect);
     setPosted(new Set());
     setBulkError(null);
   }, [run?.output]);
@@ -394,12 +435,16 @@ function MarkdownSummary({ markdown }: { markdown: string }) {
 
 function ExactStatistics({ findings }: { findings: Finding[] }) {
   const counts = findingCounts(findings);
+  const tiers = tierCounts(findings);
   return (
     <div class="pr-review-markdown text-gray-700 dark:text-gray-300 leading-relaxed mt-4">
       <h2>Statistics</h2>
       <ul>
         <li>
           Issues found: {counts.critical} critical, {counts.moderate} moderate, {counts.minor} minor
+        </li>
+        <li>
+          Triage: {tiers.blocking} blocking, {tiers["should-fix"]} should-fix, {tiers.nit} nit, {tiers.fyi} FYI
         </li>
       </ul>
     </div>
@@ -431,22 +476,18 @@ function FindingsList({
 }: FindingsListProps) {
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
 
-  // Group by severity (critical → moderate → minor); within each severity,
-  // sort by file path so related files cluster together. Each finding keeps
-  // its original index so post-tracking survives the regrouping.
+  // Group by triage tier (blocking → fyi). The backend already orders findings
+  // by tier, then confidence, then file, so preserving array order within each
+  // tier keeps the strict triage ordering. Each finding keeps its original
+  // index so selection / post-tracking survives the regrouping.
   const indexed = findings.map((f, i) => ({ f, i }));
-  const bySeverity = new Map<Severity, { f: Finding; i: number }[]>();
+  const byTier = new Map<Tier, { f: Finding; i: number }[]>();
   for (const entry of indexed) {
-    const list = bySeverity.get(entry.f.severity) ?? [];
+    const list = byTier.get(entry.f.tier) ?? [];
     list.push(entry);
-    bySeverity.set(entry.f.severity, list);
+    byTier.set(entry.f.tier, list);
   }
-  for (const list of bySeverity.values()) {
-    list.sort((a, b) =>
-      (a.f.filePath || "").localeCompare(b.f.filePath || ""),
-    );
-  }
-  const severityOrder = SEVERITY_ORDER.filter((s) => bySeverity.has(s));
+  const tierOrder = TIER_ORDER.filter((t) => byTier.has(t));
 
   const handlePosted = (i: number) => {
     onPosted(i);
@@ -459,35 +500,97 @@ function FindingsList({
         Findings ({findings.length})
       </div>
       <div class="space-y-3">
-        {severityOrder.map((sev) => (
-          <div key={sev}>
-            <div class="flex items-center gap-1.5 mb-1">
-              <span class={`inline-block w-2 h-2 rounded-full ${severityBadgeClass(sev)}`} />
-              <span class="text-[10px] uppercase tracking-wide text-gray-500">
-                {severityLabel(sev)} ({bySeverity.get(sev)!.length})
-              </span>
-            </div>
-            <ul class="space-y-2">
-              {bySeverity.get(sev)!.map(({ f, i }) => (
-                <FindingRow
-                  key={i}
-                  finding={f}
-                  projectId={projectId}
-                  repoId={repoId}
-                  prId={prId}
-                  isPosted={posted.has(i)}
-                  isSelected={selected.has(i)}
-                  onToggleSelected={() => onToggleSelected(i)}
-                  isEditing={editingIdx === i}
-                  onEdit={() => setEditingIdx(i)}
-                  onCancel={() => setEditingIdx(null)}
-                  onPosted={() => handlePosted(i)}
-                />
-              ))}
-            </ul>
-          </div>
+        {tierOrder.map((tier) => (
+          <TierSection
+            key={tier}
+            tier={tier}
+            entries={byTier.get(tier)!}
+            projectId={projectId}
+            repoId={repoId}
+            prId={prId}
+            selected={selected}
+            posted={posted}
+            onToggleSelected={onToggleSelected}
+            editingIdx={editingIdx}
+            setEditingIdx={setEditingIdx}
+            onPosted={handlePosted}
+          />
         ))}
       </div>
+    </div>
+  );
+}
+
+interface TierSectionProps {
+  tier: Tier;
+  entries: { f: Finding; i: number }[];
+  projectId: string;
+  repoId: string;
+  prId: number;
+  selected: Set<number>;
+  posted: Set<number>;
+  onToggleSelected: (i: number) => void;
+  editingIdx: number | null;
+  setEditingIdx: (i: number | null) => void;
+  onPosted: (i: number) => void;
+}
+
+function TierSection({
+  tier,
+  entries,
+  projectId,
+  repoId,
+  prId,
+  selected,
+  posted,
+  onToggleSelected,
+  editingIdx,
+  setEditingIdx,
+  onPosted,
+}: TierSectionProps) {
+  // Push back low-priority tiers: nit / fyi start collapsed so they never bury
+  // the blocking and should-fix findings above them.
+  const actionable = tierIsActionable(tier);
+  const [expanded, setExpanded] = useState(actionable);
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        class="flex items-center gap-1.5 mb-1 w-full text-left"
+        aria-expanded={expanded}
+      >
+        <span class={`inline-block w-2 h-2 rounded-full ${tierBadgeClass(tier)}`} />
+        <span class="text-[10px] uppercase tracking-wide text-gray-500">
+          {tierLabel(tier)} ({entries.length})
+        </span>
+        {!actionable && (
+          <span class="text-[10px] text-gray-400 ml-auto">
+            {expanded ? "▾ hide" : "▸ show"}
+          </span>
+        )}
+      </button>
+      {expanded && (
+        <ul class="space-y-2">
+          {entries.map(({ f, i }) => (
+            <FindingRow
+              key={i}
+              finding={f}
+              projectId={projectId}
+              repoId={repoId}
+              prId={prId}
+              isPosted={posted.has(i)}
+              isSelected={selected.has(i)}
+              onToggleSelected={() => onToggleSelected(i)}
+              isEditing={editingIdx === i}
+              onEdit={() => setEditingIdx(i)}
+              onCancel={() => setEditingIdx(null)}
+              onPosted={() => onPosted(i)}
+            />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
