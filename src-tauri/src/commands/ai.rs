@@ -36,6 +36,9 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
     let retry_count =
         crate::ai::read_retry_count(&db).map_err(|e: crate::AppError| e.to_string())?;
 
+    let confidence_threshold =
+        crate::ai::read_confidence_threshold(&db).map_err(|e: crate::AppError| e.to_string())?;
+
     Ok(AiSettingsNoKey {
         provider,
         endpoint,
@@ -45,6 +48,7 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         hunk_concurrency,
         standards_max_chars,
         retry_count,
+        confidence_threshold,
     })
 }
 
@@ -60,6 +64,7 @@ pub async fn save_ai_settings(
     hunk_concurrency: u32,
     standards_max_chars: u32,
     retry_count: u32,
+    confidence_threshold: u8,
 ) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
@@ -117,6 +122,11 @@ pub async fn save_ai_settings(
     crate::cache::set_setting(&db, "ai_retry_count", &retries.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(&db, "ai_standards_max_chars", &std_chars.to_string())
+        .map_err(|e: crate::AppError| e.to_string())?;
+    // confidence_threshold: 0 is valid ("surface everything"); just clamp the
+    // upper bound to 100.
+    let threshold = confidence_threshold.min(crate::ai::MAX_CONFIDENCE_THRESHOLD);
+    crate::cache::set_setting(&db, "ai_confidence_threshold", &threshold.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
 
     // Save API key to keyring when the user provided one. The UI intentionally
@@ -461,6 +471,10 @@ fn prompt_info(
         crate::ai::prompts::PromptKey::ReviewTypeDesignSystem => (
             "Multi-pass: type-design analyzer",
             "Thorough PR review specialist — type design, invariants, encapsulation.",
+        ),
+        crate::ai::prompts::PromptKey::ReviewCodeSimplifierSystem => (
+            "Multi-pass: code simplifier",
+            "Thorough PR review specialist — clarity, redundancy, unnecessary complexity.",
         ),
     };
 

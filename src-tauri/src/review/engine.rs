@@ -45,6 +45,14 @@ pub enum Severity {
     Minor,
 }
 
+/// Confidence (0–100) assigned to findings that predate explicit scoring or
+/// that the model failed to score. Set to the default reporting threshold so a
+/// missing score surfaces exactly as findings did before confidence existed,
+/// rather than being silently dropped.
+pub fn default_confidence() -> u8 {
+    crate::ai::DEFAULT_CONFIDENCE_THRESHOLD
+}
+
 /// A single review finding produced by the engine. Each finding is intended to
 /// become one ADO comment, anchored to a line range when possible.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -52,6 +60,10 @@ pub enum Severity {
 pub struct Finding {
     pub file_path: String,
     pub severity: Severity,
+    /// How sure the reviewer is the finding is real (0–100), distinct from
+    /// `severity` (how bad it is if real).
+    #[serde(default = "default_confidence")]
+    pub confidence: u8,
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
     pub comment: String,
@@ -72,9 +84,17 @@ pub struct FileAggregateResult {
 #[serde(rename_all = "camelCase")]
 pub struct FileAggregateFinding {
     pub severity: Severity,
+    /// Adjudicator confidence (0–100). Defaulted for back-compat with states
+    /// persisted before confidence scoring existed.
+    #[serde(default = "default_confidence")]
+    pub confidence: u8,
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
     pub comment: String,
+    /// New-side line(s) the adjudicator cited to justify the finding. Used by
+    /// the deterministic anchor check and for logging; stripped before posting.
+    #[serde(default)]
+    pub evidence: Option<String>,
 }
 
 /// The complete review output.
@@ -86,7 +106,7 @@ pub struct ReviewOutput {
 
 /// Best-effort JSON extraction from an LLM response. Strips ``` fences and
 /// trims surrounding prose; returns the parsed result or an error string.
-fn parse_file_aggregate(raw: &str) -> Result<FileAggregateResult, String> {
+pub fn parse_file_aggregate(raw: &str) -> Result<FileAggregateResult, String> {
     let trimmed = raw.trim();
     // Strip leading/trailing code fences if the model ignored "no fences".
     let inner = if let Some(stripped) = trimmed
@@ -110,6 +130,50 @@ fn parse_file_aggregate(raw: &str) -> Result<FileAggregateResult, String> {
     };
     serde_json::from_str::<FileAggregateResult>(&json_str)
         .map_err(|e| format!("JSON parse error: {} — body was: {}", e, json_str))
+}
+
+/// Deterministic, no-LLM precision guards applied to a freshly-adjudicated
+/// file aggregate:
+///   1. drop findings whose `confidence` is below `threshold`;
+///   2. drop line-anchored findings whose `line_start` falls outside every
+///      reviewed hunk's new-side range — a strong hallucinated-line signal.
+/// File-level findings (`line_start == None`) are exempt from the anchor check.
+/// Returns the number of findings dropped (for logging / tests).
+pub fn apply_finding_guards(
+    aggregate: &mut FileAggregateResult,
+    file_path: &str,
+    threshold: u8,
+    hunks: &[crate::diff::engine::DiffHunk],
+) -> usize {
+    let before = aggregate.findings.len();
+    aggregate.findings.retain(|f| {
+        if f.confidence < threshold {
+            eprintln!(
+                "[review] dropped finding in {} (confidence {} < threshold {})",
+                file_path, f.confidence, threshold
+            );
+            return false;
+        }
+        if let Some(line) = f.line_start {
+            if !line_in_any_hunk(line, hunks) {
+                eprintln!(
+                    "[review] dropped finding in {} (line {} outside any reviewed hunk — likely hallucinated)",
+                    file_path, line
+                );
+                return false;
+            }
+        }
+        true
+    });
+    before - aggregate.findings.len()
+}
+
+/// True if `line` (1-based, new-side) falls within any hunk's new-side range.
+/// Hunks with no new-side lines (pure deletions, `new_count == 0`) match nothing.
+fn line_in_any_hunk(line: usize, hunks: &[crate::diff::engine::DiffHunk]) -> bool {
+    hunks
+        .iter()
+        .any(|h| h.new_count > 0 && line >= h.new_start && line < h.new_start + h.new_count)
 }
 
 fn emit_progress(app: &tauri::AppHandle, phase: &str, detail: &str, extra: serde_json::Value) {
@@ -166,6 +230,14 @@ pub async fn run_review(
     .max(1) as usize;
     let llm_permits = Arc::new(Semaphore::new(hunk_concurrency));
 
+    // Minimum confidence a finding must reach to survive the deterministic
+    // guard applied after each file's adjudication. Resolved once per run.
+    let confidence_threshold = match db.lock() {
+        Ok(c) => crate::ai::read_confidence_threshold(&c)
+            .unwrap_or(crate::ai::DEFAULT_CONFIDENCE_THRESHOLD),
+        Err(_) => crate::ai::DEFAULT_CONFIDENCE_THRESHOLD,
+    };
+
     // Resolve specialist system prompts + per-specialist model overrides once for
     // the run (Thorough mode only). Resolved up front so user edits in Settings
     // take effect on the next run without restarting the app.
@@ -212,6 +284,9 @@ pub async fn run_review(
         cancelled(&cancel)?;
         let (file, hunks) = &file_entries[state.current_file_idx];
         let total_hunks = hunks.len();
+        // Shared once per file: each hunk pass windows a bounded slice of this
+        // for surrounding context, so we clone the Arc, not the string.
+        let file_new_content = Arc::new(file.new_content.clone());
 
         if state.current_file_hunks == 0 {
             state.current_file_hunks = total_hunks;
@@ -250,6 +325,7 @@ pub async fn run_review(
                 let standards = input.standards.clone();
                 let specialist_prompts = specialist_prompts.clone();
                 let llm_permits = llm_permits.clone();
+                let file_new_content = file_new_content.clone();
                 let mode = input.mode;
                 handles.push((
                     hunk_idx,
@@ -265,6 +341,7 @@ pub async fn run_review(
                             specialist_prompts,
                             retry_count,
                             llm_permits,
+                            file_new_content,
                         )
                         .await
                     }),
@@ -357,6 +434,7 @@ pub async fn run_review(
                         &file.path,
                         &state.current_file_findings,
                         &input.standards,
+                        &file.new_content,
                     ),
                 },
             ];
@@ -365,7 +443,7 @@ pub async fn run_review(
                 .await
                 .unwrap_or_else(|e| format!("[aggregate failed — {}]", e));
 
-            let aggregate = parse_file_aggregate(&raw).unwrap_or_else(|err| {
+            let mut aggregate = parse_file_aggregate(&raw).unwrap_or_else(|err| {
                 // Log to stderr so the user can see what the model produced.
                 eprintln!(
                     "[review] file-aggregate JSON parse failed for {}: {}",
@@ -377,6 +455,10 @@ pub async fn run_review(
                     findings: Vec::new(),
                 }
             });
+
+            // Deterministic precision guards: drop sub-threshold and
+            // hallucinated-line findings before they reach the reviewer.
+            apply_finding_guards(&mut aggregate, &file.path, confidence_threshold, hunks);
 
             state.completed_files.push((file.path.clone(), aggregate));
         } else {
@@ -493,6 +575,7 @@ pub async fn run_review(
             agg.findings.iter().map(move |f| Finding {
                 file_path: file_path.clone(),
                 severity: f.severity,
+                confidence: f.confidence,
                 line_start: f.line_start,
                 line_end: f.line_end,
                 comment: f.comment.clone(),
@@ -541,6 +624,93 @@ pub async fn run_review(
     })
 }
 
+/// Review a single file end-to-end without Tauri, state persistence, progress
+/// events, or resumability: run the hunk passes, adjudicate into a structured
+/// file result, and apply the deterministic guards. The live `run_review`
+/// inlines an equivalent flow with those concerns layered on; this is the
+/// headless entry point used by the eval harness so both share the same hunk,
+/// adjudication, and guard logic.
+pub async fn review_single_file(
+    provider: Arc<dyn AiProvider>,
+    mode: ReviewMode,
+    file: &FileInput,
+    standards: &str,
+    confidence_threshold: u8,
+    retry_count: u32,
+) -> Result<FileAggregateResult, AppError> {
+    let hunks = extract_hunks(&file.old_content, &file.new_content);
+    if hunks.is_empty() {
+        return Ok(FileAggregateResult {
+            summary: "No reviewable changes in this file.".into(),
+            verdict: "approve".into(),
+            findings: Vec::new(),
+        });
+    }
+
+    let specialist_prompts: Vec<(PromptKey, String, Option<String>)> =
+        if mode == ReviewMode::Thorough {
+            PromptKey::THOROUGH_SPECIALISTS
+                .iter()
+                .map(|k| (*k, k.default_text().to_string(), None))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+    let file_new_content = Arc::new(file.new_content.clone());
+    let permits = Arc::new(Semaphore::new(1));
+
+    let mut hunk_findings: Vec<(usize, String)> = Vec::new();
+    for (idx, hunk) in hunks.iter().enumerate() {
+        let response = review_single_hunk(
+            provider.clone(),
+            mode,
+            file.path.clone(),
+            idx,
+            hunks.len(),
+            hunk.clone(),
+            standards.to_string(),
+            specialist_prompts.clone(),
+            retry_count,
+            permits.clone(),
+            file_new_content.clone(),
+        )
+        .await?;
+        if response.trim() != "No issues found." {
+            hunk_findings.push((idx + 1, response));
+        }
+    }
+
+    if hunk_findings.is_empty() {
+        return Ok(FileAggregateResult {
+            summary: "No issues found in this file.".into(),
+            verdict: "approve".into(),
+            findings: Vec::new(),
+        });
+    }
+
+    let agg_messages = vec![
+        ChatMessage {
+            role: ChatRole::System,
+            content: prompts::FILE_AGGREGATE_SYSTEM.to_string(),
+        },
+        ChatMessage {
+            role: ChatRole::User,
+            content: prompts::file_aggregate_user_message(
+                &file.path,
+                &hunk_findings,
+                standards,
+                &file.new_content,
+            ),
+        },
+    ];
+
+    let raw = chat_with_retries(&provider, &agg_messages, retry_count).await?;
+    let mut aggregate = parse_file_aggregate(&raw).map_err(AppError::Ai)?;
+    apply_finding_guards(&mut aggregate, &file.path, confidence_threshold, &hunks);
+    Ok(aggregate)
+}
+
 fn append_exact_statistics(summary: &str, files_reviewed: usize, findings: &[Finding]) -> String {
     let without_stats = strip_statistics_section(summary).trim().to_string();
     let critical = findings
@@ -580,6 +750,7 @@ async fn chat_with_retries(
     chat_with_retries_and_model(provider, messages, None, retries).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn review_single_hunk(
     provider: Arc<dyn AiProvider>,
     mode: ReviewMode,
@@ -591,6 +762,7 @@ async fn review_single_hunk(
     specialist_prompts: Vec<(PromptKey, String, Option<String>)>,
     retry_count: u32,
     llm_permits: Arc<Semaphore>,
+    file_new_content: Arc<String>,
 ) -> Result<String, AppError> {
     let hunk_text: String = hunk
         .lines
@@ -600,6 +772,10 @@ async fn review_single_hunk(
         .join("");
 
     let context_note = prompts::hunk_context_note(&file_path, hunk_idx + 1, total_hunks);
+    // Surrounding-file window so the reviewer can see definitions / callers and
+    // avoid the most common false positives. Empty for tiny / deletion-only hunks.
+    let file_ctx =
+        prompts::file_context_window(&file_new_content, &hunk, crate::ai::FILE_CONTEXT_MAX_CHARS);
     let user_msg = prompts::hunk_user_message(&file_path, &hunk.header, &hunk_text, "");
 
     if mode == ReviewMode::Thorough {
@@ -609,11 +785,12 @@ async fn review_single_hunk(
             let standards = standards.clone();
             let context_note = context_note.clone();
             let user_msg = user_msg.clone();
+            let file_ctx = file_ctx.clone();
             let llm_permits = llm_permits.clone();
             handles.push((
                 idx,
                 tokio::spawn(async move {
-                    let pass_messages = vec![
+                    let mut pass_messages = vec![
                         ChatMessage {
                             role: ChatRole::System,
                             content: if standards.is_empty() {
@@ -626,11 +803,17 @@ async fn review_single_hunk(
                             role: ChatRole::User,
                             content: context_note,
                         },
-                        ChatMessage {
-                            role: ChatRole::User,
-                            content: user_msg,
-                        },
                     ];
+                    if !file_ctx.is_empty() {
+                        pass_messages.push(ChatMessage {
+                            role: ChatRole::User,
+                            content: file_ctx,
+                        });
+                    }
+                    pass_messages.push(ChatMessage {
+                        role: ChatRole::User,
+                        content: user_msg,
+                    });
                     let result = match llm_permits.acquire_owned().await {
                         Ok(_permit) => {
                             chat_with_retries_and_model(
@@ -688,7 +871,7 @@ async fn review_single_hunk(
             Ok(outputs.join("\n\n"))
         }
     } else {
-        let messages = vec![
+        let mut messages = vec![
             ChatMessage {
                 role: ChatRole::System,
                 content: format!(
@@ -705,11 +888,17 @@ async fn review_single_hunk(
                 role: ChatRole::User,
                 content: context_note,
             },
-            ChatMessage {
-                role: ChatRole::User,
-                content: user_msg,
-            },
         ];
+        if !file_ctx.is_empty() {
+            messages.push(ChatMessage {
+                role: ChatRole::User,
+                content: file_ctx,
+            });
+        }
+        messages.push(ChatMessage {
+            role: ChatRole::User,
+            content: user_msg,
+        });
         let _permit = llm_permits
             .acquire_owned()
             .await
@@ -826,5 +1015,118 @@ fn severity_prefix(s: Severity) -> &'static str {
         Severity::Critical => "🔴 CRITICAL —",
         Severity::Moderate => "🟡 MODERATE —",
         Severity::Minor => "⚪ MINOR —",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A hunk covering new-side lines [new_start, new_start+new_count).
+    fn hunk(new_start: usize, new_count: usize) -> crate::diff::engine::DiffHunk {
+        crate::diff::engine::DiffHunk {
+            index: 0,
+            header: format!("@@ -1,1 +{},{} @@", new_start, new_count),
+            old_start: 1,
+            old_count: 1,
+            new_start,
+            new_count,
+            lines: Vec::new(),
+        }
+    }
+
+    fn finding(confidence: u8, line_start: Option<usize>) -> FileAggregateFinding {
+        FileAggregateFinding {
+            severity: Severity::Moderate,
+            confidence,
+            line_start,
+            line_end: line_start,
+            comment: "x".into(),
+            evidence: None,
+        }
+    }
+
+    fn aggregate(findings: Vec<FileAggregateFinding>) -> FileAggregateResult {
+        FileAggregateResult {
+            summary: "s".into(),
+            verdict: "review-required".into(),
+            findings,
+        }
+    }
+
+    #[test]
+    fn default_confidence_is_reporting_threshold() {
+        assert_eq!(default_confidence(), crate::ai::DEFAULT_CONFIDENCE_THRESHOLD);
+    }
+
+    #[test]
+    fn guard_drops_below_threshold_keeps_at_or_above() {
+        let hunks = [hunk(10, 5)]; // new-side lines 10..=14
+        let mut agg = aggregate(vec![
+            finding(79, Some(12)), // below 80 → dropped
+            finding(80, Some(12)), // exactly at threshold → kept
+            finding(95, Some(13)), // above → kept
+        ]);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks);
+        assert_eq!(dropped, 1);
+        assert_eq!(agg.findings.len(), 2);
+        assert!(agg.findings.iter().all(|f| f.confidence >= 80));
+    }
+
+    #[test]
+    fn guard_drops_line_outside_any_hunk() {
+        let hunks = [hunk(10, 5)]; // new-side lines 10..=14
+        let mut agg = aggregate(vec![
+            finding(95, Some(9)),  // just before the hunk → dropped
+            finding(95, Some(14)), // last line of the hunk → kept
+            finding(95, Some(15)), // just after the hunk → dropped
+        ]);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks);
+        assert_eq!(dropped, 2);
+        assert_eq!(agg.findings.len(), 1);
+        assert_eq!(agg.findings[0].line_start, Some(14));
+    }
+
+    #[test]
+    fn guard_exempts_file_level_findings_from_anchor_check() {
+        let hunks = [hunk(10, 5)];
+        let mut agg = aggregate(vec![finding(90, None)]); // file-level, high confidence
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks);
+        assert_eq!(dropped, 0);
+        assert_eq!(agg.findings.len(), 1);
+    }
+
+    #[test]
+    fn guard_zero_threshold_surfaces_everything_in_range() {
+        let hunks = [hunk(1, 100)];
+        let mut agg = aggregate(vec![finding(0, Some(5)), finding(10, Some(6))]);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 0, &hunks);
+        assert_eq!(dropped, 0);
+        assert_eq!(agg.findings.len(), 2);
+    }
+
+    #[test]
+    fn aggregate_parses_confidence_and_evidence() {
+        let raw = r#"{
+          "summary": "s", "verdict": "needs-work",
+          "findings": [{"severity":"critical","confidence":92,"lineStart":3,"lineEnd":3,"evidence":"line 3","comment":"boom"}]
+        }"#;
+        let parsed = parse_file_aggregate(raw).expect("parse");
+        assert_eq!(parsed.findings[0].confidence, 92);
+        assert_eq!(parsed.findings[0].evidence.as_deref(), Some("line 3"));
+    }
+
+    #[test]
+    fn aggregate_defaults_missing_confidence_and_evidence() {
+        // A pre-confidence aggregate (no confidence / evidence fields) must
+        // still deserialize, defaulting confidence to the reporting threshold
+        // so legacy findings are not silently dropped.
+        let raw = r#"{
+          "summary": "s", "verdict": "approve",
+          "findings": [{"severity":"minor","lineStart":1,"lineEnd":1,"comment":"nit"}]
+        }"#;
+        let parsed = parse_file_aggregate(raw).expect("parse");
+        assert_eq!(parsed.findings[0].confidence, default_confidence());
+        assert!(parsed.findings[0].evidence.is_none());
     }
 }

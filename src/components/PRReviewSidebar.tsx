@@ -551,8 +551,18 @@ function FindingRow({
           title={severityLabel(finding.severity)}
         />
         <div class="flex-1 min-w-0">
-          <div class="font-mono text-[11px] text-gray-700 dark:text-gray-300 truncate">
-            {finding.filePath ? `${fileName(finding.filePath)}${lineSuffix(finding)}` : "(PR-level)"}
+          <div class="flex items-center gap-1.5 min-w-0">
+            <div class="font-mono text-[11px] text-gray-700 dark:text-gray-300 truncate">
+              {finding.filePath ? `${fileName(finding.filePath)}${lineSuffix(finding)}` : "(PR-level)"}
+            </div>
+            {Number.isFinite(finding.confidence) && (
+              <span
+                class="shrink-0 text-[10px] tabular-nums text-gray-400 dark:text-gray-500"
+                title={`${severityLabel(finding.severity)} · ${finding.confidence}% confidence`}
+              >
+                {finding.confidence}%
+              </span>
+            )}
           </div>
           {finding.filePath && (
             <div

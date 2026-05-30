@@ -14,6 +14,7 @@ pub enum PromptKey {
     ReviewCommentAnalyzerSystem,
     ReviewTestAnalyzerSystem,
     ReviewTypeDesignSystem,
+    ReviewCodeSimplifierSystem,
 }
 
 impl PromptKey {
@@ -25,6 +26,7 @@ impl PromptKey {
         PromptKey::ReviewCommentAnalyzerSystem,
         PromptKey::ReviewTestAnalyzerSystem,
         PromptKey::ReviewTypeDesignSystem,
+        PromptKey::ReviewCodeSimplifierSystem,
     ];
 
     /// Specialist prompts used by Thorough multi-pass review. Order here is the
@@ -35,6 +37,7 @@ impl PromptKey {
         PromptKey::ReviewCommentAnalyzerSystem,
         PromptKey::ReviewTestAnalyzerSystem,
         PromptKey::ReviewTypeDesignSystem,
+        PromptKey::ReviewCodeSimplifierSystem,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -46,6 +49,7 @@ impl PromptKey {
             PromptKey::ReviewCommentAnalyzerSystem => "review_comment_analyzer_system",
             PromptKey::ReviewTestAnalyzerSystem => "review_test_analyzer_system",
             PromptKey::ReviewTypeDesignSystem => "review_type_design_system",
+            PromptKey::ReviewCodeSimplifierSystem => "review_code_simplifier_system",
         }
     }
 
@@ -57,6 +61,7 @@ impl PromptKey {
             PromptKey::ReviewCommentAnalyzerSystem => "comment-analyzer",
             PromptKey::ReviewTestAnalyzerSystem => "test-analyzer",
             PromptKey::ReviewTypeDesignSystem => "type-design-analyzer",
+            PromptKey::ReviewCodeSimplifierSystem => "code-simplifier",
             _ => "reviewer",
         }
     }
@@ -70,6 +75,7 @@ impl PromptKey {
             "review_comment_analyzer_system" => Ok(PromptKey::ReviewCommentAnalyzerSystem),
             "review_test_analyzer_system" => Ok(PromptKey::ReviewTestAnalyzerSystem),
             "review_type_design_system" => Ok(PromptKey::ReviewTypeDesignSystem),
+            "review_code_simplifier_system" => Ok(PromptKey::ReviewCodeSimplifierSystem),
             other => Err(AppError::Ai(format!("Unknown prompt key: {}", other))),
         }
     }
@@ -85,6 +91,7 @@ impl PromptKey {
             PromptKey::ReviewCommentAnalyzerSystem => DEFAULT_REVIEW_COMMENT_ANALYZER_SYSTEM,
             PromptKey::ReviewTestAnalyzerSystem => DEFAULT_REVIEW_TEST_ANALYZER_SYSTEM,
             PromptKey::ReviewTypeDesignSystem => DEFAULT_REVIEW_TYPE_DESIGN_SYSTEM,
+            PromptKey::ReviewCodeSimplifierSystem => DEFAULT_REVIEW_CODE_SIMPLIFIER_SYSTEM,
         }
     }
 
@@ -198,6 +205,21 @@ For any type, struct, interface, enum, or schema introduced or modified in this 
 5. Over-design — is the type doing too much, or is it premature abstraction?
 
 Reference exact NEW-side line numbers from the hunk header. If the hunk introduces no new types, you almost certainly have nothing to say. Keep your response to 2-4 bullet points.
+
+If you find nothing worth flagging, respond with exactly: No issues found.
+
+Do not include greetings or sign-offs."#;
+
+/// Defaults for the "code-simplifier" specialist — clarity and unnecessary complexity.
+pub const DEFAULT_REVIEW_CODE_SIMPLIFIER_SYSTEM: &str = r#"You are an expert at code clarity and simplification. You review a single diff hunk as one pass of a multi-agent review.
+
+For the given hunk, look only for changes that would make the code meaningfully simpler without changing behavior:
+1. Duplicated logic that could reuse an existing helper, or redundant code that restates work already done
+2. Convoluted control flow that has a clear, flatter equivalent (needless nesting, double negatives, dead branches)
+3. Unnecessary intermediate state, variables, or abstraction that adds no value at this size
+4. Over-engineering: premature generalization or indirection for a single caller
+
+Reference exact NEW-side line numbers from the hunk header. Do NOT flag pure style or naming — other specialists own that. Suggest a simplification only when you are confident it preserves behavior and is genuinely clearer; skip subjective rewrites. Keep your response to 2-4 bullet points.
 
 If you find nothing worth flagging, respond with exactly: No issues found.
 

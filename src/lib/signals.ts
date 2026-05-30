@@ -147,6 +147,7 @@ export interface PRReviewRun {
     findings: {
       filePath: string;
       severity: "critical" | "moderate" | "minor";
+      confidence: number;
       lineStart: number | null;
       lineEnd: number | null;
       comment: string;

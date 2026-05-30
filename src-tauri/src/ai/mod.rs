@@ -114,6 +114,19 @@ pub const DEFAULT_STANDARDS_MAX_CHARS: u32 = 8000;
 pub const MIN_STANDARDS_MAX_CHARS: u32 = 500;
 pub const MAX_STANDARDS_MAX_CHARS: u32 = 65535;
 
+/// Minimum confidence (0–100) a review finding must reach to be surfaced.
+/// Mirrors the pr-review-toolkit's ≥80 reporting threshold: below this a
+/// finding is treated as a likely false positive or low-impact nit and
+/// dropped before the reviewer ever sees it. 0 surfaces everything.
+pub const DEFAULT_CONFIDENCE_THRESHOLD: u8 = 80;
+pub const MAX_CONFIDENCE_THRESHOLD: u8 = 100;
+
+/// Hard ceiling (characters) on the surrounding-file context injected into
+/// hunk reviews and the file adjudicator. Bounds token cost and latency on
+/// large files while still letting reviewers see definitions / callers that
+/// kill the most common false positives. Not user-configurable in Phase 1.
+pub const FILE_CONTEXT_MAX_CHARS: usize = 12000;
+
 /// AI settings stored in SQLite + keyring.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiSettings {
@@ -140,6 +153,8 @@ pub struct AiSettingsNoKey {
     /// Number of retries the review engine performs after a failed LLM call.
     /// 0 = no retries (recommended for local providers).
     pub retry_count: u32,
+    /// Minimum confidence (0–100) a finding must reach to be reported.
+    pub confidence_threshold: u8,
 }
 
 /// Read the TCP/TLS connect timeout (seconds), defaulting if missing.
@@ -196,6 +211,17 @@ pub fn read_retry_count(conn: &rusqlite::Connection) -> Result<u32, AppError> {
         .and_then(|s| s.parse::<u32>().ok())
         .map(|n| n.min(MAX_RETRY_COUNT))
         .unwrap_or(DEFAULT_RETRY_COUNT))
+}
+
+/// Read the configured minimum confidence threshold (0–100) for surfacing
+/// findings. Unlike most numeric settings, 0 is a valid, meaningful value
+/// ("surface everything"), so it is not coerced to the default.
+pub fn read_confidence_threshold(conn: &rusqlite::Connection) -> Result<u8, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_confidence_threshold")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|n| n.min(MAX_CONFIDENCE_THRESHOLD))
+        .unwrap_or(DEFAULT_CONFIDENCE_THRESHOLD))
 }
 
 /// Read the configured per-file size cap for injected AGENTS.md / STYLE.md content.

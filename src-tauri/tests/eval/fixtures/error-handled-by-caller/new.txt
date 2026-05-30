@@ -1,0 +1,14 @@
+def load_config(path):
+    try:
+        with open(path) as f:
+            return parse(f.read())
+    except FileNotFoundError:
+        return None
+
+
+def main():
+    cfg = load_config("config.yaml")
+    if cfg is None:
+        print("No config found; using defaults")
+        cfg = default_config()
+    run(cfg)

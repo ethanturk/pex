@@ -305,6 +305,9 @@ export interface AiSettingsNoKey {
   /// Number of retries after a failed LLM call in a PR review.
   /// 0 = no retries (recommended for slow local providers).
   retryCount: number;
+  /// Minimum confidence (0–100) a finding must reach to be reported.
+  /// 0 surfaces everything; higher values raise the precision bar.
+  confidenceThreshold: number;
 }
 
 export async function getAiSettings(): Promise<AiSettingsNoKey> {
@@ -321,6 +324,7 @@ export async function saveAiSettings(
   hunkConcurrency: number,
   standardsMaxChars: number,
   retryCount: number,
+  confidenceThreshold: number,
 ): Promise<void> {
   return invoke("save_ai_settings", {
     provider,
@@ -332,6 +336,7 @@ export async function saveAiSettings(
     hunkConcurrency,
     standardsMaxChars,
     retryCount,
+    confidenceThreshold,
   });
 }
 
@@ -401,6 +406,9 @@ export type Severity = "critical" | "moderate" | "minor";
 export interface ReviewFinding {
   filePath: string;
   severity: Severity;
+  /// How sure the reviewer is the finding is real (0–100), distinct from
+  /// severity (how bad it is if real).
+  confidence: number;
   lineStart: number | null;
   lineEnd: number | null;
   comment: string;

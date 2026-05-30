@@ -41,6 +41,7 @@ export function AiSettings({ open, onClose }: Props) {
   const [hunkConcurrency, setHunkConcurrency] = useState(1);
   const [standardsMaxChars, setStandardsMaxChars] = useState(String(DEFAULT_STANDARDS_MAX_CHARS));
   const [retryCount, setRetryCount] = useState(1);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(80);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -79,6 +80,10 @@ export function AiSettings({ open, onClose }: Props) {
       // when the user has explicitly chosen 0.
       setRetryCount(
         Number.isFinite(settings.retryCount) ? settings.retryCount : 1,
+      );
+      // 0 is a valid threshold ("surface everything"), so keep it as-is.
+      setConfidenceThreshold(
+        Number.isFinite(settings.confidenceThreshold) ? settings.confidenceThreshold : 80,
       );
       setApiKey("");
       setPrompts(ps);
@@ -173,7 +178,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold);
       setMessage({ text: "AI settings saved.", ok: true });
     } catch (e: any) {
       setMessage({ text: String(e), ok: false });
@@ -189,7 +194,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold);
       const models = await listAiModels(true);
       setAvailableModels(models);
 
@@ -197,7 +202,7 @@ export function AiSettings({ open, onClose }: Props) {
       if (selectedModel !== model) {
         setModel(selectedModel);
         if (selectedModel) {
-          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount);
+          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold);
           setMessage({
             text: `Connected. Model changed to ${selectedModel} because the previous model is not available from this provider.`,
             ok: true,
@@ -445,6 +450,29 @@ export function AiSettings({ open, onClose }: Props) {
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     How many times to retry an LLM call after it fails during a PR review. Set to <strong>0</strong> for slow local providers — a "failure" there is usually just the request timeout firing while the model is still generating, and retrying just doubles the orphaned work.
+                  </p>
+                </Field>
+
+                <Field label="Confidence threshold (0–100)">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={confidenceThreshold}
+                    onInput={(e) => {
+                      const n = parseInt(e.currentTarget.value, 10);
+                      // 0 is a deliberate value ("surface everything"); clamp to 0–100.
+                      if (!Number.isFinite(n) || n < 0) {
+                        setConfidenceThreshold(0);
+                      } else {
+                        setConfidenceThreshold(Math.min(100, n));
+                      }
+                    }}
+                    placeholder="80"
+                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                  />
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Minimum confidence a PR review finding must reach to be surfaced. The default <strong>80</strong> filters out likely false positives and low-impact nits. Lower it to see more (noisier) findings; raise it for only the highest-confidence issues. Set to <strong>0</strong> to surface everything.
                   </p>
                 </Field>
               </div>

@@ -79,10 +79,19 @@ Pex can run an AI-assisted review across the PR and produce markdown findings.
 2. Choose a provider and enter the provider URL, API key, and model.
 3. Click **Test** to verify the provider and model list.
 4. Set hunk review concurrency based on what your provider can handle.
-5. Start **Review PR** from the PR toolbar and choose **Fast** or **Thorough**.
+5. Set the **confidence threshold** (default 80) to control how aggressively
+   low-confidence findings are filtered out.
+6. Start **Review PR** from the PR toolbar and choose **Fast** or **Thorough**.
 
 Fast mode uses a single review pass per hunk. Thorough mode runs multiple
-specialist passes and is slower, but can catch more subtle issues.
+specialist passes (code review, silent-failure hunting, comment accuracy, test
+coverage, type design, and simplification) and is slower, but can catch more
+subtle issues.
+
+Each hunk is reviewed with surrounding-file context to reduce false positives,
+and every finding is scored 0–100 for confidence. An adjudication pass verifies
+findings against the file before they surface; anything below the confidence
+threshold, or anchored to a line outside the changed region, is dropped.
 
 ## Features
 

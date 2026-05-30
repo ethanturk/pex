@@ -3,6 +3,12 @@
 > Make findings REAL: cut false positives, score confidence, prove it with an
 > eval harness. Prerequisite for triage (Phase 2) and the trust loop (Phase 3).
 > See [`../ROADMAP.md`](../ROADMAP.md) for the long-horizon arc.
+>
+> **Status: implemented.** All six build-order items shipped — confidence
+> scoring + threshold, full-file context windows, the verifying adjudicator
+> with deterministic threshold + anchor guards, the `code-simplifier`
+> specialist, `ReviewState` schema versioning, and the `eval_review` harness
+> with seed fixtures. Backed by unit tests (`review::engine`, `review::state`).
 
 ## Goal & exit criteria
 

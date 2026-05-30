@@ -1,0 +1,6 @@
+{
+  "path": "list_utils.py",
+  "expected": [
+    { "lineStart": 2, "lineEnd": 2, "falsePositive": false, "note": "IndexError on empty input; the empty-guard was removed" }
+  ]
+}
