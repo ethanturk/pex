@@ -42,6 +42,19 @@ pub fn init_db() -> Result<Connection, AppError> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS finding_verdicts (
+            pr_key TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            file_path TEXT NOT NULL DEFAULT '',
+            severity TEXT NOT NULL DEFAULT '',
+            tier TEXT NOT NULL DEFAULT '',
+            confidence INTEGER NOT NULL DEFAULT 0,
+            comment TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (pr_key, fingerprint)
+        );
     ",
     )?;
 

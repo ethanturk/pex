@@ -11,7 +11,7 @@ import {
   type ReviewProgress,
 } from "@/lib/signals";
 import { startBackgroundReview } from "@/lib/reviewBus";
-import { cancelReview, postReviewFinding, type Severity, type Tier } from "@/lib/api";
+import { cancelReview, postReviewFinding, recordFindingVerdict, type Severity, type Tier } from "@/lib/api";
 import { useResizableWidth } from "@/lib/useResizableWidth";
 
 type Finding = NonNullable<PRReviewRun["output"]>["findings"][number];
@@ -174,6 +174,7 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   // button can drive a per-finding post loop over the user's selection.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [posted, setPosted] = useState<Set<number>>(new Set());
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
   const [bulkPosting, setBulkPosting] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
 
@@ -190,8 +191,29 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     });
     setSelected(preselect);
     setPosted(new Set());
+    setDismissed(new Set());
     setBulkError(null);
   }, [run?.output]);
+
+  // Record a dismissal so this finding is suppressed on the next review run,
+  // and drop it from the posting selection.
+  const dismissFinding = async (i: number) => {
+    const f = findings[i];
+    if (!f) return;
+    setDismissed((prev) => new Set(prev).add(i));
+    setSelected((prev) => {
+      if (!prev.has(i)) return prev;
+      const next = new Set(prev);
+      next.delete(i);
+      return next;
+    });
+    try {
+      await recordFindingVerdict(projectId, repoId, prId, "dismissed", f);
+    } catch {
+      // Non-fatal: the UI already reflects the dismissal; suppression just
+      // won't persist for next run if this failed.
+    }
+  };
 
   const toggleSelected = (i: number) => {
     setSelected((prev) => {
@@ -237,6 +259,8 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
           f.lineEnd ?? null,
           f.comment,
         );
+        // Posting unedited = accepted as-is. Best-effort; don't fail the post.
+        recordFindingVerdict(projectId, repoId, prId, "accepted", f).catch(() => {});
         markPosted(i);
         anyPosted = true;
       } catch (e) {
@@ -379,8 +403,10 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
                 findings={run.output.findings}
                 selected={selected}
                 posted={posted}
+                dismissed={dismissed}
                 onToggleSelected={toggleSelected}
                 onPosted={markPosted}
+                onDismiss={dismissFinding}
               />
             )}
           </>
@@ -460,8 +486,10 @@ interface FindingsListProps {
   findings: Finding[];
   selected: Set<number>;
   posted: Set<number>;
+  dismissed: Set<number>;
   onToggleSelected: (i: number) => void;
   onPosted: (i: number) => void;
+  onDismiss: (i: number) => void;
 }
 
 function FindingsList({
@@ -471,8 +499,10 @@ function FindingsList({
   findings,
   selected,
   posted,
+  dismissed,
   onToggleSelected,
   onPosted,
+  onDismiss,
 }: FindingsListProps) {
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
 
@@ -510,10 +540,12 @@ function FindingsList({
             prId={prId}
             selected={selected}
             posted={posted}
+            dismissed={dismissed}
             onToggleSelected={onToggleSelected}
             editingIdx={editingIdx}
             setEditingIdx={setEditingIdx}
             onPosted={handlePosted}
+            onDismiss={onDismiss}
           />
         ))}
       </div>
@@ -529,10 +561,12 @@ interface TierSectionProps {
   prId: number;
   selected: Set<number>;
   posted: Set<number>;
+  dismissed: Set<number>;
   onToggleSelected: (i: number) => void;
   editingIdx: number | null;
   setEditingIdx: (i: number | null) => void;
   onPosted: (i: number) => void;
+  onDismiss: (i: number) => void;
 }
 
 function TierSection({
@@ -543,10 +577,12 @@ function TierSection({
   prId,
   selected,
   posted,
+  dismissed,
   onToggleSelected,
   editingIdx,
   setEditingIdx,
   onPosted,
+  onDismiss,
 }: TierSectionProps) {
   // Push back low-priority tiers: nit / fyi start collapsed so they never bury
   // the blocking and should-fix findings above them.
@@ -582,11 +618,13 @@ function TierSection({
               prId={prId}
               isPosted={posted.has(i)}
               isSelected={selected.has(i)}
+              isDismissed={dismissed.has(i)}
               onToggleSelected={() => onToggleSelected(i)}
               isEditing={editingIdx === i}
               onEdit={() => setEditingIdx(i)}
               onCancel={() => setEditingIdx(null)}
               onPosted={() => onPosted(i)}
+              onDismiss={() => onDismiss(i)}
             />
           ))}
         </ul>
@@ -602,11 +640,13 @@ interface FindingRowProps {
   prId: number;
   isPosted: boolean;
   isSelected: boolean;
+  isDismissed: boolean;
   onToggleSelected: () => void;
   isEditing: boolean;
   onEdit: () => void;
   onCancel: () => void;
   onPosted: () => void;
+  onDismiss: () => void;
 }
 
 function FindingRow({
@@ -616,11 +656,13 @@ function FindingRow({
   prId,
   isPosted,
   isSelected,
+  isDismissed,
   onToggleSelected,
   isEditing,
   onEdit,
   onCancel,
   onPosted,
+  onDismiss,
 }: FindingRowProps) {
   const jumpToFinding = () => {
     if (!finding.filePath) return;
@@ -638,12 +680,16 @@ function FindingRow({
   };
   const canJump = !!finding.filePath;
   return (
-    <li class="text-xs border border-gray-200 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-900">
+    <li
+      class={`text-xs border border-gray-200 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-900 ${
+        isDismissed ? "opacity-50" : ""
+      }`}
+    >
       <div class="flex items-start gap-2 mb-1">
         <input
           type="checkbox"
           checked={isSelected}
-          disabled={isPosted}
+          disabled={isPosted || isDismissed}
           onChange={onToggleSelected}
           aria-label={isPosted ? "Already posted" : "Select to post"}
           title={isPosted ? "Already posted" : "Select to post"}
@@ -700,16 +746,29 @@ function FindingRow({
       </div>
 
       {!isEditing && (
-        <div class="flex justify-end mt-1">
+        <div class="flex justify-end items-center gap-2 mt-1">
           {isPosted ? (
             <span class="text-[11px] text-green-600 dark:text-green-400">Posted ✓</span>
+          ) : isDismissed ? (
+            <span class="text-[11px] text-gray-500 dark:text-gray-400">
+              Dismissed ✓ <span class="text-gray-400">(suppressed next run)</span>
+            </span>
           ) : (
-            <button
-              onClick={onEdit}
-              class="text-[11px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
-            >
-              Create comment
-            </button>
+            <>
+              <button
+                onClick={onDismiss}
+                title="Dismiss this finding — it won't be suggested again on this PR"
+                class="text-[11px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Dismiss
+              </button>
+              <button
+                onClick={onEdit}
+                class="text-[11px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Create comment
+              </button>
+            </>
           )}
         </div>
       )}
@@ -782,6 +841,15 @@ function FindingEditor({
         lineEnd,
         text,
       );
+      // Capture the verdict: edited if the reviewer changed the wording before
+      // posting, otherwise accepted as-is. Best-effort — don't fail the post.
+      recordFindingVerdict(
+        projectId,
+        repoId,
+        prId,
+        text.trim() === finding.comment.trim() ? "accepted" : "edited",
+        finding,
+      ).catch(() => {});
       // Notify PRDetail so its Comments pane re-fetches threads — without this
       // the comment lands in ADO but never appears in the diff view.
       threadsRefreshTick.value = threadsRefreshTick.value + 1;

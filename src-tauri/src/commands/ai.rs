@@ -45,6 +45,9 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
     let auto_vote_on_blocking =
         crate::ai::read_auto_vote_on_blocking(&db).map_err(|e: crate::AppError| e.to_string())?;
 
+    let incremental_review =
+        crate::ai::read_incremental_review(&db).map_err(|e: crate::AppError| e.to_string())?;
+
     Ok(AiSettingsNoKey {
         provider,
         endpoint,
@@ -57,6 +60,7 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         confidence_threshold,
         blocking_confidence,
         auto_vote_on_blocking,
+        incremental_review,
     })
 }
 
@@ -75,6 +79,7 @@ pub async fn save_ai_settings(
     confidence_threshold: u8,
     blocking_confidence: u8,
     auto_vote_on_blocking: bool,
+    incremental_review: bool,
 ) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
@@ -147,6 +152,12 @@ pub async fn save_ai_settings(
         &db,
         "ai_auto_vote_on_blocking",
         if auto_vote_on_blocking { "true" } else { "false" },
+    )
+    .map_err(|e: crate::AppError| e.to_string())?;
+    crate::cache::set_setting(
+        &db,
+        "ai_incremental_review",
+        if incremental_review { "true" } else { "false" },
     )
     .map_err(|e: crate::AppError| e.to_string())?;
 

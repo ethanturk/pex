@@ -681,6 +681,30 @@ pub async fn run_review(
             .then(a.line_start.cmp(&b.line_start))
     });
 
+    // Suppression memory: drop findings the reviewer previously dismissed on
+    // this PR so they don't re-surface on the next iteration.
+    let dismissed = db
+        .lock()
+        .ok()
+        .and_then(|c| crate::review::feedback::dismissed_fingerprints(&c, &input.pr_key).ok())
+        .unwrap_or_default();
+    let suppressed = if dismissed.is_empty() {
+        0
+    } else {
+        let before = findings.len();
+        findings.retain(|f| {
+            let fp = crate::review::feedback::fingerprint(&f.file_path, &f.comment);
+            !dismissed.contains(&fp)
+        });
+        before - findings.len()
+    };
+    if suppressed > 0 {
+        eprintln!(
+            "[review] suppressed {} previously-dismissed finding(s) for {}",
+            suppressed, input.pr_key
+        );
+    }
+
     let final_messages = vec![
         ChatMessage {
             role: ChatRole::System,
@@ -713,6 +737,7 @@ pub async fn run_review(
         serde_json::json!({
             "totalFiles": file_entries.len(),
             "findingsCount": findings.len(),
+            "suppressed": suppressed,
         }),
     );
 

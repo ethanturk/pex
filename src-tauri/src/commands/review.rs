@@ -19,6 +19,64 @@ fn read_diff_fetch_concurrency(db: &std::sync::Mutex<rusqlite::Connection>) -> u
     .max(1) as usize
 }
 
+/// When incremental review is enabled and this PR has been reviewed before,
+/// narrow `all_paths` to just the files changed since the last reviewed
+/// iteration. Falls back to the full set whenever incremental can't safely
+/// apply (disabled, no prior iteration, no forward delta, or the delta doesn't
+/// intersect the current file list) so we never silently skip everything.
+async fn incremental_paths(
+    state: &AppState,
+    client: &crate::ado::AdoClient,
+    pr_key: &str,
+    project_id: &str,
+    repo_id: &str,
+    pr_id: i64,
+    iteration: i32,
+    all_paths: Vec<String>,
+) -> Vec<String> {
+    let (enabled, last) = match state.db.lock() {
+        Ok(db) => (
+            crate::ai::read_incremental_review(&db).unwrap_or(false),
+            crate::review::feedback::get_last_reviewed_iteration(&db, pr_key),
+        ),
+        Err(_) => (false, None),
+    };
+    if !enabled {
+        return all_paths;
+    }
+    let Some(last) = last else {
+        return all_paths;
+    };
+    if last >= iteration {
+        return all_paths;
+    }
+    let changed = match client
+        .changed_paths_since_iteration(project_id, repo_id, pr_id, last, iteration)
+        .await
+    {
+        Ok(c) if !c.is_empty() => c,
+        _ => return all_paths,
+    };
+    let filtered: Vec<String> = all_paths
+        .iter()
+        .filter(|p| changed.contains(p.trim_start_matches('/')))
+        .cloned()
+        .collect();
+    if filtered.is_empty() {
+        all_paths
+    } else {
+        filtered
+    }
+}
+
+/// Persist the iteration we just reviewed so the next incremental run knows the
+/// baseline. Best-effort: a failure here only means the next run is non-incremental.
+fn remember_reviewed_iteration(state: &AppState, pr_key: &str, iteration: i32) {
+    if let Ok(db) = state.db.lock() {
+        let _ = crate::review::feedback::set_last_reviewed_iteration(&db, pr_key, iteration);
+    }
+}
+
 async fn latest_iteration(
     client: &crate::ado::AdoClient,
     project_id: &str,
@@ -211,12 +269,29 @@ pub async fn start_review(
     };
 
     let iteration = latest_iteration(&client, &project_id, &repo_id, pr_id).await;
+    let pr_key = format!("{}/{}/{}/{}", org_url, project_id, repo_id, pr_id);
 
     // Fetch PR files
     let pr_files_result = client
         .get_pr_files(&project_id, &repo_id, pr_id, iteration)
         .await
         .map_err(|e| e.to_string())?;
+
+    let paths = incremental_paths(
+        &state,
+        &client,
+        &pr_key,
+        &project_id,
+        &repo_id,
+        pr_id,
+        iteration,
+        pr_files_result
+            .files
+            .iter()
+            .map(|f| f.item.path.clone())
+            .collect(),
+    )
+    .await;
 
     let file_inputs = fetch_file_inputs(
         &app,
@@ -227,11 +302,7 @@ pub async fn start_review(
         &repo_id,
         pr_id,
         iteration,
-        pr_files_result
-            .files
-            .iter()
-            .map(|f| f.item.path.clone())
-            .collect(),
+        paths,
         read_diff_fetch_concurrency(&state.db),
         true,
     )
@@ -256,7 +327,7 @@ pub async fn start_review(
     };
 
     let input = ReviewInput {
-        pr_key: format!("{}/{}/{}/{}", org_url, project_id, repo_id, pr_id),
+        pr_key: pr_key.clone(),
         pr_title,
         files: file_inputs,
         standards,
@@ -274,6 +345,9 @@ pub async fn start_review(
     let output = engine::run_review(app.clone(), provider, input, &state.db, cancel)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Record the baseline for the next incremental run.
+    remember_reviewed_iteration(&state, &pr_key, iteration);
 
     let _ = app.emit(
         "review-done",
@@ -320,10 +394,27 @@ pub async fn start_review_post(
     };
 
     let iteration = latest_iteration(&client, &project_id, &repo_id, pr_id).await;
+    let pr_key = format!("{}/{}/{}/{}", org_url, project_id, repo_id, pr_id);
     let pr_files_result = client
         .get_pr_files(&project_id, &repo_id, pr_id, iteration)
         .await
         .map_err(|e| e.to_string())?;
+
+    let paths = incremental_paths(
+        &state,
+        &client,
+        &pr_key,
+        &project_id,
+        &repo_id,
+        pr_id,
+        iteration,
+        pr_files_result
+            .files
+            .iter()
+            .map(|f| f.item.path.clone())
+            .collect(),
+    )
+    .await;
 
     let file_inputs = fetch_file_inputs(
         &app,
@@ -334,11 +425,7 @@ pub async fn start_review_post(
         &repo_id,
         pr_id,
         iteration,
-        pr_files_result
-            .files
-            .iter()
-            .map(|f| f.item.path.clone())
-            .collect(),
+        paths,
         read_diff_fetch_concurrency(&state.db),
         false,
     )
@@ -361,7 +448,7 @@ pub async fn start_review_post(
     };
 
     let input = ReviewInput {
-        pr_key: format!("{}/{}/{}/{}", org_url, project_id, repo_id, pr_id),
+        pr_key: pr_key.clone(),
         pr_title,
         files: file_inputs,
         standards,
@@ -376,6 +463,9 @@ pub async fn start_review_post(
     let output = engine::run_review(app.clone(), provider, input, &state.db, cancel)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Record the baseline for the next incremental run.
+    remember_reviewed_iteration(&state, &pr_key, iteration);
 
     // Post to ADO
     let _ = app.emit(

@@ -147,7 +147,9 @@ ranking and the rollup presentation.
 
 ---
 
-## Phase 3 — Make it TRUSTWORTHY (the feedback loop)
+## Phase 3 — Make it TRUSTWORTHY (the feedback loop) ✅ shipped
+
+Implemented — see [`design/phase-3-trust-loop.md`](./design/phase-3-trust-loop.md).
 
 What compounds. Today nothing learns when a reviewer dismisses a finding.
 

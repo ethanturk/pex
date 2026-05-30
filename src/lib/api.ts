@@ -314,6 +314,8 @@ export interface AiSettingsNoKey {
   /// Opt-in: cast a "wait for author" vote when posting a review that has at
   /// least one blocking finding.
   autoVoteOnBlocking: boolean;
+  /// Opt-in: review only files changed since the last reviewed iteration.
+  incrementalReview: boolean;
 }
 
 export async function getAiSettings(): Promise<AiSettingsNoKey> {
@@ -333,6 +335,7 @@ export async function saveAiSettings(
   confidenceThreshold: number,
   blockingConfidence: number,
   autoVoteOnBlocking: boolean,
+  incrementalReview: boolean,
 ): Promise<void> {
   return invoke("save_ai_settings", {
     provider,
@@ -347,7 +350,60 @@ export async function saveAiSettings(
     confidenceThreshold,
     blockingConfidence,
     autoVoteOnBlocking,
+    incrementalReview,
   });
+}
+
+// ---- Review feedback loop (Phase 3) ----
+
+export type Verdict = "accepted" | "dismissed" | "edited";
+
+export interface CalibrationBucket {
+  label: string;
+  accepted: number;
+  dismissed: number;
+  edited: number;
+  acceptRate: number | null;
+}
+
+export interface CalibrationStats {
+  total: number;
+  accepted: number;
+  dismissed: number;
+  edited: number;
+  acceptRate: number | null;
+  bySeverity: CalibrationBucket[];
+  byTier: CalibrationBucket[];
+}
+
+/// Record a reviewer's verdict on a finding. Dismissed findings are suppressed
+/// on future review runs for this PR.
+export async function recordFindingVerdict(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  verdict: Verdict,
+  finding: ReviewFinding,
+): Promise<void> {
+  return invoke("record_finding_verdict", {
+    projectId,
+    repoId,
+    prId,
+    verdict,
+    filePath: finding.filePath ?? "",
+    comment: finding.comment,
+    severity: finding.severity,
+    tier: finding.tier,
+    confidence: finding.confidence,
+  });
+}
+
+export async function getReviewCalibration(): Promise<CalibrationStats> {
+  return invoke<CalibrationStats>("get_review_calibration");
+}
+
+export async function clearReviewFeedback(): Promise<void> {
+  return invoke("clear_review_feedback");
 }
 
 export interface ReviewHunkContext {

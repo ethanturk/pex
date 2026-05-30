@@ -178,6 +178,8 @@ pub struct AiSettingsNoKey {
     /// Opt-in: cast a "wait for author" vote when posting a review that has at
     /// least one Blocking finding.
     pub auto_vote_on_blocking: bool,
+    /// Opt-in: review only files changed since the last reviewed iteration.
+    pub incremental_review: bool,
 }
 
 /// Read the TCP/TLS connect timeout (seconds), defaulting if missing.
@@ -265,6 +267,16 @@ pub fn read_auto_vote_on_blocking(conn: &rusqlite::Connection) -> Result<bool, A
     Ok(raw
         .map(|s| s == "true")
         .unwrap_or(DEFAULT_AUTO_VOTE_ON_BLOCKING))
+}
+
+/// Whether reviews are incremental: on a re-review, only files changed since the
+/// last reviewed iteration are reviewed. Defaults to off (always full review).
+pub const DEFAULT_INCREMENTAL_REVIEW: bool = false;
+
+/// Read whether incremental review is enabled.
+pub fn read_incremental_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_incremental_review")?;
+    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_INCREMENTAL_REVIEW))
 }
 
 /// Read the configured per-file size cap for injected AGENTS.md / STYLE.md content.

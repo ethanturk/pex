@@ -8,7 +8,10 @@ import {
   resetAiPrompt,
   saveAiPromptModel,
   listAiModels,
+  getReviewCalibration,
+  clearReviewFeedback,
   type AiPromptInfo,
+  type CalibrationStats,
 } from "@/lib/api";
 
 interface Props {
@@ -16,7 +19,7 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "ai" | "prompts" | "pr-list";
+type Tab = "ai" | "prompts" | "calibration" | "pr-list";
 
 const DEFAULT_STANDARDS_MAX_CHARS = 8000;
 const MIN_STANDARDS_MAX_CHARS = 500;
@@ -44,6 +47,7 @@ export function AiSettings({ open, onClose }: Props) {
   const [confidenceThreshold, setConfidenceThreshold] = useState(80);
   const [blockingConfidence, setBlockingConfidence] = useState(85);
   const [autoVoteOnBlocking, setAutoVoteOnBlocking] = useState(false);
+  const [incrementalReview, setIncrementalReview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -59,11 +63,48 @@ export function AiSettings({ open, onClose }: Props) {
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [modelsRefreshing, setModelsRefreshing] = useState(false);
 
+  // ---- Calibration tab ----
+  const [calibration, setCalibration] = useState<CalibrationStats | null>(null);
+  const [calibrationLoading, setCalibrationLoading] = useState(false);
+
   useEffect(() => {
     if (open) {
       loadSettings();
     }
   }, [open]);
+
+  const loadCalibration = async () => {
+    setCalibrationLoading(true);
+    try {
+      setCalibration(await getReviewCalibration());
+    } catch {
+      setCalibration(null);
+    } finally {
+      setCalibrationLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (open && tab === "calibration") {
+      loadCalibration();
+    }
+  }, [open, tab]);
+
+  const handleClearCalibration = async () => {
+    if (
+      !window.confirm(
+        "Clear all recorded review feedback? This resets calibration metrics and forgets every dismissed finding (they may be suggested again).",
+      )
+    ) {
+      return;
+    }
+    try {
+      await clearReviewFeedback();
+      await loadCalibration();
+    } catch {
+      // ignore — the next load will reflect reality
+    }
+  };
 
   const loadSettings = async () => {
     try {
@@ -92,6 +133,7 @@ export function AiSettings({ open, onClose }: Props) {
         Number.isFinite(settings.blockingConfidence) ? settings.blockingConfidence : 85,
       );
       setAutoVoteOnBlocking(!!settings.autoVoteOnBlocking);
+      setIncrementalReview(!!settings.incrementalReview);
       setApiKey("");
       setPrompts(ps);
       setPromptDrafts(Object.fromEntries(ps.map((p) => [p.key, p.value])));
@@ -185,7 +227,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview);
       setMessage({ text: "AI settings saved.", ok: true });
     } catch (e: any) {
       setMessage({ text: String(e), ok: false });
@@ -201,7 +243,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview);
       const models = await listAiModels(true);
       setAvailableModels(models);
 
@@ -209,7 +251,7 @@ export function AiSettings({ open, onClose }: Props) {
       if (selectedModel !== model) {
         setModel(selectedModel);
         if (selectedModel) {
-          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking);
+          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview);
           setMessage({
             text: `Connected. Model changed to ${selectedModel} because the previous model is not available from this provider.`,
             ok: true,
@@ -261,6 +303,7 @@ export function AiSettings({ open, onClose }: Props) {
         <div class="flex border-b border-gray-200 dark:border-gray-700 px-5">
           <TabButton label="AI" active={tab === "ai"} onClick={() => setTab("ai")} />
           <TabButton label="Prompts" active={tab === "prompts"} onClick={() => setTab("prompts")} />
+          <TabButton label="Calibration" active={tab === "calibration"} onClick={() => setTab("calibration")} />
           <TabButton label="PR List" active={tab === "pr-list"} onClick={() => setTab("pr-list")} />
         </div>
 
@@ -522,6 +565,23 @@ export function AiSettings({ open, onClose }: Props) {
                     </span>
                   </span>
                 </label>
+
+                <label class="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={incrementalReview}
+                    onChange={(e) => setIncrementalReview(e.currentTarget.checked)}
+                    class="mt-1 accent-accent"
+                  />
+                  <span>
+                    <span class="block text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Incremental review
+                    </span>
+                    <span class="block text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      On a re-review, only review files <strong>changed since the last reviewed iteration</strong> of the PR, instead of the whole PR again. The first review of a PR is always full. Off by default.
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <button
@@ -657,6 +717,15 @@ export function AiSettings({ open, onClose }: Props) {
             </section>
           )}
 
+          {tab === "calibration" && (
+            <CalibrationPanel
+              stats={calibration}
+              loading={calibrationLoading}
+              onRefresh={loadCalibration}
+              onClear={handleClearCalibration}
+            />
+          )}
+
           {tab === "pr-list" && (
             <section class="space-y-4">
               <label class="flex items-start gap-3">
@@ -719,5 +788,116 @@ function Field({ label, children }: { label: string; children: preact.ComponentC
       <span class="text-xs text-gray-500 dark:text-gray-400 mb-1 block">{label}</span>
       {children}
     </label>
+  );
+}
+
+function formatRate(rate: number | null): string {
+  return rate == null ? "—" : `${rate.toFixed(0)}%`;
+}
+
+function CalibrationPanel({
+  stats,
+  loading,
+  onRefresh,
+  onClear,
+}: {
+  stats: CalibrationStats | null;
+  loading: boolean;
+  onRefresh: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <section class="space-y-4">
+      <div class="flex items-start justify-between gap-3">
+        <p class="text-xs text-gray-500 dark:text-gray-400">
+          How review findings have been acted on, aggregated across all PRs. Use the accept rates to tune the confidence threshold and the critical line: a bucket that's mostly dismissed is noise you can raise the floor on.
+        </p>
+        <div class="flex items-center gap-2 shrink-0">
+          <button
+            onClick={onRefresh}
+            disabled={loading}
+            class="px-2.5 py-1 border border-gray-300 dark:border-gray-600 rounded-lg text-[11px] hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+          >
+            {loading ? "Loading…" : "Refresh"}
+          </button>
+          <button
+            onClick={onClear}
+            disabled={loading || !stats || stats.total === 0}
+            class="px-2.5 py-1 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg text-[11px] hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+
+      {!stats || stats.total === 0 ? (
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+          No feedback recorded yet. As you post or dismiss AI review findings, accept rates appear here.
+        </p>
+      ) : (
+        <>
+          <div class="grid grid-cols-4 gap-2 text-center">
+            <Stat label="Acted on" value={String(stats.total)} />
+            <Stat label="Accepted" value={String(stats.accepted)} />
+            <Stat label="Edited" value={String(stats.edited)} />
+            <Stat label="Dismissed" value={String(stats.dismissed)} />
+          </div>
+          <div class="text-sm">
+            Overall accept rate:{" "}
+            <strong>{formatRate(stats.acceptRate)}</strong>
+            <span class="text-xs text-gray-500 dark:text-gray-400"> (accepted + edited)</span>
+          </div>
+
+          <CalibrationTable title="By severity" buckets={stats.bySeverity} />
+          <CalibrationTable title="By tier" buckets={stats.byTier} />
+        </>
+      )}
+    </section>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div class="rounded-lg border border-gray-200 dark:border-gray-700 py-2">
+      <div class="text-lg font-semibold tabular-nums">{value}</div>
+      <div class="text-[10px] uppercase tracking-wide text-gray-500">{label}</div>
+    </div>
+  );
+}
+
+function CalibrationTable({
+  title,
+  buckets,
+}: {
+  title: string;
+  buckets: CalibrationStats["bySeverity"];
+}) {
+  if (buckets.length === 0) return null;
+  return (
+    <div>
+      <div class="text-[10px] uppercase tracking-wide text-gray-400 mb-1">{title}</div>
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="text-left text-gray-500">
+            <th class="font-medium py-1">Bucket</th>
+            <th class="font-medium py-1 text-right">Accepted</th>
+            <th class="font-medium py-1 text-right">Edited</th>
+            <th class="font-medium py-1 text-right">Dismissed</th>
+            <th class="font-medium py-1 text-right">Accept rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {buckets.map((b) => (
+            <tr key={b.label} class="border-t border-gray-100 dark:border-gray-800">
+              <td class="py-1 capitalize">{b.label || "—"}</td>
+              <td class="py-1 text-right tabular-nums">{b.accepted}</td>
+              <td class="py-1 text-right tabular-nums">{b.edited}</td>
+              <td class="py-1 text-right tabular-nums">{b.dismissed}</td>
+              <td class="py-1 text-right tabular-nums">{formatRate(b.acceptRate)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
