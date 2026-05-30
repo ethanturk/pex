@@ -42,6 +42,7 @@ export function AiSettings({ open, onClose }: Props) {
   const [standardsMaxChars, setStandardsMaxChars] = useState(String(DEFAULT_STANDARDS_MAX_CHARS));
   const [retryCount, setRetryCount] = useState(1);
   const [confidenceThreshold, setConfidenceThreshold] = useState(80);
+  const [blockingConfidence, setBlockingConfidence] = useState(85);
   const [autoVoteOnBlocking, setAutoVoteOnBlocking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
@@ -85,6 +86,10 @@ export function AiSettings({ open, onClose }: Props) {
       // 0 is a valid threshold ("surface everything"), so keep it as-is.
       setConfidenceThreshold(
         Number.isFinite(settings.confidenceThreshold) ? settings.confidenceThreshold : 80,
+      );
+      // 0 is a valid critical line ("every critical blocks"), so keep it as-is.
+      setBlockingConfidence(
+        Number.isFinite(settings.blockingConfidence) ? settings.blockingConfidence : 85,
       );
       setAutoVoteOnBlocking(!!settings.autoVoteOnBlocking);
       setApiKey("");
@@ -180,7 +185,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, autoVoteOnBlocking);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking);
       setMessage({ text: "AI settings saved.", ok: true });
     } catch (e: any) {
       setMessage({ text: String(e), ok: false });
@@ -196,7 +201,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, autoVoteOnBlocking);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking);
       const models = await listAiModels(true);
       setAvailableModels(models);
 
@@ -204,7 +209,7 @@ export function AiSettings({ open, onClose }: Props) {
       if (selectedModel !== model) {
         setModel(selectedModel);
         if (selectedModel) {
-          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, autoVoteOnBlocking);
+          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking);
           setMessage({
             text: `Connected. Model changed to ${selectedModel} because the previous model is not available from this provider.`,
             ok: true,
@@ -475,6 +480,29 @@ export function AiSettings({ open, onClose }: Props) {
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Minimum confidence a PR review finding must reach to be surfaced. The default <strong>80</strong> filters out likely false positives and low-impact nits. Lower it to see more (noisier) findings; raise it for only the highest-confidence issues. Set to <strong>0</strong> to surface everything.
+                  </p>
+                </Field>
+
+                <Field label="Critical line — blocking confidence (0–100)">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={blockingConfidence}
+                    onInput={(e) => {
+                      const n = parseInt(e.currentTarget.value, 10);
+                      // 0 is deliberate ("every critical blocks"); clamp to 0–100.
+                      if (!Number.isFinite(n) || n < 0) {
+                        setBlockingConfidence(0);
+                      } else {
+                        setBlockingConfidence(Math.min(100, n));
+                      }
+                    }}
+                    placeholder="85"
+                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                  />
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    The confidence a <strong>critical</strong> finding must reach to be tiered <strong>Blocking</strong> (pulled to the top and posted as its own comment). Critical findings below this line are still surfaced as <strong>Should fix</strong>. Default <strong>85</strong>. Set to <strong>0</strong> to treat every critical finding as blocking.
                   </p>
                 </Field>
 

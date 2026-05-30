@@ -39,6 +39,9 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
     let confidence_threshold =
         crate::ai::read_confidence_threshold(&db).map_err(|e: crate::AppError| e.to_string())?;
 
+    let blocking_confidence =
+        crate::ai::read_blocking_confidence(&db).map_err(|e: crate::AppError| e.to_string())?;
+
     let auto_vote_on_blocking =
         crate::ai::read_auto_vote_on_blocking(&db).map_err(|e: crate::AppError| e.to_string())?;
 
@@ -52,6 +55,7 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         standards_max_chars,
         retry_count,
         confidence_threshold,
+        blocking_confidence,
         auto_vote_on_blocking,
     })
 }
@@ -69,6 +73,7 @@ pub async fn save_ai_settings(
     standards_max_chars: u32,
     retry_count: u32,
     confidence_threshold: u8,
+    blocking_confidence: u8,
     auto_vote_on_blocking: bool,
 ) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -132,6 +137,11 @@ pub async fn save_ai_settings(
     // upper bound to 100.
     let threshold = confidence_threshold.min(crate::ai::MAX_CONFIDENCE_THRESHOLD);
     crate::cache::set_setting(&db, "ai_confidence_threshold", &threshold.to_string())
+        .map_err(|e: crate::AppError| e.to_string())?;
+    // blocking_confidence (the "critical line"): 0 is valid (every critical
+    // blocks); just clamp the upper bound.
+    let blocking = blocking_confidence.min(crate::ai::MAX_BLOCKING_CONFIDENCE);
+    crate::cache::set_setting(&db, "ai_blocking_confidence", &blocking.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(
         &db,

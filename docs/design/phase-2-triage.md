@@ -35,11 +35,16 @@ the same tier — predictability is what makes triage trustworthy.
 
 | Condition | Tier |
 |-----------|------|
-| Critical, confidence ≥ 85 | **Blocking** |
-| Critical, confidence < 85 | **Should-fix** |
+| Critical, confidence ≥ critical line | **Blocking** |
+| Critical, confidence < critical line | **Should-fix** |
 | Non-critical, no line anchor | **FYI** |
 | Moderate, confidence ≥ 80 | **Should-fix** |
 | otherwise (Minor, or Moderate < 80) | **Nit** |
+
+The **critical line** — the confidence at/above which a Critical finding is
+Blocking — is user-configurable (`ai_blocking_confidence`, default 85, surfaced
+in AI settings; 0 makes every Critical finding block). It is resolved once per
+run and passed into `tier_for`.
 
 Critical findings are always actionable (never demoted to a nit or FYI), even
 without a line anchor — a critical architectural issue matters regardless of
@@ -95,8 +100,9 @@ auto-voting is a visible side effect.
 
 - No learning from accept/dismiss yet — that is Phase 3 (the trust loop). The
   tiers here are computed fresh each run, not tuned by feedback.
-- Thresholds for the tier cutoffs (85 / 80) are constants, not user settings,
-  to avoid sprawl; they can be promoted later if calibration data justifies it.
+- The critical line (Critical → Blocking) is user-configurable. The Moderate →
+  Should-fix cutoff (80) remains a constant for now; it can be promoted to a
+  setting later if calibration data justifies it.
 - The final-synthesis prose is unchanged; triage acts on the structured
   findings, which is where posting and the sidebar read from.
 

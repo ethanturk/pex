@@ -98,8 +98,9 @@ and **FYI** — and ordered blocking-first. Blocking and should-fix findings are
 pulled forward (shown expanded, pre-selected for posting, and posted as
 individual comments); nits and FYIs are pushed back (collapsed in the sidebar
 and posted as a single rollup comment) so they never bury the important issues.
-Optionally, posting a review that contains a blocking finding can also cast a
-"wait for author" vote.
+The **critical line** — how confident the reviewer must be before a critical
+finding counts as blocking — is configurable in AI settings. Optionally, posting
+a review that contains a blocking finding can also cast a "wait for author" vote.
 
 ## Features
 

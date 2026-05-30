@@ -308,6 +308,9 @@ export interface AiSettingsNoKey {
   /// Minimum confidence (0–100) a finding must reach to be reported.
   /// 0 surfaces everything; higher values raise the precision bar.
   confidenceThreshold: number;
+  /// Confidence (0–100) at/above which a Critical finding is tiered Blocking
+  /// (the "critical line"). Below it, criticals are Should-fix.
+  blockingConfidence: number;
   /// Opt-in: cast a "wait for author" vote when posting a review that has at
   /// least one blocking finding.
   autoVoteOnBlocking: boolean;
@@ -328,6 +331,7 @@ export async function saveAiSettings(
   standardsMaxChars: number,
   retryCount: number,
   confidenceThreshold: number,
+  blockingConfidence: number,
   autoVoteOnBlocking: boolean,
 ): Promise<void> {
   return invoke("save_ai_settings", {
@@ -341,6 +345,7 @@ export async function saveAiSettings(
     standardsMaxChars,
     retryCount,
     confidenceThreshold,
+    blockingConfidence,
     autoVoteOnBlocking,
   });
 }

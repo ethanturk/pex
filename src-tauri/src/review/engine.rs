@@ -106,12 +106,18 @@ pub fn default_tier() -> Tier {
 }
 
 /// Compute the triage tier for a finding. Critical findings are always
-/// actionable (Blocking when confident, else Should-fix) regardless of anchor;
-/// non-critical findings with no line anchor are informational (FYI).
-pub fn tier_for(severity: Severity, confidence: u8, line_start: Option<usize>) -> Tier {
+/// actionable (Blocking when confidence is at/above the configurable
+/// `blocking_confidence` "critical line", else Should-fix) regardless of
+/// anchor; non-critical findings with no line anchor are informational (FYI).
+pub fn tier_for(
+    severity: Severity,
+    confidence: u8,
+    line_start: Option<usize>,
+    blocking_confidence: u8,
+) -> Tier {
     match severity {
         Severity::Critical => {
-            if confidence >= 85 {
+            if confidence >= blocking_confidence {
                 Tier::Blocking
             } else {
                 Tier::ShouldFix
@@ -309,6 +315,13 @@ pub async fn run_review(
         Ok(c) => crate::ai::read_confidence_threshold(&c)
             .unwrap_or(crate::ai::DEFAULT_CONFIDENCE_THRESHOLD),
         Err(_) => crate::ai::DEFAULT_CONFIDENCE_THRESHOLD,
+    };
+    // The "critical line": confidence at/above which a Critical finding tiers
+    // Blocking. Resolved once per run so it stays stable across the synthesis.
+    let blocking_confidence = match db.lock() {
+        Ok(c) => crate::ai::read_blocking_confidence(&c)
+            .unwrap_or(crate::ai::DEFAULT_BLOCKING_CONFIDENCE),
+        Err(_) => crate::ai::DEFAULT_BLOCKING_CONFIDENCE,
     };
 
     // Resolve specialist system prompts + per-specialist model overrides once for
@@ -652,7 +665,7 @@ pub async fn run_review(
                 file_path: file_path.clone(),
                 severity: f.severity,
                 confidence: f.confidence,
-                tier: tier_for(f.severity, f.confidence, f.line_start),
+                tier: tier_for(f.severity, f.confidence, f.line_start, blocking_confidence),
                 line_start: f.line_start,
                 line_end: f.line_end,
                 comment: f.comment.clone(),
@@ -1238,30 +1251,45 @@ mod tests {
         assert_eq!(agg.findings.len(), 2);
     }
 
+    // Default "critical line" used by most tier tests.
+    const BLOCK: u8 = crate::ai::DEFAULT_BLOCKING_CONFIDENCE;
+
     #[test]
     fn tier_critical_is_always_actionable() {
-        // Critical with high confidence blocks; lower confidence is still
+        // Critical at/above the critical line blocks; below it is still
         // actionable (should-fix), never demoted to a nit, and never FYI even
         // without a line anchor.
-        assert_eq!(tier_for(Severity::Critical, 90, Some(5)), Tier::Blocking);
-        assert_eq!(tier_for(Severity::Critical, 84, Some(5)), Tier::ShouldFix);
-        assert_eq!(tier_for(Severity::Critical, 99, None), Tier::Blocking);
-        assert!(tier_for(Severity::Critical, 50, None).is_actionable());
+        assert_eq!(tier_for(Severity::Critical, 90, Some(5), BLOCK), Tier::Blocking);
+        assert_eq!(tier_for(Severity::Critical, 84, Some(5), BLOCK), Tier::ShouldFix);
+        assert_eq!(tier_for(Severity::Critical, 99, None, BLOCK), Tier::Blocking);
+        assert!(tier_for(Severity::Critical, 50, None, BLOCK).is_actionable());
+    }
+
+    #[test]
+    fn tier_critical_line_is_configurable() {
+        // A confidence-80 critical is should-fix at the default line (85) but
+        // blocking once the line is lowered to 80; raising it past the score
+        // pushes it back to should-fix.
+        assert_eq!(tier_for(Severity::Critical, 80, Some(5), 85), Tier::ShouldFix);
+        assert_eq!(tier_for(Severity::Critical, 80, Some(5), 80), Tier::Blocking);
+        assert_eq!(tier_for(Severity::Critical, 80, Some(5), 95), Tier::ShouldFix);
+        // A line of 0 makes every critical finding block.
+        assert_eq!(tier_for(Severity::Critical, 1, Some(5), 0), Tier::Blocking);
     }
 
     #[test]
     fn tier_moderate_splits_on_confidence_and_anchor() {
-        assert_eq!(tier_for(Severity::Moderate, 85, Some(5)), Tier::ShouldFix);
-        assert_eq!(tier_for(Severity::Moderate, 79, Some(5)), Tier::Nit);
+        assert_eq!(tier_for(Severity::Moderate, 85, Some(5), BLOCK), Tier::ShouldFix);
+        assert_eq!(tier_for(Severity::Moderate, 79, Some(5), BLOCK), Tier::Nit);
         // Non-critical with no line anchor is informational.
-        assert_eq!(tier_for(Severity::Moderate, 95, None), Tier::Fyi);
+        assert_eq!(tier_for(Severity::Moderate, 95, None, BLOCK), Tier::Fyi);
     }
 
     #[test]
     fn tier_minor_is_nit_or_fyi() {
-        assert_eq!(tier_for(Severity::Minor, 100, Some(5)), Tier::Nit);
-        assert_eq!(tier_for(Severity::Minor, 100, None), Tier::Fyi);
-        assert!(!tier_for(Severity::Minor, 100, Some(5)).is_actionable());
+        assert_eq!(tier_for(Severity::Minor, 100, Some(5), BLOCK), Tier::Nit);
+        assert_eq!(tier_for(Severity::Minor, 100, None, BLOCK), Tier::Fyi);
+        assert!(!tier_for(Severity::Minor, 100, Some(5), BLOCK).is_actionable());
     }
 
     #[test]

@@ -121,6 +121,13 @@ pub const MAX_STANDARDS_MAX_CHARS: u32 = 65535;
 pub const DEFAULT_CONFIDENCE_THRESHOLD: u8 = 80;
 pub const MAX_CONFIDENCE_THRESHOLD: u8 = 100;
 
+/// Confidence (0–100) at or above which a Critical finding is tiered as
+/// Blocking rather than Should-fix — the "critical line." Configurable so teams
+/// can decide how sure the reviewer must be before a critical issue gates the
+/// PR. Critical findings below this line are still actionable (Should-fix).
+pub const DEFAULT_BLOCKING_CONFIDENCE: u8 = 85;
+pub const MAX_BLOCKING_CONFIDENCE: u8 = 100;
+
 /// Hard ceiling (characters) on the surrounding-file context injected into
 /// hunk reviews and the file adjudicator. Bounds token cost and latency on
 /// large files while still letting reviewers see definitions / callers that
@@ -165,6 +172,9 @@ pub struct AiSettingsNoKey {
     pub retry_count: u32,
     /// Minimum confidence (0–100) a finding must reach to be reported.
     pub confidence_threshold: u8,
+    /// Confidence (0–100) at/above which a Critical finding is tiered Blocking
+    /// (the "critical line").
+    pub blocking_confidence: u8,
     /// Opt-in: cast a "wait for author" vote when posting a review that has at
     /// least one Blocking finding.
     pub auto_vote_on_blocking: bool,
@@ -235,6 +245,17 @@ pub fn read_confidence_threshold(conn: &rusqlite::Connection) -> Result<u8, AppE
         .and_then(|s| s.parse::<u8>().ok())
         .map(|n| n.min(MAX_CONFIDENCE_THRESHOLD))
         .unwrap_or(DEFAULT_CONFIDENCE_THRESHOLD))
+}
+
+/// Read the "critical line": the confidence at/above which a Critical finding
+/// is tiered Blocking. 0 means every Critical finding blocks; just clamp the
+/// upper bound.
+pub fn read_blocking_confidence(conn: &rusqlite::Connection) -> Result<u8, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_blocking_confidence")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|n| n.min(MAX_BLOCKING_CONFIDENCE))
+        .unwrap_or(DEFAULT_BLOCKING_CONFIDENCE))
 }
 
 /// Read whether posting a review should auto-cast a "wait for author" vote when
