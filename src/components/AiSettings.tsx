@@ -48,6 +48,9 @@ export function AiSettings({ open, onClose }: Props) {
   const [blockingConfidence, setBlockingConfidence] = useState(85);
   const [autoVoteOnBlocking, setAutoVoteOnBlocking] = useState(false);
   const [incrementalReview, setIncrementalReview] = useState(false);
+  const [autoReview, setAutoReview] = useState(false);
+  const [autoPostBlocking, setAutoPostBlocking] = useState(false);
+  const [autoPostConfidence, setAutoPostConfidence] = useState(90);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -134,6 +137,11 @@ export function AiSettings({ open, onClose }: Props) {
       );
       setAutoVoteOnBlocking(!!settings.autoVoteOnBlocking);
       setIncrementalReview(!!settings.incrementalReview);
+      setAutoReview(!!settings.autoReview);
+      setAutoPostBlocking(!!settings.autoPostBlocking);
+      setAutoPostConfidence(
+        Number.isFinite(settings.autoPostConfidence) ? settings.autoPostConfidence : 90,
+      );
       setApiKey("");
       setPrompts(ps);
       setPromptDrafts(Object.fromEntries(ps.map((p) => [p.key, p.value])));
@@ -227,7 +235,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence);
       setMessage({ text: "AI settings saved.", ok: true });
     } catch (e: any) {
       setMessage({ text: String(e), ok: false });
@@ -243,7 +251,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence);
       const models = await listAiModels(true);
       setAvailableModels(models);
 
@@ -251,7 +259,7 @@ export function AiSettings({ open, onClose }: Props) {
       if (selectedModel !== model) {
         setModel(selectedModel);
         if (selectedModel) {
-          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview);
+          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence);
           setMessage({
             text: `Connected. Model changed to ${selectedModel} because the previous model is not available from this provider.`,
             ok: true,
@@ -582,6 +590,71 @@ export function AiSettings({ open, onClose }: Props) {
                     </span>
                   </span>
                 </label>
+
+                <div class="pt-2 mt-1 border-t border-gray-200 dark:border-gray-700">
+                  <div class="text-xs font-semibold text-gray-600 dark:text-gray-300 mb-2">
+                    Automation
+                  </div>
+
+                  <label class="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={autoReview}
+                      onChange={(e) => setAutoReview(e.currentTarget.checked)}
+                      class="mt-1 accent-accent"
+                    />
+                    <span>
+                      <span class="block text-sm font-medium text-gray-900 dark:text-gray-100">
+                        Auto-review new iterations
+                      </span>
+                      <span class="block text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        When the PR list loads, automatically run a (Fast) review in the background for any active PR that has a <strong>new iteration</strong> since it was last reviewed. Reviews run one at a time. Off by default — this uses provider quota.
+                      </span>
+                    </span>
+                  </label>
+
+                  <label class="flex items-start gap-3 mt-3">
+                    <input
+                      type="checkbox"
+                      checked={autoPostBlocking}
+                      onChange={(e) => setAutoPostBlocking(e.currentTarget.checked)}
+                      class="mt-1 accent-accent"
+                    />
+                    <span>
+                      <span class="block text-sm font-medium text-gray-900 dark:text-gray-100">
+                        Auto-post high-confidence blocking findings
+                      </span>
+                      <span class="block text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        After an auto-review, automatically post <strong>Blocking</strong> findings at or above the confidence floor below. Everything else waits in the sidebar for you. Off by default — this posts comments unattended.
+                      </span>
+                    </span>
+                  </label>
+
+                  <div class="mt-3">
+                    <Field label="Auto-post confidence floor (0–100)">
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={autoPostConfidence}
+                        disabled={!autoPostBlocking}
+                        onInput={(e) => {
+                          const n = parseInt(e.currentTarget.value, 10);
+                          if (!Number.isFinite(n) || n < 0) {
+                            setAutoPostConfidence(0);
+                          } else {
+                            setAutoPostConfidence(Math.min(100, n));
+                          }
+                        }}
+                        placeholder="90"
+                        class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                      />
+                      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        Only blocking findings this confident are auto-posted. Default <strong>90</strong> — autonomy is earned, so keep this high.
+                      </p>
+                    </Field>
+                  </div>
+                </div>
               </div>
 
               <button

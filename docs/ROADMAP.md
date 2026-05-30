@@ -166,7 +166,9 @@ What compounds. Today nothing learns when a reviewer dismisses a finding.
 
 ---
 
-## Phase 4 — Make it AUTOMATIC (earned autonomy)
+## Phase 4 — Make it AUTOMATIC (earned autonomy) ✅ shipped
+
+Implemented — see [`design/phase-4-automation.md`](./design/phase-4-automation.md).
 
 Safe only *after* Phase 3 proves precision. Trust tiers govern autonomy:
 

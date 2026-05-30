@@ -124,6 +124,8 @@ pub fn run() {
             commands::feedback::record_finding_verdict,
             commands::feedback::get_review_calibration,
             commands::feedback::clear_review_feedback,
+            commands::auto::auto_review_candidates,
+            commands::auto::auto_post_review_findings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

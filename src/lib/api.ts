@@ -316,6 +316,12 @@ export interface AiSettingsNoKey {
   autoVoteOnBlocking: boolean;
   /// Opt-in: review only files changed since the last reviewed iteration.
   incrementalReview: boolean;
+  /// Opt-in: auto-trigger a review on a new PR / iteration.
+  autoReview: boolean;
+  /// Opt-in: after an auto-review, auto-post high-confidence blocking findings.
+  autoPostBlocking: boolean;
+  /// Confidence floor (0–100) for auto-posting a blocking finding.
+  autoPostConfidence: number;
 }
 
 export async function getAiSettings(): Promise<AiSettingsNoKey> {
@@ -336,6 +342,9 @@ export async function saveAiSettings(
   blockingConfidence: number,
   autoVoteOnBlocking: boolean,
   incrementalReview: boolean,
+  autoReview: boolean,
+  autoPostBlocking: boolean,
+  autoPostConfidence: number,
 ): Promise<void> {
   return invoke("save_ai_settings", {
     provider,
@@ -351,7 +360,33 @@ export async function saveAiSettings(
     blockingConfidence,
     autoVoteOnBlocking,
     incrementalReview,
+    autoReview,
+    autoPostBlocking,
+    autoPostConfidence,
   });
+}
+
+// ---- Phase 4: automation ----
+
+/// Of the given PRs (with their current iteration counts), return the IDs that
+/// should be auto-reviewed. Returns [] when auto-review is disabled.
+export async function autoReviewCandidates(
+  projectId: string,
+  repoId: string,
+  prs: { prId: number; iterationCount: number }[],
+): Promise<number[]> {
+  return invoke<number[]>("auto_review_candidates", { projectId, repoId, prs });
+}
+
+/// Auto-post the high-confidence blocking findings from a completed review.
+/// Returns the number posted (0 when auto-post is disabled).
+export async function autoPostReviewFindings(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  findings: ReviewFinding[],
+): Promise<number> {
+  return invoke<number>("auto_post_review_findings", { projectId, repoId, prId, findings });
 }
 
 // ---- Review feedback loop (Phase 3) ----

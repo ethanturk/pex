@@ -109,6 +109,13 @@ accept rates by severity and tier, so you can tune the confidence threshold and
 critical line with evidence. Enable **incremental review** to re-review only the
 files changed since the last reviewed iteration.
 
+For hands-off operation, opt into **automation** (all off by default):
+**auto-review** runs a review automatically when a PR gets a new iteration, and
+**auto-post** posts only the highest-confidence blocking findings (above a
+confidence floor you set) while leaving everything else for you. For CI, the
+headless `review_cli` example reviews a PR server-side and exits non-zero on
+blocking findings so it can gate a pipeline.
+
 ## Features
 
 - **Native desktop app** built with Tauri and Preact.

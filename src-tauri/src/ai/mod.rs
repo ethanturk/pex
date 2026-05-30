@@ -180,6 +180,12 @@ pub struct AiSettingsNoKey {
     pub auto_vote_on_blocking: bool,
     /// Opt-in: review only files changed since the last reviewed iteration.
     pub incremental_review: bool,
+    /// Opt-in: auto-trigger a review on a new PR / iteration.
+    pub auto_review: bool,
+    /// Opt-in: after an auto-review, auto-post high-confidence Blocking findings.
+    pub auto_post_blocking: bool,
+    /// Confidence floor (0–100) for auto-posting a Blocking finding.
+    pub auto_post_confidence: u8,
 }
 
 /// Read the TCP/TLS connect timeout (seconds), defaulting if missing.
@@ -277,6 +283,39 @@ pub const DEFAULT_INCREMENTAL_REVIEW: bool = false;
 pub fn read_incremental_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
     let raw = crate::cache::get_setting(conn, "ai_incremental_review")?;
     Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_INCREMENTAL_REVIEW))
+}
+
+// ---- Phase 4: automation (earned autonomy) ----
+
+/// Auto-trigger a review when a PR is first seen or has a new iteration.
+/// Off by default — auto-review consumes provider quota.
+pub const DEFAULT_AUTO_REVIEW: bool = false;
+
+/// After an auto-review, auto-post the highest-confidence Blocking findings.
+/// Off by default — this posts comments without a human in the loop.
+pub const DEFAULT_AUTO_POST_BLOCKING: bool = false;
+
+/// Confidence (0–100) a Blocking finding must reach to be auto-posted. Set high
+/// by default: autonomy is earned, so only near-certain blockers post unattended.
+pub const DEFAULT_AUTO_POST_CONFIDENCE: u8 = 90;
+pub const MAX_AUTO_POST_CONFIDENCE: u8 = 100;
+
+pub fn read_auto_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_review")?;
+    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_AUTO_REVIEW))
+}
+
+pub fn read_auto_post_blocking(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_post_blocking")?;
+    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_AUTO_POST_BLOCKING))
+}
+
+pub fn read_auto_post_confidence(conn: &rusqlite::Connection) -> Result<u8, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_post_confidence")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|n| n.min(MAX_AUTO_POST_CONFIDENCE))
+        .unwrap_or(DEFAULT_AUTO_POST_CONFIDENCE))
 }
 
 /// Read the configured per-file size cap for injected AGENTS.md / STYLE.md content.

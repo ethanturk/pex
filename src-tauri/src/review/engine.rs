@@ -1110,36 +1110,7 @@ pub async fn post_findings(
             pushed_back.push(finding);
             continue;
         }
-
-        let prefix = tier_prefix(finding.tier);
-        let body = format!("{} **{}**\n\n{}", prefix, finding.file_path, finding.comment);
-        let inline = format!("{} {}", prefix, finding.comment);
-
-        let thread = if let (Some(lo), Some(hi)) = (finding.line_start, finding.line_end) {
-            let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
-            serde_json::json!({
-                "comments": [{ "parentCommentId": 0, "content": inline, "commentType": 1 }],
-                "status": 1,
-                "threadContext": {
-                    "filePath": if finding.file_path.starts_with('/') {
-                        finding.file_path.clone()
-                    } else {
-                        format!("/{}", finding.file_path)
-                    },
-                    "rightFileStart": { "line": lo, "offset": 1 },
-                    "rightFileEnd":   { "line": hi, "offset": 1 },
-                },
-            })
-        } else {
-            serde_json::json!({
-                "comments": [{ "parentCommentId": 0, "content": body, "commentType": 1 }],
-                "status": 1,
-            })
-        };
-
-        client
-            .post_thread(project_id, repo_id, pr_id, &thread)
-            .await?;
+        post_single_finding(client, project_id, repo_id, pr_id, finding).await?;
     }
 
     // One rollup comment for everything pushed back.
@@ -1187,6 +1158,69 @@ fn tier_prefix(t: Tier) -> &'static str {
         Tier::Nit => "⚪ NIT —",
         Tier::Fyi => "💬 FYI —",
     }
+}
+
+/// Post one finding as its own ADO thread, tier-tagged and anchored to its line
+/// range when known. Shared by the full `post_findings` path and the Phase 4
+/// auto-post path so formatting stays identical.
+pub async fn post_single_finding(
+    client: &crate::ado::AdoClient,
+    project_id: &str,
+    repo_id: &str,
+    pr_id: i64,
+    finding: &Finding,
+) -> Result<(), AppError> {
+    let prefix = tier_prefix(finding.tier);
+    let body = format!("{} **{}**\n\n{}", prefix, finding.file_path, finding.comment);
+    let inline = format!("{} {}", prefix, finding.comment);
+
+    let thread = if let (Some(lo), Some(hi)) = (finding.line_start, finding.line_end) {
+        let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+        serde_json::json!({
+            "comments": [{ "parentCommentId": 0, "content": inline, "commentType": 1 }],
+            "status": 1,
+            "threadContext": {
+                "filePath": if finding.file_path.starts_with('/') {
+                    finding.file_path.clone()
+                } else {
+                    format!("/{}", finding.file_path)
+                },
+                "rightFileStart": { "line": lo, "offset": 1 },
+                "rightFileEnd":   { "line": hi, "offset": 1 },
+            },
+        })
+    } else {
+        serde_json::json!({
+            "comments": [{ "parentCommentId": 0, "content": body, "commentType": 1 }],
+            "status": 1,
+        })
+    };
+
+    client
+        .post_thread(project_id, repo_id, pr_id, &thread)
+        .await?;
+    Ok(())
+}
+
+/// Phase 4: whether a PR needs an auto-review. True when auto-review is enabled
+/// and the PR has a newer iteration than the last one we reviewed (or was never
+/// reviewed — `last` is `None`).
+pub fn should_auto_review(enabled: bool, last_reviewed: Option<i32>, current: i32) -> bool {
+    enabled && current > last_reviewed.unwrap_or(0)
+}
+
+/// Phase 4: select the findings eligible for unattended auto-posting — Blocking
+/// tier at or above the confidence floor. Returned in the engine's existing
+/// (blocking-first, highest-confidence-first) order.
+pub fn select_auto_post_findings(findings: &[Finding], confidence_floor: u8) -> Vec<&Finding> {
+    findings
+        .iter()
+        .filter(|f| {
+            f.tier == Tier::Blocking
+                && f.confidence >= confidence_floor
+                && !f.comment.trim().is_empty()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1350,6 +1384,37 @@ mod tests {
         assert!(body.contains("(Nit)"));
         assert!(body.contains("b.rs"));
         assert!(body.contains("(FYI)"));
+    }
+
+    #[test]
+    fn should_auto_review_respects_enabled_and_iteration() {
+        assert!(!should_auto_review(false, None, 3), "disabled never triggers");
+        assert!(should_auto_review(true, None, 1), "never-reviewed PR triggers");
+        assert!(should_auto_review(true, Some(2), 3), "newer iteration triggers");
+        assert!(!should_auto_review(true, Some(3), 3), "same iteration does not");
+        assert!(!should_auto_review(true, Some(4), 3), "older current does not");
+    }
+
+    #[test]
+    fn auto_post_selects_only_high_confidence_blocking() {
+        let mk = |tier: Tier, confidence: u8, comment: &str| Finding {
+            file_path: "a.rs".into(),
+            severity: Severity::Critical,
+            confidence,
+            tier,
+            line_start: Some(1),
+            line_end: Some(1),
+            comment: comment.into(),
+        };
+        let findings = vec![
+            mk(Tier::Blocking, 95, "post me"),
+            mk(Tier::Blocking, 89, "below floor"),
+            mk(Tier::ShouldFix, 99, "not blocking"),
+            mk(Tier::Blocking, 92, "  "), // empty comment
+        ];
+        let selected = select_auto_post_findings(&findings, 90);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].comment, "post me");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "preact/hooks";
-import { currentView, selectedProject, selectedRepo, showPrChecks } from "@/lib/signals";
+import { currentView, selectedProject, selectedRepo, showPrChecks, reviewRuns } from "@/lib/signals";
 import { listProjects, listRepositories, listPullRequests, getCurrentUserId, getPrChecks, type Project, type Repository, type PullRequest, type PRCheck } from "@/lib/api";
 import { getPrCheckRollup } from "@/lib/prChecks";
+import { considerAutoReview } from "@/lib/autoReview";
 
 interface PRChecksState {
   loading: boolean;
@@ -78,6 +79,48 @@ function PRCheckSummary({ state }: { state: PRChecksState | undefined }) {
   );
 }
 
+function ReviewBadge({ prId }: { prId: number }) {
+  const run = reviewRuns.value.get(prId);
+  if (!run) return null;
+  if (run.status === "running") {
+    return (
+      <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300 inline-flex items-center gap-1">
+        <span class="animate-spin w-2.5 h-2.5 border border-blue-400 border-t-transparent rounded-full" />
+        Reviewing
+      </span>
+    );
+  }
+  if (run.status === "error") {
+    return (
+      <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300">
+        Review failed
+      </span>
+    );
+  }
+  if (run.status === "posted") {
+    return (
+      <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+        Review posted
+      </span>
+    );
+  }
+  // done / posting
+  const n = run.output?.findings.length ?? 0;
+  const blocking = run.output?.findings.filter((f) => f.tier === "blocking").length ?? 0;
+  return (
+    <span
+      class={`text-xs px-2 py-0.5 rounded-full font-medium ${
+        blocking > 0
+          ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300"
+          : "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+      }`}
+      title={`AI review: ${n} finding${n === 1 ? "" : "s"}${blocking > 0 ? `, ${blocking} blocking` : ""}`}
+    >
+      🔍 {blocking > 0 ? `${blocking} blocking` : `${n} finding${n === 1 ? "" : "s"}`}
+    </span>
+  );
+}
+
 export function PRList() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [repos, setRepos] = useState<Repository[]>([]);
@@ -114,10 +157,22 @@ export function PRList() {
     if (!selectedProject.value || !selectedRepo.value) return;
     setLoading(true);
     setError("");
-    listPullRequests(selectedProject.value, selectedRepo.value)
+    const project = selectedProject.value;
+    const repo = selectedRepo.value;
+    listPullRequests(project, repo)
       .then((list) => {
         setPrs(list);
         setError("");
+        // Phase 4: let the auto-reviewer consider these PRs (no-op unless the
+        // user enabled auto-review). Only reviewable PRs — active, non-draft.
+        const reviewable = list
+          .filter((pr) => pr.status === "active" && !pr.isDraft)
+          .map((pr) => ({
+            prId: pr.pullRequestId,
+            prTitle: pr.title,
+            iterationCount: pr.iterationCount,
+          }));
+        void considerAutoReview(project, repo, reviewable);
       })
       .catch((e) => {
         setPrs([]);
@@ -310,6 +365,7 @@ export function PRList() {
               )}
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
+              <ReviewBadge prId={pr.pullRequestId} />
               {(() => {
                 const mine = userId
                   ? pr.reviewers.find((r) => r.id.toLowerCase() === userId.toLowerCase())
