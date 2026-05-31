@@ -462,13 +462,6 @@ export async function clearReviewFeedback(): Promise<void> {
   return invoke("clear_review_feedback");
 }
 
-export interface ReviewHunkContext {
-  orgUrl: string;
-  projectId: string;
-  repoId: string;
-  sourceCommit: string;
-}
-
 export interface AiPromptInfo {
   key: string;
   label: string;
@@ -644,23 +637,4 @@ export async function getDiffHunks(
   newContent: string,
 ): Promise<DiffHunk[]> {
   return invoke<DiffHunk[]>("get_diff_hunks", { oldContent, newContent });
-}
-
-export async function reviewHunk(
-  filePath: string,
-  oldContent: string,
-  newContent: string,
-  hunkIndex: number,
-  ctx?: ReviewHunkContext,
-): Promise<string> {
-  return invoke<string>("review_hunk", {
-    filePath,
-    oldContent,
-    newContent,
-    hunkIndex,
-    orgUrl: ctx?.orgUrl ?? null,
-    projectId: ctx?.projectId ?? null,
-    repoId: ctx?.repoId ?? null,
-    sourceCommit: ctx?.sourceCommit ?? null,
-  });
 }

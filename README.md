@@ -78,7 +78,7 @@ Pex can run an AI-assisted review across the PR and produce markdown findings.
 1. Open AI settings from the top bar.
 2. Choose a provider and enter the provider URL, API key, and model.
 3. Click **Test** to verify the provider and model list.
-4. Set hunk review concurrency based on what your provider can handle.
+4. Set review concurrency based on what your provider can handle.
 5. Set the **confidence threshold** (default 80) to control how aggressively
    low-confidence findings are filtered out.
 6. Start **Review PR** from the PR toolbar and choose **Fast** or **Thorough**.

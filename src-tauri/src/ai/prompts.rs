@@ -6,7 +6,6 @@ use crate::AppError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKey {
     ExplainHunkSystem,
-    ReviewHunkSystem,
     // Multi-pass specialist prompts (used by Thorough review mode).
     // Modeled after https://github.com/anthropics/claude-code/tree/main/plugins/pr-review-toolkit
     ReviewCodeReviewerSystem,
@@ -20,7 +19,6 @@ pub enum PromptKey {
 impl PromptKey {
     pub const ALL: &'static [PromptKey] = &[
         PromptKey::ExplainHunkSystem,
-        PromptKey::ReviewHunkSystem,
         PromptKey::ReviewCodeReviewerSystem,
         PromptKey::ReviewSilentFailureSystem,
         PromptKey::ReviewCommentAnalyzerSystem,
@@ -43,7 +41,6 @@ impl PromptKey {
     pub fn as_str(self) -> &'static str {
         match self {
             PromptKey::ExplainHunkSystem => "explain_hunk_system",
-            PromptKey::ReviewHunkSystem => "review_hunk_system",
             PromptKey::ReviewCodeReviewerSystem => "review_code_reviewer_system",
             PromptKey::ReviewSilentFailureSystem => "review_silent_failure_system",
             PromptKey::ReviewCommentAnalyzerSystem => "review_comment_analyzer_system",
@@ -69,7 +66,6 @@ impl PromptKey {
     pub fn from_str(s: &str) -> Result<Self, AppError> {
         match s {
             "explain_hunk_system" => Ok(PromptKey::ExplainHunkSystem),
-            "review_hunk_system" => Ok(PromptKey::ReviewHunkSystem),
             "review_code_reviewer_system" => Ok(PromptKey::ReviewCodeReviewerSystem),
             "review_silent_failure_system" => Ok(PromptKey::ReviewSilentFailureSystem),
             "review_comment_analyzer_system" => Ok(PromptKey::ReviewCommentAnalyzerSystem),
@@ -85,7 +81,6 @@ impl PromptKey {
     pub fn default_text(self) -> &'static str {
         match self {
             PromptKey::ExplainHunkSystem => DEFAULT_EXPLAIN_HUNK_SYSTEM,
-            PromptKey::ReviewHunkSystem => DEFAULT_REVIEW_HUNK_SYSTEM,
             PromptKey::ReviewCodeReviewerSystem => DEFAULT_REVIEW_CODE_REVIEWER_SYSTEM,
             PromptKey::ReviewSilentFailureSystem => DEFAULT_REVIEW_SILENT_FAILURE_SYSTEM,
             PromptKey::ReviewCommentAnalyzerSystem => DEFAULT_REVIEW_COMMENT_ANALYZER_SYSTEM,
@@ -114,23 +109,12 @@ For the given hunk:
 
 Focus only on this hunk; do not speculate about other changes in the file. Keep your response to 2-3 short paragraphs. Use markdown for formatting. Do not include greetings or sign-offs."#;
 
-/// Default prompt for reviewing a single diff hunk.
-pub const DEFAULT_REVIEW_HUNK_SYSTEM: &str = r#"You are a careful code reviewer analyzing a single diff hunk from a pull request. Your task is to provide a concise, actionable review of just this specific change.
-
-For the given hunk:
-1. Summarize what this change does in one sentence
-2. Identify any issues: bugs, logic errors, edge cases, race conditions, security concerns
-3. Suggest improvements if applicable (naming, structure, performance)
-4. Note anything that looks good and why
-
-Be specific — reference exact line numbers from the hunk header. Keep your response focused and brief (3-5 bullet points max). Use markdown. Do not include greetings or sign-offs."#;
-
 // ---- Multi-pass specialist prompts ----
 //
-// Each specialist reviews the SAME hunk through a narrow lens. They share the
-// same output contract as `DEFAULT_REVIEW_HUNK_SYSTEM` (bullet points, "No issues
-// found." sentinel) so the downstream file-aggregate step can consume them
-// uniformly. Distilled from anthropics/claude-code/plugins/pr-review-toolkit.
+// Each specialist reviews the SAME hunk through a narrow lens. They share a
+// common output contract (bullet points, "No issues found." sentinel) so the
+// downstream file-aggregate step can consume them uniformly. Distilled from
+// anthropics/claude-code/plugins/pr-review-toolkit.
 
 /// Defaults for the "code-reviewer" specialist — adherence to guidelines, style, best practices.
 pub const DEFAULT_REVIEW_CODE_REVIEWER_SYSTEM: &str = r#"You are an elite code reviewer focused on adherence to project guidelines, style, and best practices. You review a single diff hunk as one pass of a multi-agent review.
@@ -275,35 +259,4 @@ pub fn explain_hunk_user(file_path: &str, hunk_header: &str, hunk_text: &str) ->
         "Please explain this hunk from `{}`:\n\n{}\n{}",
         file_path, hunk_header, hunk_text
     )
-}
-
-/// Prompt for generating review-hunk user message. `agents` and `style` are the
-/// nearest project-conventions / style-guide files, when found (see ai::standards).
-/// Sections for unavailable docs are omitted entirely so the model isn't fed empty
-/// headings.
-pub fn review_hunk_user(
-    file_path: &str,
-    hunk_header: &str,
-    hunk_text: &str,
-    agents: Option<(&str, &str)>,
-    style: Option<(&str, &str)>,
-) -> String {
-    let mut out = String::new();
-    if let Some((path, content)) = agents {
-        out.push_str(&format!(
-            "## Project conventions (AGENTS.md, found at `{}`)\n{}\n\n",
-            path, content
-        ));
-    }
-    if let Some((path, content)) = style {
-        out.push_str(&format!(
-            "## Project style guide (STYLE.md, found at `{}`)\n{}\n\n",
-            path, content
-        ));
-    }
-    out.push_str(&format!(
-        "## Hunk\nReview this hunk from `{}`:\n\n{}\n{}",
-        file_path, hunk_header, hunk_text
-    ));
-    out
 }

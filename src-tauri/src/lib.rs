@@ -116,7 +116,6 @@ pub fn run() {
             commands::ai::list_ai_models,
             commands::ai::test_ai_connection,
             commands::ai::get_diff_hunks,
-            commands::ai::review_hunk,
             commands::review::start_review,
             commands::review::start_review_post,
             commands::review::cancel_review,

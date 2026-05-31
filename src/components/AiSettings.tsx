@@ -456,7 +456,7 @@ export function AiSettings({ open, onClose }: Props) {
                   </p>
                 </Field>
 
-                <Field label="Hunk review concurrency">
+                <Field label="Review concurrency">
                   <input
                     type="number"
                     min={1}
@@ -470,7 +470,7 @@ export function AiSettings({ open, onClose }: Props) {
                     class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Maximum number of hunks a PR review or "Review All" sends to the model at once. Default 1 = sequential. Increase only if your provider can handle parallel requests.
+                    Maximum number of hunks a PR review sends to the model at once. Default 1 = sequential. Increase only if your provider can handle parallel requests.
                   </p>
                 </Field>
 

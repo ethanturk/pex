@@ -165,8 +165,8 @@ export const reviewRuns = signal<Map<number, PRReviewRun>>(new Map());
 // "Review PR" on other PRs while one is in flight.
 export const activeReviewPrId = signal<number | null>(null);
 
-// Which right-side sidebar is open in the PR detail view. Hunk review and PR
-// review share the slot.
+// Which right-side sidebar is open in the PR detail view. Explain ("hunks") and
+// PR review share the slot.
 export type SidebarMode = "hunks" | "pr-review" | null;
 export const sidebarMode = signal<SidebarMode>(null);
 

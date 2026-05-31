@@ -465,10 +465,10 @@ export function PRDetail({ prId }: Props) {
             aria-pressed={sidebarMode.value === "hunks"}
             title={
               !diffHtml
-                ? "Select a file to enable hunk review"
+                ? "Select a file to explain its changes"
                 : sidebarMode.value === "hunks"
-                  ? "Close hunk review sidebar"
-                  : "Open hunk review sidebar"
+                  ? "Close explain sidebar"
+                  : "Explain the changes in this file hunk by hunk"
             }
             class={`text-xs px-3 py-1 rounded border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
               sidebarMode.value === "hunks"
@@ -476,7 +476,7 @@ export function PRDetail({ prId }: Props) {
                 : "border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
             }`}
           >
-            🔍 Review hunks
+            ✨ Explain
           </button>
           {activeOrg.value && projectId && repoId && (
             <ReviewPR
@@ -540,16 +540,6 @@ export function PRDetail({ prId }: Props) {
             filePath={diffPath}
             oldContent={oldContent}
             newContent={newContent}
-            reviewContext={
-              activeOrg.value && projectId && repoId && sourceCommit
-                ? {
-                    orgUrl: activeOrg.value.orgUrl,
-                    projectId,
-                    repoId,
-                    sourceCommit,
-                  }
-                : undefined
-            }
             onClose={() => (sidebarMode.value = null)}
           />
         )}
