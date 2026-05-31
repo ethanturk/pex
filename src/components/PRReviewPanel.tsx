@@ -219,7 +219,7 @@ type SubTab = "summary" | "findings";
 const reviewSubTab = signal<SubTab>("summary");
 let savedFindingsScrollTop = 0;
 
-export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
+export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
   const run: PRReviewRun | undefined = reviewRuns.value.get(prId);
 
   const subTab = reviewSubTab.value;
@@ -432,7 +432,7 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     try {
       await cancelReview();
     } finally {
-      // Drop this PR's run so the sidebar resets to the "No review yet" state.
+      // Drop this PR's run so the panel resets to the "No review yet" state.
       // The Rust engine sees the cancel flag, returns early, and the in-flight
       // startReview promise's .catch in reviewBus would otherwise leave the
       // run stuck in "error" — clearing it here is what makes the UI reset.

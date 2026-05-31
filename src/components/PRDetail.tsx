@@ -22,7 +22,7 @@ import { getPrCheckRollup } from "@/lib/prChecks";
 import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
 import { HunkReview } from "@/components/HunkReview";
-import { PRReviewSidebar } from "@/components/PRReviewSidebar";
+import { PRReviewPanel } from "@/components/PRReviewPanel";
 import { TabBar } from "@/components/TabBar";
 import { ApprovalBar } from "@/components/ApprovalBar";
 
@@ -571,7 +571,7 @@ export function PRDetail({ prId }: Props) {
           <div class="flex-1 overflow-hidden min-w-0">
             {activeTab.value === PR_REVIEW_TAB ? (
               projectId && repoId ? (
-                <PRReviewSidebar
+                <PRReviewPanel
                   projectId={projectId}
                   repoId={repoId}
                   prId={prId}
