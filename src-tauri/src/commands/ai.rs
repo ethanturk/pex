@@ -363,48 +363,6 @@ pub async fn explain_hunk(
     Ok(response)
 }
 
-// ---- Purist commands ----
-
-#[tauri::command]
-pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, String> {
-    let provider = {
-        let ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
-        ai_mgr_lock.as_ref().and_then(|mgr| mgr.provider_clone())
-    };
-
-    let provider = match provider {
-        Some(p) => p,
-        None => {
-            // Try auto-configuring
-            let db = state.db.lock().map_err(|e| e.to_string())?;
-            let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
-            let mut mgr = crate::ai::AiManager::new();
-            let configured = mgr
-                .try_configure_from_db(&db)
-                .map_err(|e: crate::AppError| e.to_string())?;
-            if configured {
-                *ai_mgr_lock = Some(mgr);
-                ai_mgr_lock
-                    .as_ref()
-                    .and_then(|mgr| mgr.provider_clone())
-                    .ok_or_else(|| "AI not configured. Set up AI settings first.".to_string())?
-            } else {
-                return Err("AI not configured. Set up AI settings first.".to_string());
-            }
-        }
-    };
-
-    let messages = vec![ChatMessage {
-        role: ChatRole::User,
-        content: "Hi! Respond with just 'OK'.".to_string(),
-    }];
-
-    match provider.chat(&messages).await {
-        Ok(response) => Ok(format!("Connected! Response: {}", response.trim())),
-        Err(e) => Err(format!("Connection failed: {}", e)),
-    }
-}
-
 // ---- Hunk Review ----
 
 /// Extract structured diff hunks from old/new content for per-hunk review UI.
