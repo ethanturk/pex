@@ -28,6 +28,10 @@ pub struct ReviewInput {
     pub repo_id: String,
     pub pr_id: i64,
     pub mode: ReviewMode,
+    /// Thorough mode: the specialist prompt keys (as returned by
+    /// `PromptKey::as_str`) the user chose to run. `None` runs the full set
+    /// (used by resume, the eval harness, and any non-interactive caller).
+    pub enabled_specialists: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -388,22 +392,39 @@ pub async fn run_review(
     //
     // Each tuple: (key, system prompt text, optional model override).
     // `None` model override means: fall back to the provider's configured model.
+    // Which specialists to run. An explicit (non-empty) selection narrows the
+    // set; `None` or a selection that matches nothing falls back to the full
+    // roster so a stale/empty list never yields a silent no-op review.
+    let enabled: Option<std::collections::HashSet<&str>> = input
+        .enabled_specialists
+        .as_ref()
+        .filter(|v| !v.is_empty())
+        .map(|v| v.iter().map(|s| s.as_str()).collect());
+    let resolve_specialist = |key: PromptKey| -> (PromptKey, String, Option<String>) {
+        let (text, model) = match db.lock() {
+            Ok(c) => {
+                let t = resolve_prompt(&c, key).unwrap_or_else(|_| key.default_text().to_string());
+                let m = crate::ai::prompts::resolve_model(&c, key).unwrap_or(None);
+                (t, m)
+            }
+            Err(_) => (key.default_text().to_string(), None),
+        };
+        (key, text, model)
+    };
     let specialist_prompts: Vec<(PromptKey, String, Option<String>)> =
         if input.mode == ReviewMode::Thorough {
-            let mut out = Vec::new();
-            for key in PromptKey::THOROUGH_SPECIALISTS {
-                let (text, model) = match db.lock() {
-                    Ok(c) => {
-                        let t = resolve_prompt(&c, *key)
-                            .unwrap_or_else(|_| key.default_text().to_string());
-                        let m = crate::ai::prompts::resolve_model(&c, *key).unwrap_or(None);
-                        (t, m)
-                    }
-                    Err(_) => (key.default_text().to_string(), None),
-                };
-                out.push((*key, text, model));
-            }
-            out
+            let selected: Vec<PromptKey> = PromptKey::THOROUGH_SPECIALISTS
+                .iter()
+                .copied()
+                .filter(|key| enabled.as_ref().map_or(true, |set| set.contains(key.as_str())))
+                .collect();
+            // Selection filtered everything out (only unknown keys): run them all.
+            let keys = if selected.is_empty() {
+                PromptKey::THOROUGH_SPECIALISTS.to_vec()
+            } else {
+                selected
+            };
+            keys.into_iter().map(resolve_specialist).collect()
         } else {
             Vec::new()
         };
@@ -423,9 +444,24 @@ pub async fn run_review(
         }
     }
 
+    // Announce the full, ordered worklist up front so the UI can render every
+    // file (and tick them off as they complete). `completedCount` lets a resumed
+    // run mark already-finished files as done without re-emitting each one.
+    emit_progress(
+        &app,
+        "plan",
+        &format!("Reviewing {} file(s)", file_entries.len()),
+        serde_json::json!({
+            "files": file_paths.clone(),
+            "totalFiles": file_entries.len(),
+            "completedCount": state.current_file_idx,
+        }),
+    );
+
     // ---- Phase 1: Hunk Review (per file) ----
     while state.current_file_idx < file_entries.len() {
         cancelled(&cancel)?;
+        let file_started = std::time::Instant::now();
         let (file, hunks) = &file_entries[state.current_file_idx];
         let total_hunks = hunks.len();
         // Shared once per file: each hunk pass windows a bounded slice of this
@@ -675,6 +711,18 @@ pub async fn run_review(
                 },
             ));
         }
+
+        emit_progress(
+            &app,
+            "file-done",
+            &format!("Reviewed {}", file.path),
+            serde_json::json!({
+                "fileIndex": state.current_file_idx,
+                "fileNum": state.current_file_idx + 1,
+                "totalFiles": file_entries.len(),
+                "durationMs": file_started.elapsed().as_millis() as u64,
+            }),
+        );
 
         state.current_file_idx += 1;
         state.current_file_hunks = 0;

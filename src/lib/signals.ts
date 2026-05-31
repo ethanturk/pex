@@ -20,6 +20,54 @@ export function applyTheme(t: Theme) {
 applyTheme(theme.value);
 theme.subscribe(applyTheme);
 
+// ---- Appearance: font + text sizes ----
+// Discrete text-size steps shared by the app UI and the diff viewer (each
+// tracked independently). Values map to concrete pixel sizes when applied.
+export type TextSize = "small" | "medium" | "large" | "xl";
+
+// App font family. The value is a CSS font-family stack; "" means "use the
+// app default" (clears the inline override so the stylesheet default applies).
+export const appFont = signal<string>(localStorage.getItem("pex-app-font") || "");
+function applyAppFont(f: string) {
+  // Inline style on <html> wins over the stylesheet default; clearing it
+  // (empty string) falls back to the default sans stack. Monospace elements
+  // (e.g. the diff) set their own font and are unaffected.
+  document.documentElement.style.fontFamily = f;
+  localStorage.setItem("pex-app-font", f);
+}
+applyAppFont(appFont.value);
+appFont.subscribe(applyAppFont);
+
+// App UI text size — scales the root font-size, so all rem-based sizing tracks
+// it. "medium" (16px) is the browser default, i.e. today's baseline.
+const APP_TEXT_PX: Record<TextSize, string> = {
+  small: "14px",
+  medium: "16px",
+  large: "18px",
+  xl: "20px",
+};
+export const appTextSize = signal<TextSize>(
+  (localStorage.getItem("pex-app-text-size") as TextSize) || "medium",
+);
+function applyAppTextSize(s: TextSize) {
+  document.documentElement.style.fontSize = APP_TEXT_PX[s] ?? APP_TEXT_PX.medium;
+  localStorage.setItem("pex-app-text-size", s);
+}
+applyAppTextSize(appTextSize.value);
+appTextSize.subscribe(applyAppTextSize);
+
+// Diff viewer text size — independent of the app size. Drives CSS variables
+// (see global.css `html[data-diff-size]`) so only the diff scales.
+export const diffTextSize = signal<TextSize>(
+  (localStorage.getItem("pex-diff-text-size") as TextSize) || "medium",
+);
+function applyDiffTextSize(s: TextSize) {
+  document.documentElement.dataset.diffSize = s;
+  localStorage.setItem("pex-diff-text-size", s);
+}
+applyDiffTextSize(diffTextSize.value);
+diffTextSize.subscribe(applyDiffTextSize);
+
 // ---- Diff view (inline vs side-by-side) ----
 export type DiffView = "inline" | "split";
 export const diffView = signal<DiffView>(
@@ -112,6 +160,59 @@ export const visibleFilePaths = signal<string[]>([]);
 // this to refetch threads so the Comments pane stays in sync with ADO.
 export const threadsRefreshTick = signal<number>(0);
 
+// ---- Main-area tabs (VS Code style) ----
+// The center area is a tab strip. The PR Review panel is a permanent, pinned
+// pseudo-tab identified by this sentinel; it never appears in `openTabs`. All
+// other tabs are file paths.
+export const PR_REVIEW_TAB = "__pr-review__";
+export type ActiveTab = string; // a file path, or PR_REVIEW_TAB
+
+// Pinned file tabs, in display order (never contains PR_REVIEW_TAB).
+export const openTabs = signal<string[]>([]);
+// The transient "preview" tab (italic, replaced by the next single-click), or
+// null. A preview path is never also in `openTabs`.
+export const previewPath = signal<string | null>(null);
+// Which tab is focused: a file path (pinned or preview) or PR_REVIEW_TAB.
+export const activeTab = signal<ActiveTab>(PR_REVIEW_TAB);
+
+// Single-click a file: open it as the preview tab (replacing any prior preview,
+// unless it's already pinned) and focus it.
+export function openPreviewTab(path: string) {
+  if (!openTabs.value.includes(path)) previewPath.value = path;
+  activeTab.value = path;
+  selectedFile.value = path;
+}
+
+// Double-click a file (or its preview tab): pin it permanently.
+export function pinTab(path: string) {
+  if (!openTabs.value.includes(path)) openTabs.value = [...openTabs.value, path];
+  if (previewPath.value === path) previewPath.value = null;
+  activeTab.value = path;
+  selectedFile.value = path;
+}
+
+export function closeTab(path: string) {
+  const remaining = openTabs.value.filter((p) => p !== path);
+  if (remaining.length !== openTabs.value.length) openTabs.value = remaining;
+  if (previewPath.value === path) previewPath.value = null;
+  if (activeTab.value === path) {
+    // Focus the last pinned tab, else the preview, else fall back to PR Review.
+    const next = remaining[remaining.length - 1] ?? previewPath.value ?? PR_REVIEW_TAB;
+    activeTab.value = next;
+    selectedFile.value = next === PR_REVIEW_TAB ? null : next;
+  }
+}
+
+export function focusPrReviewTab() {
+  activeTab.value = PR_REVIEW_TAB;
+}
+
+export function resetTabs() {
+  openTabs.value = [];
+  previewPath.value = null;
+  activeTab.value = PR_REVIEW_TAB;
+}
+
 // ---- PR Review (background, per-PR) ----
 // The Rust engine runs a review serially (one resumable state at a time), so we
 // track a single "active" PR — but each PR keeps its last result so a user can
@@ -126,6 +227,12 @@ export interface ReviewProgress {
   batch?: number;
   totalBatches?: number;
   fileCount?: number;
+  // `plan` event: the full ordered worklist + how many were already done (resume).
+  files?: string[];
+  completedCount?: number;
+  // `file-done` event: which file finished, and how long it took.
+  fileIndex?: number;
+  durationMs?: number;
 }
 
 export type PRReviewStatus = "running" | "done" | "posting" | "posted" | "error";
@@ -140,6 +247,18 @@ export interface PRReviewRun {
   /// Review mode the user picked when starting this run.
   mode?: ReviewMode;
   progress: ReviewProgress | null;
+  // Live per-file review tracking, accumulated from progress events (these
+  // persist across events, unlike `progress`, which is replaced each time).
+  /// Ordered list of files being reviewed (from the `plan` event).
+  fileList?: string[];
+  /// Completed-file durations in ms, keyed by file index.
+  fileDurations?: Record<number, number>;
+  /// Files already finished before this session started (resumed runs).
+  preCompletedCount?: number;
+  /// Index of the file currently under review (for the live timer + spinner).
+  activeFileIndex?: number;
+  /// Epoch ms when the active file started — drives the running timer.
+  activeFileStartMs?: number;
   // Output of the latest completed run; preserved across "posting" so the
   // sidebar can keep showing the summary while we post to ADO.
   output: {
@@ -165,9 +284,9 @@ export const reviewRuns = signal<Map<number, PRReviewRun>>(new Map());
 // "Review PR" on other PRs while one is in flight.
 export const activeReviewPrId = signal<number | null>(null);
 
-// Which right-side sidebar is open in the PR detail view. Explain ("hunks") and
-// PR review share the slot.
-export type SidebarMode = "hunks" | "pr-review" | null;
+// Which right-side sidebar is open in the PR detail view. Currently just the
+// Explain ("hunks") panel — PR review now lives in a main-area tab.
+export type SidebarMode = "hunks" | null;
 export const sidebarMode = signal<SidebarMode>(null);
 
 export function updateReviewRun(prId: number, patch: Partial<PRReviewRun> | ((prev: PRReviewRun | undefined) => PRReviewRun)) {

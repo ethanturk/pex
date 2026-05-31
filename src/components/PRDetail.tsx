@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { useResizableWidth } from "@/lib/useResizableWidth";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick, showPrChecks } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick, showPrChecks, openTabs, previewPath, activeTab, PR_REVIEW_TAB, resetTabs } from "@/lib/signals";
 import {
   getPrChecks,
   getPullRequest,
@@ -16,13 +16,14 @@ import {
   type CommentThread,
   type PullRequest,
   type PRCheck,
+  type FileDiff,
 } from "@/lib/api";
 import { getPrCheckRollup } from "@/lib/prChecks";
 import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
 import { HunkReview } from "@/components/HunkReview";
-import { PRReviewSidebar } from "@/components/PRReviewSidebar";
-import { ReviewPR } from "@/components/ReviewPR";
+import { PRReviewPanel } from "@/components/PRReviewPanel";
+import { TabBar } from "@/components/TabBar";
 import { ApprovalBar } from "@/components/ApprovalBar";
 
 interface Props { prId: number; }
@@ -152,6 +153,8 @@ export function PRDetail({ prId }: Props) {
   // "old/new identical" error before the user picks a real file.
   useEffect(() => {
     selectedFile.value = null;
+    resetTabs();
+    diffCache.current.clear();
     currentIteration.value = 1;
     prFiles.value = [];
     setPullRequest(null);
@@ -239,6 +242,11 @@ export function PRDetail({ prId }: Props) {
   const filesReqId = useRef(0);
   const diffReqId = useRef(0);
   const prefetchKey = useRef("");
+  // Front-end diff cache so re-activating an open tab (or j/k revisits) skips
+  // the IPC refetch + DOM rebuild. Keyed by path|iteration|view since the diff
+  // HTML depends on both. Cleared on PR switch.
+  const diffCache = useRef<Map<string, FileDiff>>(new Map());
+  const diffCacheKey = (path: string) => `${path}|${currentIteration.value}|${diffView.value}`;
 
   const loadFiles = useCallback(async () => {
     if (!projectId || !repoId) return;
@@ -269,20 +277,54 @@ export function PRDetail({ prId }: Props) {
     }
   }, [projectId, repoId, prId]);
 
+  // Warm the front-end diff cache for a file without touching displayed state,
+  // so the next j/k step (or tab activation) renders instantly.
+  const prefetchDiff = useCallback(async (path: string) => {
+    if (!projectId || !repoId || !path) return;
+    const key = diffCacheKey(path);
+    if (diffCache.current.has(key)) return;
+    try {
+      const d = await getFileDiff(projectId, repoId, prId, path, currentIteration.value, diffView.value);
+      diffCache.current.set(key, d);
+    } catch {
+      // Prefetch is best-effort; a real load will surface any error.
+    }
+  }, [projectId, repoId, prId]);
+
+  const applyDiff = (d: FileDiff) => {
+    setDiffHtml(d.html);
+    setDiffPath(d.path);
+    setDiffStatus(d.status);
+    setSourceCommit(d.sourceCommit);
+    setBaseCommit(d.baseCommit);
+    setOldContent(d.oldContent);
+    setNewContent(d.newContent);
+  };
+
   const loadDiff = useCallback(async (path: string) => {
     if (!projectId || !repoId) return;
     const reqId = ++diffReqId.current;
+
+    // Cache hit: render the diff immediately and refresh threads in the
+    // background (don't block the diff on the threads round-trip).
+    const cached = diffCache.current.get(diffCacheKey(path));
+    if (cached) {
+      applyDiff(cached);
+      setLoading(false);
+      getThreads(projectId, repoId, prId)
+        .then((all) => {
+          if (reqId === diffReqId.current) setThreads(all.filter((t: any) => t.filePath === cached.path));
+        })
+        .catch((e) => console.error("Failed to load threads:", e));
+      return;
+    }
+
     setLoading(true);
     try {
       const d = await getFileDiff(projectId, repoId, prId, path, currentIteration.value, diffView.value);
       if (reqId !== diffReqId.current) return;
-      setDiffHtml(d.html);
-      setDiffPath(d.path);
-      setDiffStatus(d.status);
-      setSourceCommit(d.sourceCommit);
-      setBaseCommit(d.baseCommit);
-      setOldContent(d.oldContent);
-      setNewContent(d.newContent);
+      diffCache.current.set(diffCacheKey(path), d);
+      applyDiff(d);
       // Load threads for this file
       const allThreads = await getThreads(projectId, repoId, prId);
       if (reqId !== diffReqId.current) return;
@@ -307,9 +349,32 @@ export function PRDetail({ prId }: Props) {
 
   useEffect(() => { loadFiles(); }, [loadFiles]);
 
+  // Reconcile `selectedFile` into the tab model: any caller that sets
+  // `selectedFile` (file tree click, j/k nav, jump-to-finding from the review
+  // panel) opens the file as a preview tab (if not already open) and focuses it.
+  useEffect(() => {
+    const unsub = selectedFile.subscribe((path) => {
+      if (!path) return;
+      if (!openTabs.value.includes(path) && previewPath.value !== path) {
+        previewPath.value = path;
+      }
+      if (activeTab.value !== path) activeTab.value = path;
+    });
+    return unsub;
+  }, []);
+
   useEffect(() => {
     const unsub1 = selectedFile.subscribe((path) => {
-      if (path) loadDiff(path);
+      if (!path) return;
+      loadDiff(path);
+      // Warm the neighbors in the order the user actually sees them so the
+      // next/prev j/k step renders from cache instantly.
+      const order = visibleFilePaths.value;
+      const idx = order.indexOf(path);
+      if (idx >= 0) {
+        if (idx + 1 < order.length) prefetchDiff(order[idx + 1]);
+        if (idx - 1 >= 0) prefetchDiff(order[idx - 1]);
+      }
     });
     const unsub2 = currentIteration.subscribe(() => {
       loadFiles();
@@ -330,7 +395,7 @@ export function PRDetail({ prId }: Props) {
         .catch((e) => console.error("Failed to refresh threads:", e));
     });
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
-  }, [loadDiff, loadFiles, projectId, repoId, prId, diffPath]);
+  }, [loadDiff, loadFiles, prefetchDiff, projectId, repoId, prId, diffPath]);
 
   const handleToggleViewed = async (path: string, viewed: boolean) => {
     if (!projectId || !repoId) return;
@@ -478,14 +543,6 @@ export function PRDetail({ prId }: Props) {
           >
             ✨ Explain
           </button>
-          {activeOrg.value && projectId && repoId && (
-            <ReviewPR
-              projectId={projectId}
-              repoId={repoId}
-              prId={prId}
-              prTitle={pullRequest?.title ?? `PR #${prId}`}
-            />
-          )}
           <ApprovalBar onVote={handleApprove} />
         </div>
       </div>
@@ -509,47 +566,54 @@ export function PRDetail({ prId }: Props) {
           />
         </aside>
 
-        <div class="flex-1 overflow-hidden min-w-0">
-          {loading ? (
-            <div class="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>
-          ) : diffHtml ? (
-            <DiffViewer
-              html={diffHtml}
-              path={diffPath}
-              status={diffStatus}
-              threads={threads}
-              onComment={handlePostComment}
-              projectId={projectId!}
-              repoId={repoId!}
-              sourceCommit={sourceCommit}
-              baseCommit={baseCommit}
-              view={diffView.value}
-              oldContent={oldContent}
-              newContent={newContent}
-            />
-          ) : (
-            <div class="flex items-center justify-center h-full text-gray-400 text-sm">
-              Select a file to view its diff
-            </div>
-          )}
+        <div class="flex-1 overflow-hidden min-w-0 flex flex-col">
+          <TabBar prId={prId} />
+          <div class="flex-1 overflow-hidden min-w-0">
+            {activeTab.value === PR_REVIEW_TAB ? (
+              projectId && repoId ? (
+                <PRReviewPanel
+                  projectId={projectId}
+                  repoId={repoId}
+                  prId={prId}
+                  prTitle={pullRequest?.title ?? `PR #${prId}`}
+                />
+              ) : (
+                <div class="flex items-center justify-center h-full text-gray-400 text-sm">
+                  Select a repository to review this PR
+                </div>
+              )
+            ) : loading ? (
+              <div class="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>
+            ) : diffHtml ? (
+              <DiffViewer
+                html={diffHtml}
+                path={diffPath}
+                status={diffStatus}
+                threads={threads}
+                onComment={handlePostComment}
+                projectId={projectId!}
+                repoId={repoId!}
+                sourceCommit={sourceCommit}
+                baseCommit={baseCommit}
+                view={diffView.value}
+                oldContent={oldContent}
+                newContent={newContent}
+              />
+            ) : (
+              <div class="flex items-center justify-center h-full text-gray-400 text-sm">
+                Select a file to view its diff
+              </div>
+            )}
+          </div>
         </div>
 
-        {sidebarMode.value === "hunks" && diffHtml && (
+        {sidebarMode.value === "hunks" && diffHtml && activeTab.value !== PR_REVIEW_TAB && (
           <HunkReview
             key={diffPath}
             filePath={diffPath}
             oldContent={oldContent}
             newContent={newContent}
             onClose={() => (sidebarMode.value = null)}
-          />
-        )}
-
-        {sidebarMode.value === "pr-review" && projectId && repoId && (
-          <PRReviewSidebar
-            projectId={projectId}
-            repoId={repoId}
-            prId={prId}
-            prTitle={`PR #${prId}`}
           />
         )}
       </div>

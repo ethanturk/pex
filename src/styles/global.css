@@ -8,7 +8,18 @@
   --color-danger: #d1242f;
   --color-success: #1a7f37;
   --color-warning: #bf8700;
+
+  /* Diff viewer text size (independent of the app text size). Defaults match
+     the previous hard-coded text-sm / leading-5. Overridden per size below. */
+  --diff-font-size: 0.875rem;
+  --diff-line-height: 1.25rem;
 }
+
+/* Diff text-size steps, driven by `diffTextSize` (data-diff-size on <html>). */
+html[data-diff-size="small"]  { --diff-font-size: 12px; --diff-line-height: 18px; }
+html[data-diff-size="medium"] { --diff-font-size: 14px; --diff-line-height: 20px; }
+html[data-diff-size="large"]  { --diff-font-size: 16px; --diff-line-height: 24px; }
+html[data-diff-size="xl"]     { --diff-font-size: 18px; --diff-line-height: 28px; }
 
 @theme inline {
   --color-accent: var(--color-accent);
@@ -26,7 +37,9 @@
   contain: layout style paint;
 }
 .diff-line {
-  @apply font-mono text-sm leading-5 whitespace-pre;
+  @apply font-mono whitespace-pre;
+  font-size: var(--diff-font-size);
+  line-height: var(--diff-line-height);
   content-visibility: auto;
   contain-intrinsic-size: 0 20px; /* estimate ~20px per line */
 }
@@ -34,7 +47,9 @@
 .diff-remove { @apply bg-red-100 dark:bg-red-900/30 border-l-2 border-red-500 dark:border-red-600; }
 .diff-header { @apply bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 font-mono text-xs px-2 py-0.5; }
 .diff-lineno {
-  @apply text-gray-400 dark:text-gray-500 select-none w-12 text-right pr-2 border-r border-gray-200 dark:border-gray-700 font-mono text-xs leading-5 inline-block;
+  @apply text-gray-400 dark:text-gray-500 select-none w-12 text-right pr-2 border-r border-gray-200 dark:border-gray-700 font-mono inline-block;
+  font-size: var(--diff-font-size);
+  line-height: var(--diff-line-height);
   position: relative;
 }
 /* Hover affordance on diff lines: tinted row, pointer cursor, and a "+" badge
@@ -70,7 +85,7 @@
 /* Lines that are already selected (during drag or while the popup is open)
    shouldn't keep flashing the "+" badge on hover. */
 .diff-line--selected:hover .diff-lineno::after { content: none; }
-.diff-sign { @apply select-none text-gray-400 dark:text-gray-500 font-mono text-xs; }
+.diff-sign { @apply select-none text-gray-400 dark:text-gray-500 font-mono; font-size: var(--diff-font-size); }
 .diff-content { }
 .diff-conflict { @apply bg-orange-100 dark:bg-orange-900/30 border-l-4 border-orange-500; }
 .diff-viewed { @apply line-through text-gray-400 dark:text-gray-500; }

@@ -1,5 +1,11 @@
 import { useState, useEffect, useRef } from "preact/hooks";
-import { showPrChecks } from "@/lib/signals";
+import {
+  showPrChecks,
+  appFont,
+  appTextSize,
+  diffTextSize,
+  type TextSize,
+} from "@/lib/signals";
 import {
   getAiSettings,
   saveAiDefaults,
@@ -22,7 +28,30 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "ai-defaults" | "review" | "prompts" | "calibration" | "pr-list";
+type Tab = "general" | "ai-defaults" | "review" | "prompts" | "calibration" | "pr-list";
+
+// Common system font stacks for the appearance dropdown. "" = app default.
+const FONT_OPTIONS: { label: string; value: string }[] = [
+  { label: "System default", value: "" },
+  { label: "Sans-serif", value: "ui-sans-serif, system-ui, sans-serif" },
+  { label: "Serif", value: "ui-serif, Georgia, Cambria, 'Times New Roman', serif" },
+  { label: "Arial", value: "Arial, Helvetica, sans-serif" },
+  { label: "Helvetica Neue", value: "'Helvetica Neue', Helvetica, Arial, sans-serif" },
+  { label: "Segoe UI", value: "'Segoe UI', Tahoma, Geneva, sans-serif" },
+  { label: "Roboto", value: "Roboto, system-ui, sans-serif" },
+  { label: "Georgia", value: "Georgia, 'Times New Roman', serif" },
+  { label: "Times New Roman", value: "'Times New Roman', Times, serif" },
+  { label: "Verdana", value: "Verdana, Geneva, sans-serif" },
+  { label: "Tahoma", value: "Tahoma, Geneva, sans-serif" },
+  { label: "Courier New", value: "'Courier New', Courier, monospace" },
+];
+
+const TEXT_SIZE_OPTIONS: { label: string; value: TextSize }[] = [
+  { label: "Small", value: "small" },
+  { label: "Medium", value: "medium" },
+  { label: "Large", value: "large" },
+  { label: "XL", value: "xl" },
+];
 
 const DEFAULT_STANDARDS_MAX_CHARS = 8000;
 const MIN_STANDARDS_MAX_CHARS = 500;
@@ -387,6 +416,7 @@ export function AiSettings({ open, onClose }: Props) {
 
         {/* Tabs */}
         <div class="shrink-0 flex border-b border-gray-200 dark:border-gray-700 px-5">
+          <TabButton label="General" active={tab === "general"} onClick={() => setTab("general")} />
           <TabButton label="AI Defaults" active={tab === "ai-defaults"} onClick={() => setTab("ai-defaults")} />
           <TabButton label="Review" active={tab === "review"} onClick={() => setTab("review")} />
           <TabButton label="Prompts" active={tab === "prompts"} onClick={() => setTab("prompts")} />
@@ -395,6 +425,62 @@ export function AiSettings({ open, onClose }: Props) {
         </div>
 
         <div class="flex-1 min-h-0 px-5 py-4 space-y-5 overflow-y-auto overflow-x-hidden">
+          {tab === "general" && (
+            <section class="space-y-5">
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                Appearance preferences. These apply instantly and are saved on this device.
+              </p>
+
+              <Field label="Font">
+                <select
+                  value={appFont.value}
+                  onChange={(e) => (appFont.value = e.currentTarget.value)}
+                  class={INPUT_CLASS}
+                  style={{ fontFamily: appFont.value || undefined }}
+                >
+                  {FONT_OPTIONS.map((f) => (
+                    <option key={f.label} value={f.value} style={{ fontFamily: f.value || undefined }}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Applies to app text. Code and diffs keep their monospace font.
+                </p>
+              </Field>
+
+              <Field label="Text size">
+                <select
+                  value={appTextSize.value}
+                  onChange={(e) => (appTextSize.value = e.currentTarget.value as TextSize)}
+                  class={INPUT_CLASS}
+                >
+                  {TEXT_SIZE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Scales the overall app interface text.
+                </p>
+              </Field>
+
+              <Field label="Diff viewer text size">
+                <select
+                  value={diffTextSize.value}
+                  onChange={(e) => (diffTextSize.value = e.currentTarget.value as TextSize)}
+                  class={INPUT_CLASS}
+                >
+                  {TEXT_SIZE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Sizes the code in the diff viewer, independently of the app text size.
+                </p>
+              </Field>
+            </section>
+          )}
+
           {tab === "ai-defaults" && (
             <section>
               <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">

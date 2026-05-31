@@ -14,6 +14,7 @@ pub enum PromptKey {
     ReviewTestAnalyzerSystem,
     ReviewTypeDesignSystem,
     ReviewCodeSimplifierSystem,
+    ReviewDesignPrinciplesSystem,
 }
 
 impl PromptKey {
@@ -25,6 +26,7 @@ impl PromptKey {
         PromptKey::ReviewTestAnalyzerSystem,
         PromptKey::ReviewTypeDesignSystem,
         PromptKey::ReviewCodeSimplifierSystem,
+        PromptKey::ReviewDesignPrinciplesSystem,
     ];
 
     /// Specialist prompts used by Thorough multi-pass review. Order here is the
@@ -35,6 +37,7 @@ impl PromptKey {
         PromptKey::ReviewCommentAnalyzerSystem,
         PromptKey::ReviewTestAnalyzerSystem,
         PromptKey::ReviewTypeDesignSystem,
+        PromptKey::ReviewDesignPrinciplesSystem,
         PromptKey::ReviewCodeSimplifierSystem,
     ];
 
@@ -47,6 +50,7 @@ impl PromptKey {
             PromptKey::ReviewTestAnalyzerSystem => "review_test_analyzer_system",
             PromptKey::ReviewTypeDesignSystem => "review_type_design_system",
             PromptKey::ReviewCodeSimplifierSystem => "review_code_simplifier_system",
+            PromptKey::ReviewDesignPrinciplesSystem => "review_design_principles_system",
         }
     }
 
@@ -59,6 +63,7 @@ impl PromptKey {
             PromptKey::ReviewTestAnalyzerSystem => "test-analyzer",
             PromptKey::ReviewTypeDesignSystem => "type-design-analyzer",
             PromptKey::ReviewCodeSimplifierSystem => "code-simplifier",
+            PromptKey::ReviewDesignPrinciplesSystem => "design-principles",
             _ => "reviewer",
         }
     }
@@ -72,6 +77,7 @@ impl PromptKey {
             "review_test_analyzer_system" => Ok(PromptKey::ReviewTestAnalyzerSystem),
             "review_type_design_system" => Ok(PromptKey::ReviewTypeDesignSystem),
             "review_code_simplifier_system" => Ok(PromptKey::ReviewCodeSimplifierSystem),
+            "review_design_principles_system" => Ok(PromptKey::ReviewDesignPrinciplesSystem),
             other => Err(AppError::Ai(format!("Unknown prompt key: {}", other))),
         }
     }
@@ -87,6 +93,7 @@ impl PromptKey {
             PromptKey::ReviewTestAnalyzerSystem => DEFAULT_REVIEW_TEST_ANALYZER_SYSTEM,
             PromptKey::ReviewTypeDesignSystem => DEFAULT_REVIEW_TYPE_DESIGN_SYSTEM,
             PromptKey::ReviewCodeSimplifierSystem => DEFAULT_REVIEW_CODE_SIMPLIFIER_SYSTEM,
+            PromptKey::ReviewDesignPrinciplesSystem => DEFAULT_REVIEW_DESIGN_PRINCIPLES_SYSTEM,
         }
     }
 
@@ -204,6 +211,21 @@ For the given hunk, look only for changes that would make the code meaningfully 
 4. Over-engineering: premature generalization or indirection for a single caller
 
 Reference exact NEW-side line numbers from the hunk header. Do NOT flag pure style or naming — other specialists own that. Suggest a simplification only when you are confident it preserves behavior and is genuinely clearer; skip subjective rewrites. Keep your response to 2-4 bullet points.
+
+If you find nothing worth flagging, respond with exactly: No issues found.
+
+Do not include greetings or sign-offs."#;
+
+/// Defaults for the "design-principles" specialist — SOLID and DRY at the structural level.
+pub const DEFAULT_REVIEW_DESIGN_PRINCIPLES_SYSTEM: &str = r#"You are an expert software designer who evaluates code against the SOLID principles and DRY. You review a single diff hunk as one pass of a multi-agent review.
+
+For the given hunk, flag only high-confidence, consequential design violations:
+1. Single Responsibility — a function, class, or module taking on multiple unrelated responsibilities or reasons to change
+2. Open/Closed & Liskov — extensions that force edits to existing conditionals/switch ladders instead of adding to them, or subtypes that break their base type's contract
+3. Interface Segregation & Dependency Inversion — fat interfaces forcing clients to depend on things they do not use, or high-level logic coupled directly to concrete low-level details that should sit behind an abstraction
+4. DRY — logic or domain knowledge duplicated across functions/files that should be unified behind one shared abstraction (especially duplication this hunk introduces against code visible in the surrounding context)
+
+Reference exact NEW-side line numbers from the hunk header. Judge against the code's actual scale — do NOT demand abstraction for a single caller or reward indirection added "just in case"; that is over-engineering, not a SOLID win. Local hunk-level redundancy, naming, and clarity are owned by other specialists — focus on structural design and cross-cutting duplication. Keep your response to 2-4 bullet points.
 
 If you find nothing worth flagging, respond with exactly: No issues found.
 

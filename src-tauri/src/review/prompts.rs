@@ -7,7 +7,8 @@ pub const REVIEW_HUNK_SYSTEM: &str = r#"You are reviewing a single diff hunk as 
 For the given hunk:
 1. Identify bugs, logic errors, edge cases, race conditions, or security concerns
 2. Suggest improvements (naming, structure, performance, error handling)
-3. Note anything well-done and why
+3. Flag clear DRY/SOLID violations: logic duplicated from work already done that should reuse a shared helper, or a function/type taking on multiple unrelated responsibilities
+4. Note anything well-done and why
 
 Be specific — reference exact line numbers from the hunk header. Keep your response to 2-4 bullet points.
 If you find nothing worth flagging, respond with "No issues found." Do not include greetings or sign-offs."#;

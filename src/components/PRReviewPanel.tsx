@@ -1,20 +1,78 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { signal } from "@preact/signals";
 import { marked } from "marked";
 import {
   reviewRuns,
   activeReviewPrId,
-  sidebarMode,
   selectedFile,
+  selectedProject,
+  selectedRepo,
+  currentView,
   pendingScrollLine,
   threadsRefreshTick,
   type PRReviewRun,
   type ReviewProgress,
+  type ReviewMode,
 } from "@/lib/signals";
 import { startBackgroundReview } from "@/lib/reviewBus";
-import { cancelReview, postReviewFinding, recordFindingVerdict, type Severity, type Tier } from "@/lib/api";
-import { useResizableWidth } from "@/lib/useResizableWidth";
+import { ReviewConfirmDialog } from "@/components/ReviewConfirmDialog";
+import {
+  cancelReview,
+  postReviewFinding,
+  recordFindingVerdict,
+  getSavedReview,
+  clearSavedReview,
+  type Severity,
+  type Tier,
+  type ReviewState,
+} from "@/lib/api";
 
 type Finding = NonNullable<PRReviewRun["output"]>["findings"][number];
+
+const REVIEW_MODE_KEY = "pex.reviewMode";
+
+function loadReviewMode(): ReviewMode {
+  try {
+    return localStorage.getItem(REVIEW_MODE_KEY) === "thorough" ? "thorough" : "fast";
+  } catch {
+    return "fast";
+  }
+}
+
+function saveReviewMode(mode: ReviewMode) {
+  try {
+    localStorage.setItem(REVIEW_MODE_KEY, mode);
+  } catch {
+    // Storage may be unavailable (private mode, quota); the picker still works
+    // in-memory for the session.
+  }
+}
+
+// pr_key format from Rust: `{org_url}/{project_id}/{repo_id}/{pr_id}`.
+// org_url contains slashes, so split from the end.
+function parsePrKey(prKey: string): { projectId: string; repoId: string; prId: number } | null {
+  const parts = prKey.split("/");
+  if (parts.length < 4) return null;
+  const prId = Number(parts[parts.length - 1]);
+  if (!Number.isFinite(prId)) return null;
+  return {
+    repoId: parts[parts.length - 2],
+    projectId: parts[parts.length - 3],
+    prId,
+  };
+}
+
+function savedProgressPercent(s: ReviewState): number | null {
+  const total = s.filePaths.length;
+  if (total === 0) return null;
+  if (s.phase === "done") return null;
+  if (s.phase === "batch-aggregate" || s.phase === "synthesis") return 100;
+  const completedFiles = Math.min(s.currentFileIdx, total);
+  const currentFileProgress = s.currentFileHunks > 0
+    ? Math.min(s.currentHunk, s.currentFileHunks) / s.currentFileHunks
+    : 0;
+  return Math.round(((completedFiles + currentFileProgress) / total) * 100);
+}
 
 // Triage order: blocking issues first (pulled forward), informational last.
 const TIER_ORDER: Tier[] = ["blocking", "should-fix", "nit", "fyi"];
@@ -58,6 +116,15 @@ function tierIsActionable(t: Tier): boolean {
 function fileName(path: string): string {
   const i = path.lastIndexOf("/");
   return i >= 0 ? path.slice(i + 1) : path;
+}
+
+// Compact elapsed-time label: "4.2s" under a minute, "1m 03s" beyond.
+function formatDuration(ms: number): string {
+  const totalSecs = ms / 1000;
+  if (totalSecs < 60) return `${totalSecs.toFixed(1)}s`;
+  const m = Math.floor(totalSecs / 60);
+  const s = Math.round(totalSecs % 60);
+  return `${m}m ${String(s).padStart(2, "0")}s`;
 }
 
 function lineSuffix(f: Finding): string {
@@ -143,32 +210,99 @@ function progressFileCount(p: ReviewProgress | null): string {
   return `${fileNum}/${p.totalFiles}`;
 }
 
-export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
-  const resize = useResizableWidth({
-    storageKey: "pex-prreview-width",
-    defaultWidth: 480,
-    min: 320,
-    max: 900,
-    side: "left",
-  });
+type SubTab = "summary" | "findings";
 
+// Persisted across (un)mounts so jumping to a finding's code and back to the
+// PR Review tab returns the user to the Findings sub-tab and their scroll
+// position — the panel is unmounted while the diff is shown, so component-local
+// state would reset to the default.
+const reviewSubTab = signal<SubTab>("summary");
+let savedFindingsScrollTop = 0;
+
+export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
   const run: PRReviewRun | undefined = reviewRuns.value.get(prId);
-  const summaryRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll progress text as new updates land
+  const subTab = reviewSubTab.value;
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const setSubTab = (t: SubTab) => {
+    reviewSubTab.value = t;
+    // Land at the right scroll position for the destination sub-tab once it
+    // has rendered: the saved spot for Findings, top for Summary.
+    requestAnimationFrame(() => {
+      if (bodyRef.current) bodyRef.current.scrollTop = t === "findings" ? savedFindingsScrollTop : 0;
+    });
+  };
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [mode, setMode] = useState<ReviewMode>(() => loadReviewMode());
+  const [savedReview, setSavedReview] = useState<ReviewState | null>(null);
   useEffect(() => {
-    if (summaryRef.current) {
-      summaryRef.current.scrollTop = summaryRef.current.scrollHeight;
+    getSavedReview().then(setSavedReview);
+  }, []);
+  const savedTarget = savedReview ? parsePrKey(savedReview.prKey) : null;
+
+  const handleResume = () => {
+    if (busyElsewhere) return;
+    const target = savedTarget;
+    const resumeMode = (savedReview?.mode as ReviewMode | undefined) ?? mode;
+    setSavedReview(null);
+    if (target && target.prId !== prId) {
+      // Saved progress belongs to a different PR — navigate there so the user
+      // can watch it resume; the engine matches on pr_key.
+      selectedProject.value = target.projectId;
+      selectedRepo.value = target.repoId;
+      currentView.value = { kind: "pr-detail", prId: target.prId };
+      startBackgroundReview(target.projectId, target.repoId, target.prId, `PR #${target.prId}`, true, resumeMode);
+    } else {
+      startBackgroundReview(projectId, repoId, prId, prTitle, true, resumeMode);
     }
-  }, [run?.progress]);
+  };
+
+  const handleDiscard = async () => {
+    await clearSavedReview();
+    setSavedReview(null);
+  };
 
   const running = run?.status === "running";
   const posting = run?.status === "posting";
   const busyElsewhere =
     activeReviewPrId.value !== null && activeReviewPrId.value !== prId;
 
-  const restart = () => startBackgroundReview(projectId, repoId, prId, prTitle);
-  const close = () => (sidebarMode.value = null);
+  // Restore the Findings scroll position on (re)mount so returning from a
+  // finding's code lands the user back where they were.
+  useEffect(() => {
+    if (bodyRef.current && reviewSubTab.value === "findings") {
+      bodyRef.current.scrollTop = savedFindingsScrollTop;
+    }
+    // Run once per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-render once a second while a file is under review so its running timer
+  // ticks. Idle (no active file / not running) means no interval.
+  const [now, setNow] = useState(() => Date.now());
+  const activeStartMs = run?.activeFileStartMs;
+  useEffect(() => {
+    if (!running || activeStartMs == null) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running, activeStartMs]);
+
+  // Open the pre-review confirmation dialog. The actual run is kicked off from
+  // the dialog's Start button (which also carries the chosen specialist set).
+  const restart = () => {
+    if (busyElsewhere) return;
+    setConfirmOpen(true);
+  };
+
+  const beginReview = (selectedMode: ReviewMode, enabledSpecialists?: string[]) => {
+    setConfirmOpen(false);
+    setSavedReview(null);
+    // Remember the chosen mode as the new default for next time.
+    setMode(selectedMode);
+    saveReviewMode(selectedMode);
+    startBackgroundReview(projectId, repoId, prId, prTitle, false, selectedMode, enabledSpecialists);
+  };
 
   // Selection + posted state lives here so the footer's "Post N to ADO"
   // button can drive a per-finding post loop over the user's selection.
@@ -298,7 +432,7 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     try {
       await cancelReview();
     } finally {
-      // Drop this PR's run so the sidebar resets to the "No review yet" state.
+      // Drop this PR's run so the panel resets to the "No review yet" state.
       // The Rust engine sees the cancel flag, returns early, and the in-flight
       // startReview promise's .catch in reviewBus would otherwise leave the
       // run stuck in "error" — clearing it here is what makes the UI reset.
@@ -309,20 +443,12 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     }
   };
 
-  return (
-    <aside
-      class="border-l border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 shrink-0 flex flex-col relative"
-      style={{ width: `${resize.width}px` }}
-    >
-      <div
-        onMouseDown={resize.onMouseDown}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize PR review sidebar"
-        title="Drag to resize"
-        class="absolute top-0 left-0 bottom-0 w-1.5 -ml-0.5 cursor-col-resize hover:bg-accent/40 active:bg-accent/70 z-10"
-      />
+  const findingCount = run?.output?.findings.length ?? 0;
+  // Mode shown in the header: the active run's mode, else the saved default.
+  const headerMode = run?.mode ?? mode;
 
+  return (
+    <div class="bg-gray-50 dark:bg-gray-800/50 h-full flex flex-col min-w-0 overflow-hidden">
       {/* Header */}
       <div class="px-4 py-2 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2 shrink-0">
         <span class="text-sm font-semibold">🔍 PR review</span>
@@ -330,27 +456,97 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
           <span class="text-xs text-gray-400">
             {run.status === "running" && "running"}
             {run.status === "posting" && "posting"}
-            {run.status === "done" && `${run.output?.findings.length ?? 0} findings`}
+            {run.status === "done" && `${findingCount} findings`}
             {run.status === "posted" && "posted ✓"}
             {run.status === "error" && "error"}
           </span>
         )}
-        <button
-          onClick={close}
-          aria-label="Close PR review sidebar"
-          title="Close"
-          class="ml-auto text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none px-1"
+        <span
+          title="Review strategy — change it when you start a review."
+          class="ml-auto text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded border border-border text-gray-500 dark:text-gray-400"
         >
-          ×
-        </button>
+          {headerMode}
+        </span>
       </div>
 
+      {/* Progress / error — always visible (not inside a scroll area) so the
+          status stays put while the user reads either sub-tab. */}
+      {run && (running || posting) && (
+        <div class="mx-4 mt-3 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 shrink-0">
+          <div class="flex items-center gap-2">
+            <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full shrink-0" />
+            <span class="text-xs font-semibold text-gray-700 dark:text-gray-200">
+              Review in Progress
+            </span>
+            {progressFileCount(run.progress) && (
+              <span class="ml-auto text-xs font-mono text-gray-500 dark:text-gray-400">
+                {progressFileCount(run.progress)}
+              </span>
+            )}
+            {running && (
+              <button
+                onClick={cancel}
+                class="ml-2 px-2 py-0.5 text-[11px] text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded font-medium hover:bg-red-50 dark:hover:bg-red-900/30"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+          <div class="mt-2 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
+            <div
+              class="bg-accent h-full rounded-full transition-all duration-300"
+              style={{ width: `${progressPercent(run.progress)}%` }}
+            />
+          </div>
+          <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400 truncate">
+            {progressText(run.progress)}
+          </div>
+        </div>
+      )}
+
+      {run?.error && (
+        <div class="mx-4 mt-3 text-red-600 dark:text-red-400 whitespace-pre-wrap text-sm shrink-0">
+          {run.error}
+        </div>
+      )}
+
+      {/* Sub-tabs: Summary and Findings live on separate panes so a long
+          summary never buries the findings list (and each scrolls on its own). */}
+      {run?.output && (
+        <div class="flex items-stretch gap-1 px-3 pt-2 shrink-0 border-b border-gray-200 dark:border-gray-700">
+          {([
+            ["summary", "Summary"],
+            ["findings", `Findings${findingCount ? ` (${findingCount})` : ""}`],
+          ] as [SubTab, string][]).map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setSubTab(id)}
+              class={`px-3 py-1.5 text-xs font-medium rounded-t border-b-2 -mb-px ${
+                subTab === id
+                  ? "border-accent text-accent"
+                  : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Body */}
-      <div class="flex-1 overflow-y-auto p-4 text-sm" ref={summaryRef}>
+      <div
+        ref={bodyRef}
+        onScroll={() => {
+          if (reviewSubTab.value === "findings" && bodyRef.current) {
+            savedFindingsScrollTop = bodyRef.current.scrollTop;
+          }
+        }}
+        class="flex-1 overflow-y-auto p-4 text-sm min-h-0"
+      >
         {!run ? (
           <div class="text-gray-400">
             No review yet for this PR.
-            <div class="mt-3">
+            <div class="mt-3 flex items-center gap-3 flex-wrap">
               <button
                 onClick={restart}
                 disabled={busyElsewhere}
@@ -359,63 +555,60 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
               >
                 Start review
               </button>
+              {savedReview && (() => {
+                const savedPrId = savedTarget?.prId;
+                const savedLabel = savedPrId != null ? `PR #${savedPrId}` : "another PR";
+                const pct = savedProgressPercent(savedReview);
+                const pctSuffix = pct != null ? ` (${pct}%)` : "";
+                const resumeTitle = savedPrId != null && savedPrId !== prId
+                  ? `Jump to PR #${savedPrId} and resume its review`
+                  : "Resume the saved review";
+                return (
+                  <span class="text-xs text-amber-500">
+                    Saved progress for {savedLabel}{pctSuffix} —
+                    <button
+                      onClick={handleResume}
+                      disabled={busyElsewhere}
+                      title={resumeTitle}
+                      class="underline ml-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      resume
+                    </button>
+                    {" · "}
+                    <button onClick={handleDiscard} class="underline">discard</button>
+                  </span>
+                );
+              })()}
             </div>
           </div>
-        ) : (
+        ) : !run.output ? (
+          run.fileList && run.fileList.length > 0 ? (
+            <ReviewFileChecklist run={run} now={now} />
+          ) : (
+            <div class="flex items-center gap-2 text-gray-400 text-xs">
+              <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
+              {posting ? "Posting findings to ADO…" : "Preparing review…"}
+            </div>
+          )
+        ) : subTab === "summary" ? (
           <>
-            {(running || posting) && (
-              <div class="mb-4 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2">
-                <div class="flex items-center gap-2">
-                  <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full shrink-0" />
-                  <span class="text-xs font-semibold text-gray-700 dark:text-gray-200">
-                    Review in Progress
-                  </span>
-                  {progressFileCount(run.progress) && (
-                    <span class="ml-auto text-xs font-mono text-gray-500 dark:text-gray-400">
-                      {progressFileCount(run.progress)}
-                    </span>
-                  )}
-                  {running && (
-                    <button
-                      onClick={cancel}
-                      class="ml-2 px-2 py-0.5 text-[11px] text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded font-medium hover:bg-red-50 dark:hover:bg-red-900/30"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </div>
-                <div class="mt-2 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    class="bg-accent h-full rounded-full transition-all duration-300"
-                    style={{ width: `${progressPercent(run.progress)}%` }}
-                  />
-                </div>
-                <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                  {progressText(run.progress)}
-                </div>
-              </div>
-            )}
-
-            {run.error && (
-              <div class="text-red-600 dark:text-red-400 whitespace-pre-wrap mb-4">
-                {run.error}
-              </div>
-            )}
-
-            {run.output?.summary && (
+            {run.output.summary ? (
               <>
                 <MarkdownSummary markdown={stripStatisticsSection(run.output.summary)} />
                 <ExactStatistics findings={run.output.findings} />
               </>
+            ) : (
+              <div class="text-gray-400 text-xs">No summary was produced for this review.</div>
             )}
-
+          </>
+        ) : (
+          <>
             {bulkError && (
-              <div class="mt-3 text-red-600 dark:text-red-400 whitespace-pre-wrap text-xs">
+              <div class="mb-3 text-red-600 dark:text-red-400 whitespace-pre-wrap text-xs">
                 {bulkError}
               </div>
             )}
-
-            {run.output && run.output.findings.length > 0 && (
+            {findingCount > 0 ? (
               <FindingsList
                 projectId={projectId}
                 repoId={repoId}
@@ -431,6 +624,8 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
                 anySelectable={selectableIndices.length > 0}
                 onToggleSelectAll={toggleSelectAll}
               />
+            ) : (
+              <div class="text-gray-400 text-xs">No findings — nothing flagged in this review.</div>
             )}
           </>
         )}
@@ -469,7 +664,91 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
           )}
         </div>
       )}
-    </aside>
+
+      {confirmOpen && (
+        <ReviewConfirmDialog
+          initialMode={mode}
+          prId={prId}
+          prTitle={prTitle}
+          busyElsewhere={busyElsewhere}
+          onConfirm={beginReview}
+          onClose={() => setConfirmOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Live worklist shown while a review runs: every file to be reviewed, ticked
+// off with its elapsed time as the engine finishes each one, plus a running
+// timer on the file currently under review.
+function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
+  const files = run.fileList ?? [];
+  const durations = run.fileDurations ?? {};
+  const pre = run.preCompletedCount ?? 0;
+  const isDone = (i: number) => durations[i] != null || i < pre;
+  const completed = files.reduce((acc, _f, i) => acc + (isDone(i) ? 1 : 0), 0);
+
+  return (
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">Files</span>
+        <span class="text-xs font-mono text-gray-400">
+          {completed}/{files.length}
+        </span>
+      </div>
+      <ul class="flex flex-col gap-0.5">
+        {files.map((path, i) => {
+          const done = isDone(i);
+          const active = !done && i === run.activeFileIndex;
+          const elapsed =
+            done && durations[i] != null
+              ? formatDuration(durations[i])
+              : active && run.activeFileStartMs != null
+                ? formatDuration(Math.max(0, now - run.activeFileStartMs))
+                : "";
+          return (
+            <li
+              key={`${i}-${path}`}
+              class={`flex items-center gap-2 px-2 py-1 rounded text-xs ${
+                active ? "bg-accent/5" : ""
+              }`}
+              title={path}
+            >
+              <span class="shrink-0 w-3.5 flex items-center justify-center">
+                {done ? (
+                  <span class="text-green-500">✓</span>
+                ) : active ? (
+                  <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
+                ) : (
+                  <span class="text-gray-300 dark:text-gray-600">○</span>
+                )}
+              </span>
+              <span
+                class={`min-w-0 flex-1 truncate ${
+                  done
+                    ? "text-gray-400 dark:text-gray-500"
+                    : active
+                      ? "text-gray-800 dark:text-gray-100 font-medium"
+                      : "text-gray-500 dark:text-gray-400"
+                }`}
+              >
+                {fileName(path)}
+              </span>
+              {elapsed && (
+                <span
+                  class={`shrink-0 font-mono tabular-nums ${
+                    active ? "text-accent" : "text-gray-400"
+                  }`}
+                >
+                  {elapsed}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

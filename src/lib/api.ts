@@ -582,8 +582,29 @@ export async function startReview(
   prId: number,
   prTitle: string,
   mode: ReviewMode = "fast",
+  enabledSpecialists?: string[],
 ): Promise<ReviewOutput> {
-  return invoke<ReviewOutput>("start_review", { projectId, repoId, prId, prTitle, mode });
+  return invoke<ReviewOutput>("start_review", {
+    projectId,
+    repoId,
+    prId,
+    prTitle,
+    mode,
+    enabledSpecialists: enabledSpecialists ?? null,
+  });
+}
+
+/// One Thorough-mode specialist plus the concrete model it will use. Shown in
+/// the pre-review confirmation dialog so the user can pick which agents run.
+export interface ReviewSpecialistInfo {
+  key: string;
+  label: string;
+  description: string;
+  model: string;
+}
+
+export async function getReviewSpecialists(): Promise<ReviewSpecialistInfo[]> {
+  return invoke<ReviewSpecialistInfo[]>("get_review_specialists");
 }
 
 export async function startReviewPost(
