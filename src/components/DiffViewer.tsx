@@ -512,7 +512,7 @@ export function DiffViewer({
 
       {searchOpen && (
         <div
-          class="sticky top-0 z-20 ml-auto mr-2 mt-1 w-[min(420px,calc(100%-1rem))] float-right shadow-lg rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 p-2 flex items-center gap-2"
+          class="sticky top-12 z-20 ml-auto mr-2 mt-1 w-[min(420px,calc(100%-1rem))] float-right shadow-lg rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 p-2 flex items-center gap-2"
           // Stop diff-area mouse handlers from owning clicks in the bar.
           onMouseDown={(e) => e.stopPropagation()}
         >
