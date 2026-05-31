@@ -77,6 +77,9 @@ function FileRow({
       ref={rowRef}
       class={`file-tree-item ${file.viewed ? "file-tree-item--viewed" : ""} ${isActive ? "file-tree-item--active" : ""}`}
       style={{ paddingLeft: `${depth * 12 + 8}px` }}
+      onClick={() => openPreviewTab(file.path)}
+      onDblClick={() => pinTab(file.path)}
+      title={file.path}
     >
       <span
         class={`text-xs font-mono w-4 text-center shrink-0 ${STATUS_COLOR[file.status] || ""}`}
@@ -84,14 +87,9 @@ function FileRow({
       >
         {STATUS_ICON[file.status] || "?"}
       </span>
-      <button
-        class="flex-1 text-left truncate text-[13px]"
-        onClick={() => openPreviewTab(file.path)}
-        onDblClick={() => pinTab(file.path)}
-        title={file.path}
-      >
+      <span class="flex-1 text-left truncate text-[13px]">
         {label}
-      </button>
+      </span>
       <button
         class="shrink-0 text-xs px-1 text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400"
         onClick={(e) => {
