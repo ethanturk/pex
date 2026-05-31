@@ -5,8 +5,8 @@ use crate::review::feedback::{self, CalibrationStats, Verdict};
 use crate::AppState;
 use tauri::State;
 
-fn get_client(state: &AppState) -> Result<crate::ado::AdoClient, String> {
-    let guard = state.ado_client.lock().map_err(|e| e.to_string())?;
+fn get_client(state: &AppState) -> Result<crate::provider::GitClient, String> {
+    let guard = state.client.lock().map_err(|e| e.to_string())?;
     guard
         .as_ref()
         .cloned()
@@ -38,7 +38,7 @@ pub async fn record_finding_verdict(
 ) -> Result<(), String> {
     let verdict = Verdict::from_str(&verdict).map_err(|e| e.to_string())?;
     let client = get_client(&state)?;
-    let key = pr_key(&client.org_url, &project_id, &repo_id, pr_id);
+    let key = pr_key(&client.org_url(), &project_id, &repo_id, pr_id);
     let fp = feedback::fingerprint(&file_path, &comment);
 
     let db = state.db.lock().map_err(|e| e.to_string())?;

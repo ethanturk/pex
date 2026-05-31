@@ -3,6 +3,11 @@ use base64::Engine;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::de::DeserializeOwned;
 
+// Shared, provider-neutral data structures live in `crate::provider::model`.
+// Re-export them here so the many `ProjectSummary`/`PullRequest`/… references
+// in this file (and `crate::ado::*` references elsewhere) keep resolving.
+pub use crate::provider::model::*;
+
 /// Azure DevOps REST API client.
 #[derive(Clone)]
 pub struct AdoClient {
@@ -57,13 +62,13 @@ impl AdoClient {
         let body = resp
             .text()
             .await
-            .map_err(|e| AppError::Ado(e.to_string()))?;
+            .map_err(|e| AppError::Provider(e.to_string()))?;
 
         if !status.is_success() {
-            return Err(AppError::Ado(format!("ADO API {}: {}", status, body)));
+            return Err(AppError::Provider(format!("ADO API {}: {}", status, body)));
         }
 
-        serde_json::from_str(&body).map_err(|e| AppError::Ado(format!("Parse error: {}", e)))
+        serde_json::from_str(&body).map_err(|e| AppError::Provider(format!("Parse error: {}", e)))
     }
 
     async fn post<T: DeserializeOwned>(
@@ -84,13 +89,13 @@ impl AdoClient {
         let text = resp
             .text()
             .await
-            .map_err(|e| AppError::Ado(e.to_string()))?;
+            .map_err(|e| AppError::Provider(e.to_string()))?;
 
         if !status.is_success() {
-            return Err(AppError::Ado(format!("ADO API {}: {}", status, text)));
+            return Err(AppError::Provider(format!("ADO API {}: {}", status, text)));
         }
 
-        serde_json::from_str(&text).map_err(|e| AppError::Ado(format!("Parse error: {}", e)))
+        serde_json::from_str(&text).map_err(|e| AppError::Provider(format!("Parse error: {}", e)))
     }
 
     async fn put<T: DeserializeOwned>(
@@ -111,13 +116,13 @@ impl AdoClient {
         let text = resp
             .text()
             .await
-            .map_err(|e| AppError::Ado(e.to_string()))?;
+            .map_err(|e| AppError::Provider(e.to_string()))?;
 
         if !status.is_success() {
-            return Err(AppError::Ado(format!("ADO API {}: {}", status, text)));
+            return Err(AppError::Provider(format!("ADO API {}: {}", status, text)));
         }
 
-        serde_json::from_str(&text).map_err(|e| AppError::Ado(format!("Parse error: {}", e)))
+        serde_json::from_str(&text).map_err(|e| AppError::Provider(format!("Parse error: {}", e)))
     }
 
     // ---- Projects & Repos ----
@@ -592,7 +597,7 @@ impl AdoClient {
             .headers(headers)
             .send()
             .await
-            .map_err(|e| AppError::Ado(format!("Fetch file content failed: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Fetch file content failed: {}", e)))?;
 
         let debug = std::env::var("PEX_DEBUG_HTTP").is_ok();
         let content_type = resp
@@ -611,7 +616,7 @@ impl AdoClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(AppError::Ado(format!(
+            return Err(AppError::Provider(format!(
                 "Fetch file content HTTP {} for {} @ {}: {}",
                 status,
                 file_path,
@@ -623,7 +628,7 @@ impl AdoClient {
         let body = resp
             .text()
             .await
-            .map_err(|e| AppError::Ado(format!("Read file body failed: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Read file body failed: {}", e)))?;
 
         if debug {
             let preview: String = body
@@ -661,7 +666,7 @@ impl AdoClient {
                     // files past an internal size threshold. Caller retries.
                     None => Ok(FetchOutcome::Inconclusive),
                 },
-                Err(e) => Err(AppError::Ado(format!(
+                Err(e) => Err(AppError::Provider(format!(
                     "Failed to parse ADO item envelope for {} @ {}: {}",
                     file_path, commit_id, e
                 ))),

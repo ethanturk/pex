@@ -1324,7 +1324,7 @@ pub async fn post_findings(
     project_id: &str,
     repo_id: &str,
     pr_id: i64,
-    client: &crate::ado::AdoClient,
+    client: &crate::provider::GitClient,
 ) -> Result<(), AppError> {
     // Post the overall summary as a PR-level thread
     let summary_thread = serde_json::json!({
@@ -1406,7 +1406,7 @@ fn tier_prefix(t: Tier) -> &'static str {
 /// range when known. Shared by the full `post_findings` path and the Phase 4
 /// auto-post path so formatting stays identical.
 pub async fn post_single_finding(
-    client: &crate::ado::AdoClient,
+    client: &crate::provider::GitClient,
     project_id: &str,
     repo_id: &str,
     pr_id: i64,

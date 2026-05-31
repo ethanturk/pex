@@ -7,7 +7,7 @@
 //! are memoized in `StandardsCache` so a full "Review All" run over a 40-file
 //! PR makes only a handful of ADO requests instead of hundreds.
 
-use crate::ado::AdoClient;
+use crate::provider::GitClient;
 use crate::cache::standards_cache::{StandardsCache, StandardsCacheKey};
 
 /// Filename variants for the agent-guidance file. Tried in this order; first
@@ -37,7 +37,7 @@ impl StandardsContext {
 /// Walk leaf → root from `file_path`, resolving both AGENTS and STYLE.
 /// `max_chars` is applied per-file with an explicit truncation marker.
 pub async fn resolve(
-    client: &AdoClient,
+    client: &GitClient,
     cache: &StandardsCache,
     org_url: &str,
     project_id: &str,
@@ -99,7 +99,7 @@ fn walk_dirs(file_path: &str) -> Vec<String> {
 }
 
 async fn find_nearest(
-    client: &AdoClient,
+    client: &GitClient,
     cache: &StandardsCache,
     org_url: &str,
     project_id: &str,

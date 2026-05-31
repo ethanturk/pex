@@ -1,4 +1,4 @@
-use crate::ado::CommentThread;
+use crate::provider::CommentThread;
 use crate::AppState;
 use tauri::State;
 
@@ -17,7 +17,7 @@ fn normalize_ado_file_path(path: &str) -> String {
 /// Threads/comments soft-deleted in ADO (the web UI hides them) are still
 /// returned by the REST endpoint. Without this filter the user sees ghost
 /// threads — e.g. three copies of a comment they deleted twice.
-fn visible_comments(t: &CommentThread) -> Vec<&crate::ado::Comment> {
+fn visible_comments(t: &CommentThread) -> Vec<&crate::provider::Comment> {
     t.comments.iter().filter(|c| !c.is_deleted).collect()
 }
 
@@ -245,8 +245,8 @@ pub async fn update_reviewer_status(
         .map_err(|e| e.to_string())
 }
 
-fn get_client(state: &AppState) -> Result<crate::ado::AdoClient, String> {
-    let guard = state.ado_client.lock().unwrap();
+fn get_client(state: &AppState) -> Result<crate::provider::GitClient, String> {
+    let guard = state.client.lock().unwrap();
     guard
         .as_ref()
         .cloned()

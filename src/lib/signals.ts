@@ -93,6 +93,7 @@ export interface OrgCredential {
   orgUrl: string;
   name: string;
   tokenType: "pat" | "oauth";
+  provider: "ado" | "github";
 }
 export const activeOrg = signal<OrgCredential | null>(null);
 export const savedOrgs = signal<OrgCredential[]>([]);

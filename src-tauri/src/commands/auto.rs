@@ -6,8 +6,8 @@ use crate::review::feedback::{self, Verdict};
 use crate::AppState;
 use tauri::State;
 
-fn get_client(state: &AppState) -> Result<crate::ado::AdoClient, String> {
-    let guard = state.ado_client.lock().map_err(|e| e.to_string())?;
+fn get_client(state: &AppState) -> Result<crate::provider::GitClient, String> {
+    let guard = state.client.lock().map_err(|e| e.to_string())?;
     guard
         .as_ref()
         .cloned()
@@ -47,7 +47,7 @@ pub async fn auto_review_candidates(
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for pr in prs {
-        let key = pr_key(&client.org_url, &project_id, &repo_id, pr.pr_id);
+        let key = pr_key(&client.org_url(), &project_id, &repo_id, pr.pr_id);
         let last = feedback::get_last_reviewed_iteration(&db, &key);
         if should_auto_review(true, last, pr.iteration_count) {
             out.push(pr.pr_id);
@@ -81,7 +81,7 @@ pub async fn auto_post_review_findings(
     }
 
     let client = get_client(&state)?;
-    let key = pr_key(&client.org_url, &project_id, &repo_id, pr_id);
+    let key = pr_key(&client.org_url(), &project_id, &repo_id, pr_id);
 
     let selected = select_auto_post_findings(&findings, floor);
     let mut posted = 0usize;

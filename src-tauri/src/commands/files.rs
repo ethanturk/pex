@@ -51,7 +51,7 @@ pub async fn get_file_diff(
     let view_enum = crate::diff::engine::DiffView::from_str(&view_str);
 
     let cache_key = crate::cache::diff_cache::DiffCacheKey {
-        org_url: client.org_url.clone(),
+        org_url: client.org_url().to_string(),
         project_id: project_id.clone(),
         repo_id: repo_id.clone(),
         pr_id,
@@ -99,7 +99,7 @@ pub async fn prefetch_pr_diffs(
     file_paths: Vec<String>,
 ) -> Result<serde_json::Value, String> {
     let client = get_client(&state)?;
-    let org_url = client.org_url.clone();
+    let org_url = client.org_url().to_string();
     let concurrency = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         crate::ai::read_hunk_concurrency(&db)
@@ -220,9 +220,9 @@ pub fn mark_file_viewed(
     file_path: String,
     viewed: bool,
 ) -> Result<(), String> {
-    let client_lock = state.ado_client.lock().unwrap();
+    let client_lock = state.client.lock().unwrap();
     let client = client_lock.as_ref().ok_or("Not authenticated")?;
-    let org_url = &client.org_url;
+    let org_url = client.org_url();
 
     let conn = state.db.lock().unwrap();
     crate::cache::set_viewed(
@@ -244,17 +244,17 @@ pub fn get_viewed_files(
     repo_id: String,
     pr_id: i64,
 ) -> Result<Vec<String>, String> {
-    let client_lock = state.ado_client.lock().unwrap();
+    let client_lock = state.client.lock().unwrap();
     let client = client_lock.as_ref().ok_or("Not authenticated")?;
-    let org_url = &client.org_url;
+    let org_url = client.org_url();
 
     let conn = state.db.lock().unwrap();
     crate::cache::get_viewed(&conn, org_url, &project_id, &repo_id, pr_id)
         .map_err(|e| e.to_string())
 }
 
-fn get_client(state: &AppState) -> Result<crate::ado::AdoClient, String> {
-    let guard = state.ado_client.lock().unwrap();
+fn get_client(state: &AppState) -> Result<crate::provider::GitClient, String> {
+    let guard = state.client.lock().unwrap();
     guard
         .as_ref()
         .cloned()
