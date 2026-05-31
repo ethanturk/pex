@@ -428,6 +428,10 @@ fn prompt_info(
             "Multi-pass: code simplifier",
             "Thorough PR review specialist — clarity, redundancy, unnecessary complexity.",
         ),
+        crate::ai::prompts::PromptKey::ReviewDesignPrinciplesSystem => (
+            "Multi-pass: design principles",
+            "Thorough PR review specialist — SOLID violations and cross-cutting DRY/duplication.",
+        ),
     };
 
     let model = crate::ai::prompts::resolve_model(conn, key)?;
