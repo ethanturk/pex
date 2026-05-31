@@ -394,7 +394,7 @@ export function AiSettings({ open, onClose }: Props) {
           <TabButton label="PR List" active={tab === "pr-list"} onClick={() => setTab("pr-list")} />
         </div>
 
-        <div class="px-5 py-4 space-y-5">
+        <div class="px-5 py-4 space-y-5 overflow-x-hidden">
           {tab === "ai-defaults" && (
             <section>
               <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
@@ -800,7 +800,7 @@ export function AiSettings({ open, onClose }: Props) {
             <section>
               <div class="flex items-start justify-between gap-3 mb-3">
                 <p class="text-xs text-gray-500 dark:text-gray-400">
-                  Customize the system prompts used by AI features. Each prompt can also be pinned to a specific provider model — leave it on <em>Default</em> to use the model from the AI Defaults tab.
+                  Customize the system prompts used by AI features. Edits save automatically when you click out of a prompt. Each prompt can also be pinned to a specific provider model — leave it on <em>Default</em> to use the model from the AI Defaults tab.
                 </p>
                 <button
                   onClick={handleRefreshModels}
@@ -830,7 +830,7 @@ export function AiSettings({ open, onClose }: Props) {
                   return (
                     <div key={p.key}>
                       <div class="flex items-center justify-between gap-3 mb-1">
-                        <span class="text-xs text-gray-500 dark:text-gray-400">
+                        <span class="text-xs text-gray-500 dark:text-gray-400 min-w-0 flex-1 truncate">
                           {p.label}
                           {p.isCustomized && (
                             <span class="ml-2 text-[10px] uppercase tracking-wide text-accent">
@@ -843,7 +843,7 @@ export function AiSettings({ open, onClose }: Props) {
                             </span>
                           )}
                         </span>
-                        <div class="flex items-center gap-1">
+                        <div class="flex items-center gap-1 shrink-0">
                           <label class="text-[11px] text-gray-500 dark:text-gray-400">
                             Model:
                           </label>
@@ -852,7 +852,7 @@ export function AiSettings({ open, onClose }: Props) {
                             onChange={(e) =>
                               handleChangePromptModel(p.key, e.currentTarget.value)
                             }
-                            class="text-[11px] px-1.5 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 max-w-[200px]"
+                            class="text-[11px] px-1.5 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 max-w-[200px] min-w-0"
                             title="Override the model used by this prompt. 'Default' uses the model from the AI Defaults tab."
                           >
                             <option value="">Default</option>
@@ -875,6 +875,13 @@ export function AiSettings({ open, onClose }: Props) {
                             [p.key]: e.currentTarget.value,
                           }))
                         }
+                        onBlur={() => {
+                          // Autosave on blur: only when the text actually changed
+                          // and isn't empty (use Reset to restore the default).
+                          if (dirty && draft.trim().length > 0) {
+                            handleSavePrompt(p.key);
+                          }
+                        }}
                         rows={8}
                         class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-xs font-mono outline-none focus:ring-2 focus:ring-accent resize-y"
                       />
@@ -882,13 +889,6 @@ export function AiSettings({ open, onClose }: Props) {
                         {p.description}
                       </p>
                       <div class="flex items-center gap-2 mt-2">
-                        <button
-                          onClick={() => handleSavePrompt(p.key)}
-                          disabled={!dirty || draft.trim().length === 0}
-                          class="px-3 py-1.5 bg-accent hover:bg-accent-hover text-white rounded-lg text-xs font-medium disabled:opacity-50"
-                        >
-                          Save
-                        </button>
                         <button
                           onClick={() => handleResetPrompt(p.key, p.label)}
                           disabled={!p.isCustomized}
