@@ -224,6 +224,26 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     });
   };
 
+  // A finding can be selected for posting only if it hasn't already been posted
+  // or dismissed. "Select all" operates over exactly those.
+  const selectableIndices = findings
+    .map((_, i) => i)
+    .filter((i) => !posted.has(i) && !dismissed.has(i));
+  const allSelected =
+    selectableIndices.length > 0 && selectableIndices.every((i) => selected.has(i));
+
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        selectableIndices.forEach((i) => next.delete(i));
+      } else {
+        selectableIndices.forEach((i) => next.add(i));
+      }
+      return next;
+    });
+  };
+
   const markPosted = (i: number) => {
     setPosted((prev) => {
       if (prev.has(i)) return prev;
@@ -407,6 +427,9 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
                 onToggleSelected={toggleSelected}
                 onPosted={markPosted}
                 onDismiss={dismissFinding}
+                allSelected={allSelected}
+                anySelectable={selectableIndices.length > 0}
+                onToggleSelectAll={toggleSelectAll}
               />
             )}
           </>
@@ -490,6 +513,29 @@ interface FindingsListProps {
   onToggleSelected: (i: number) => void;
   onPosted: (i: number) => void;
   onDismiss: (i: number) => void;
+  allSelected: boolean;
+  anySelectable: boolean;
+  onToggleSelectAll: () => void;
+}
+
+function SelectAllButton({
+  allSelected,
+  anySelectable,
+  onToggleSelectAll,
+}: {
+  allSelected: boolean;
+  anySelectable: boolean;
+  onToggleSelectAll: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggleSelectAll}
+      disabled={!anySelectable}
+      class="text-[11px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      {allSelected ? "Deselect all" : "Select all"}
+    </button>
+  );
 }
 
 function FindingsList({
@@ -503,6 +549,9 @@ function FindingsList({
   onToggleSelected,
   onPosted,
   onDismiss,
+  allSelected,
+  anySelectable,
+  onToggleSelectAll,
 }: FindingsListProps) {
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
 
@@ -526,8 +575,15 @@ function FindingsList({
 
   return (
     <div class="mt-4">
-      <div class="text-[10px] uppercase tracking-wide text-gray-400 mb-2">
-        Findings ({findings.length})
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-[10px] uppercase tracking-wide text-gray-400">
+          Findings ({findings.length})
+        </span>
+        <SelectAllButton
+          allSelected={allSelected}
+          anySelectable={anySelectable}
+          onToggleSelectAll={onToggleSelectAll}
+        />
       </div>
       <div class="space-y-3">
         {tierOrder.map((tier) => (
@@ -548,6 +604,13 @@ function FindingsList({
             onDismiss={onDismiss}
           />
         ))}
+      </div>
+      <div class="flex justify-end mt-3">
+        <SelectAllButton
+          allSelected={allSelected}
+          anySelectable={anySelectable}
+          onToggleSelectAll={onToggleSelectAll}
+        />
       </div>
     </div>
   );
