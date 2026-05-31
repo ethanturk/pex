@@ -1,19 +1,30 @@
 import { useEffect, useState } from "preact/hooks";
+import { activeOrg } from "@/lib/signals";
 
 interface Props {
   onVote: (vote: number) => void;
 }
 
-const ACTIONS = [
+// Azure DevOps exposes a 4-level reviewer vote.
+const ADO_ACTIONS = [
   { label: "Approve", vote: 10, class: "bg-green-600 hover:bg-green-700 text-white", prompt: "Approve this PR?" },
   { label: "Approve w/ Suggestions", vote: 5, class: "bg-green-500 hover:bg-green-600 text-white", prompt: "Approve with suggestions?" },
   { label: "Wait for Author", vote: -5, class: "bg-yellow-500 hover:bg-yellow-600 text-white", prompt: "Wait for author?" },
   { label: "Reject", vote: -10, class: "bg-red-600 hover:bg-red-700 text-white", prompt: "Reject this PR?" },
 ];
 
+// GitHub reviews only support three outcomes; the backend maps these int votes
+// to APPROVE / REQUEST_CHANGES / COMMENT review events.
+const GITHUB_ACTIONS = [
+  { label: "Approve", vote: 10, class: "bg-green-600 hover:bg-green-700 text-white", prompt: "Approve this PR?" },
+  { label: "Request Changes", vote: -10, class: "bg-red-600 hover:bg-red-700 text-white", prompt: "Request changes on this PR?" },
+  { label: "Comment", vote: 5, class: "bg-blue-600 hover:bg-blue-700 text-white", prompt: "Submit a review comment?" },
+];
+
 export function ApprovalBar({ onVote }: Props) {
+  const actions = activeOrg.value?.provider === "github" ? GITHUB_ACTIONS : ADO_ACTIONS;
   const [confirming, setConfirming] = useState<number | null>(null);
-  const pending = confirming !== null ? ACTIONS.find((a) => a.vote === confirming) : null;
+  const pending = confirming !== null ? actions.find((a) => a.vote === confirming) : null;
 
   const cancel = () => setConfirming(null);
   const confirm = () => {
@@ -36,7 +47,7 @@ export function ApprovalBar({ onVote }: Props) {
   return (
     <>
       <div class="flex items-center gap-1.5">
-        {ACTIONS.map((a) => (
+        {actions.map((a) => (
           <button
             key={a.vote}
             onClick={() => setConfirming(a.vote)}
