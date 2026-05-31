@@ -56,6 +56,7 @@ export function startBackgroundReview(
   prTitle: string,
   resuming = false,
   mode: ReviewMode = "fast",
+  enabledSpecialists?: string[],
 ) {
   activeReviewPrId.value = prId;
   const next = new Map(reviewRuns.value);
@@ -75,7 +76,7 @@ export function startBackgroundReview(
   });
   reviewRuns.value = next;
 
-  startReview(projectId, repoId, prId, prTitle, mode)
+  startReview(projectId, repoId, prId, prTitle, mode, enabledSpecialists)
     .then((output) => {
       updateReviewRun(prId, { status: "done", output, progress: null });
     })

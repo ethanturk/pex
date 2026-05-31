@@ -111,6 +111,7 @@ pub fn run() {
             commands::ai::test_ai_defaults,
             commands::ai::explain_hunk,
             commands::ai::get_ai_prompts,
+            commands::ai::get_review_specialists,
             commands::ai::save_ai_prompt,
             commands::ai::reset_ai_prompt,
             commands::ai::save_ai_prompt_model,

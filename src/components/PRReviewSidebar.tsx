@@ -14,6 +14,7 @@ import {
   type ReviewMode,
 } from "@/lib/signals";
 import { startBackgroundReview } from "@/lib/reviewBus";
+import { ReviewConfirmDialog } from "@/components/ReviewConfirmDialog";
 import {
   cancelReview,
   postReviewFinding,
@@ -205,6 +206,7 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   const run: PRReviewRun | undefined = reviewRuns.value.get(prId);
 
   const [subTab, setSubTab] = useState<SubTab>("summary");
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [mode, setMode] = useState<ReviewMode>(() => loadReviewMode());
   const [savedReview, setSavedReview] = useState<ReviewState | null>(null);
   useEffect(() => {
@@ -244,9 +246,17 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   const busyElsewhere =
     activeReviewPrId.value !== null && activeReviewPrId.value !== prId;
 
+  // Open the pre-review confirmation dialog. The actual run is kicked off from
+  // the dialog's Start button (which also carries the chosen specialist set).
   const restart = () => {
+    if (busyElsewhere) return;
+    setConfirmOpen(true);
+  };
+
+  const beginReview = (enabledSpecialists?: string[]) => {
+    setConfirmOpen(false);
     setSavedReview(null);
-    startBackgroundReview(projectId, repoId, prId, prTitle, false, mode);
+    startBackgroundReview(projectId, repoId, prId, prTitle, false, mode, enabledSpecialists);
   };
 
   // Selection + posted state lives here so the footer's "Post N to ADO"
@@ -598,6 +608,17 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
             </button>
           )}
         </div>
+      )}
+
+      {confirmOpen && (
+        <ReviewConfirmDialog
+          mode={mode}
+          prId={prId}
+          prTitle={prTitle}
+          busyElsewhere={busyElsewhere}
+          onConfirm={beginReview}
+          onClose={() => setConfirmOpen(false)}
+        />
       )}
     </div>
   );

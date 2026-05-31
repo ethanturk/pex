@@ -447,6 +447,44 @@ fn prompt_info(
     })
 }
 
+/// One Thorough-mode specialist as shown in the pre-review confirmation dialog.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSpecialistInfo {
+    /// Stable prompt key (matches `PromptKey::as_str`), sent back as the
+    /// `enabled_specialists` selection when the user starts the review.
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    /// The concrete model this specialist will use — its per-prompt override if
+    /// set, otherwise the AI tab's default model. Never the literal "Default".
+    pub model: String,
+}
+
+/// The Thorough-mode specialist roster, in run order, each annotated with the
+/// concrete model it will use. Backs the pre-review confirmation dialog.
+#[tauri::command]
+pub async fn get_review_specialists(
+    state: State<'_, AppState>,
+) -> Result<Vec<ReviewSpecialistInfo>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let default_model = crate::cache::get_setting(&db, "ai_model")
+        .map_err(|e: crate::AppError| e.to_string())?
+        .unwrap_or_else(|| "gpt-4.1".to_string());
+    crate::ai::prompts::PromptKey::THOROUGH_SPECIALISTS
+        .iter()
+        .map(|k| {
+            let info = prompt_info(&db, *k).map_err(|e: crate::AppError| e.to_string())?;
+            Ok(ReviewSpecialistInfo {
+                key: info.key,
+                label: info.label,
+                description: info.description,
+                model: info.model.unwrap_or_else(|| default_model.clone()),
+            })
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub async fn get_ai_prompts(state: State<'_, AppState>) -> Result<Vec<PromptInfo>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;

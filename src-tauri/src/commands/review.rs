@@ -277,6 +277,7 @@ pub async fn start_review(
     pr_id: i64,
     pr_title: String,
     mode: Option<ReviewMode>,
+    enabled_specialists: Option<Vec<String>>,
 ) -> Result<ReviewOutput, String> {
     let mode = mode.unwrap_or_default();
     // Gather the ADO client and context
@@ -366,6 +367,7 @@ pub async fn start_review(
         repo_id: repo_id.clone(),
         pr_id,
         mode,
+        enabled_specialists,
     };
 
     // Clear any prior cancel signal before starting a fresh run.
@@ -488,6 +490,8 @@ pub async fn start_review_post(
         repo_id: repo_id.clone(),
         pr_id,
         mode,
+        // The auto/post path runs the full specialist roster.
+        enabled_specialists: None,
     };
 
     state.review_cancel.store(false, Ordering::SeqCst);
