@@ -1,25 +1,12 @@
 import { useState, useMemo, useEffect, useRef } from "preact/hooks";
-import { selectedFile, fileTreeMode, visibleFilePaths } from "@/lib/signals";
+import { selectedFile, fileTreeMode, visibleFilePaths, openPreviewTab, pinTab } from "@/lib/signals";
 import type { FileEntry } from "@/lib/signals";
+import { STATUS_ICON, STATUS_COLOR } from "@/lib/fileStatus";
 
 interface Props {
   files: FileEntry[];
   onToggleViewed: (path: string, viewed: boolean) => void;
 }
-
-const STATUS_ICON: Record<string, string> = {
-  add: "+",
-  edit: "~",
-  delete: "−",
-  rename: "→",
-};
-
-const STATUS_COLOR: Record<string, string> = {
-  add: "text-green-500",
-  edit: "text-yellow-500",
-  delete: "text-red-500",
-  rename: "text-blue-500",
-};
 
 interface FolderNode {
   kind: "folder";
@@ -99,7 +86,8 @@ function FileRow({
       </span>
       <button
         class="flex-1 text-left truncate text-[13px]"
-        onClick={() => (selectedFile.value = file.path)}
+        onClick={() => openPreviewTab(file.path)}
+        onDblClick={() => pinTab(file.path)}
         title={file.path}
       >
         {label}

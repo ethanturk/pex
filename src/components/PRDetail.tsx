@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { useResizableWidth } from "@/lib/useResizableWidth";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick, showPrChecks } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick, showPrChecks, openTabs, previewPath, activeTab, PR_REVIEW_TAB, resetTabs } from "@/lib/signals";
 import {
   getPrChecks,
   getPullRequest,
@@ -22,7 +22,7 @@ import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
 import { HunkReview } from "@/components/HunkReview";
 import { PRReviewSidebar } from "@/components/PRReviewSidebar";
-import { ReviewPR } from "@/components/ReviewPR";
+import { TabBar } from "@/components/TabBar";
 import { ApprovalBar } from "@/components/ApprovalBar";
 
 interface Props { prId: number; }
@@ -152,6 +152,7 @@ export function PRDetail({ prId }: Props) {
   // "old/new identical" error before the user picks a real file.
   useEffect(() => {
     selectedFile.value = null;
+    resetTabs();
     currentIteration.value = 1;
     prFiles.value = [];
     setPullRequest(null);
@@ -306,6 +307,20 @@ export function PRDetail({ prId }: Props) {
   }, [projectId, repoId, prId]);
 
   useEffect(() => { loadFiles(); }, [loadFiles]);
+
+  // Reconcile `selectedFile` into the tab model: any caller that sets
+  // `selectedFile` (file tree click, j/k nav, jump-to-finding from the review
+  // panel) opens the file as a preview tab (if not already open) and focuses it.
+  useEffect(() => {
+    const unsub = selectedFile.subscribe((path) => {
+      if (!path) return;
+      if (!openTabs.value.includes(path) && previewPath.value !== path) {
+        previewPath.value = path;
+      }
+      if (activeTab.value !== path) activeTab.value = path;
+    });
+    return unsub;
+  }, []);
 
   useEffect(() => {
     const unsub1 = selectedFile.subscribe((path) => {
@@ -478,14 +493,6 @@ export function PRDetail({ prId }: Props) {
           >
             ✨ Explain
           </button>
-          {activeOrg.value && projectId && repoId && (
-            <ReviewPR
-              projectId={projectId}
-              repoId={repoId}
-              prId={prId}
-              prTitle={pullRequest?.title ?? `PR #${prId}`}
-            />
-          )}
           <ApprovalBar onVote={handleApprove} />
         </div>
       </div>
@@ -509,47 +516,54 @@ export function PRDetail({ prId }: Props) {
           />
         </aside>
 
-        <div class="flex-1 overflow-hidden min-w-0">
-          {loading ? (
-            <div class="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>
-          ) : diffHtml ? (
-            <DiffViewer
-              html={diffHtml}
-              path={diffPath}
-              status={diffStatus}
-              threads={threads}
-              onComment={handlePostComment}
-              projectId={projectId!}
-              repoId={repoId!}
-              sourceCommit={sourceCommit}
-              baseCommit={baseCommit}
-              view={diffView.value}
-              oldContent={oldContent}
-              newContent={newContent}
-            />
-          ) : (
-            <div class="flex items-center justify-center h-full text-gray-400 text-sm">
-              Select a file to view its diff
-            </div>
-          )}
+        <div class="flex-1 overflow-hidden min-w-0 flex flex-col">
+          <TabBar prId={prId} />
+          <div class="flex-1 overflow-hidden min-w-0">
+            {activeTab.value === PR_REVIEW_TAB ? (
+              projectId && repoId ? (
+                <PRReviewSidebar
+                  projectId={projectId}
+                  repoId={repoId}
+                  prId={prId}
+                  prTitle={pullRequest?.title ?? `PR #${prId}`}
+                />
+              ) : (
+                <div class="flex items-center justify-center h-full text-gray-400 text-sm">
+                  Select a repository to review this PR
+                </div>
+              )
+            ) : loading ? (
+              <div class="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>
+            ) : diffHtml ? (
+              <DiffViewer
+                html={diffHtml}
+                path={diffPath}
+                status={diffStatus}
+                threads={threads}
+                onComment={handlePostComment}
+                projectId={projectId!}
+                repoId={repoId!}
+                sourceCommit={sourceCommit}
+                baseCommit={baseCommit}
+                view={diffView.value}
+                oldContent={oldContent}
+                newContent={newContent}
+              />
+            ) : (
+              <div class="flex items-center justify-center h-full text-gray-400 text-sm">
+                Select a file to view its diff
+              </div>
+            )}
+          </div>
         </div>
 
-        {sidebarMode.value === "hunks" && diffHtml && (
+        {sidebarMode.value === "hunks" && diffHtml && activeTab.value !== PR_REVIEW_TAB && (
           <HunkReview
             key={diffPath}
             filePath={diffPath}
             oldContent={oldContent}
             newContent={newContent}
             onClose={() => (sidebarMode.value = null)}
-          />
-        )}
-
-        {sidebarMode.value === "pr-review" && projectId && repoId && (
-          <PRReviewSidebar
-            projectId={projectId}
-            repoId={repoId}
-            prId={prId}
-            prTitle={`PR #${prId}`}
           />
         )}
       </div>

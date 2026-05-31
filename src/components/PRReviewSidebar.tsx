@@ -3,18 +3,74 @@ import { marked } from "marked";
 import {
   reviewRuns,
   activeReviewPrId,
-  sidebarMode,
   selectedFile,
+  selectedProject,
+  selectedRepo,
+  currentView,
   pendingScrollLine,
   threadsRefreshTick,
   type PRReviewRun,
   type ReviewProgress,
+  type ReviewMode,
 } from "@/lib/signals";
 import { startBackgroundReview } from "@/lib/reviewBus";
-import { cancelReview, postReviewFinding, recordFindingVerdict, type Severity, type Tier } from "@/lib/api";
-import { useResizableWidth } from "@/lib/useResizableWidth";
+import {
+  cancelReview,
+  postReviewFinding,
+  recordFindingVerdict,
+  getSavedReview,
+  clearSavedReview,
+  type Severity,
+  type Tier,
+  type ReviewState,
+} from "@/lib/api";
 
 type Finding = NonNullable<PRReviewRun["output"]>["findings"][number];
+
+const REVIEW_MODE_KEY = "pex.reviewMode";
+
+function loadReviewMode(): ReviewMode {
+  try {
+    return localStorage.getItem(REVIEW_MODE_KEY) === "thorough" ? "thorough" : "fast";
+  } catch {
+    return "fast";
+  }
+}
+
+function saveReviewMode(mode: ReviewMode) {
+  try {
+    localStorage.setItem(REVIEW_MODE_KEY, mode);
+  } catch {
+    // Storage may be unavailable (private mode, quota); the picker still works
+    // in-memory for the session.
+  }
+}
+
+// pr_key format from Rust: `{org_url}/{project_id}/{repo_id}/{pr_id}`.
+// org_url contains slashes, so split from the end.
+function parsePrKey(prKey: string): { projectId: string; repoId: string; prId: number } | null {
+  const parts = prKey.split("/");
+  if (parts.length < 4) return null;
+  const prId = Number(parts[parts.length - 1]);
+  if (!Number.isFinite(prId)) return null;
+  return {
+    repoId: parts[parts.length - 2],
+    projectId: parts[parts.length - 3],
+    prId,
+  };
+}
+
+function savedProgressPercent(s: ReviewState): number | null {
+  const total = s.filePaths.length;
+  if (total === 0) return null;
+  if (s.phase === "done") return null;
+  if (s.phase === "batch-aggregate" || s.phase === "synthesis") return 100;
+  const completedFiles = Math.min(s.currentFileIdx, total);
+  const currentFileProgress = s.currentFileHunks > 0
+    ? Math.min(s.currentHunk, s.currentFileHunks) / s.currentFileHunks
+    : 0;
+  return Math.round(((completedFiles + currentFileProgress) / total) * 100);
+}
 
 // Triage order: blocking issues first (pulled forward), informational last.
 const TIER_ORDER: Tier[] = ["blocking", "should-fix", "nit", "fyi"];
@@ -144,16 +200,42 @@ function progressFileCount(p: ReviewProgress | null): string {
 }
 
 export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
-  const resize = useResizableWidth({
-    storageKey: "pex-prreview-width",
-    defaultWidth: 480,
-    min: 320,
-    max: 900,
-    side: "left",
-  });
-
   const run: PRReviewRun | undefined = reviewRuns.value.get(prId);
   const summaryRef = useRef<HTMLDivElement>(null);
+
+  const [mode, setMode] = useState<ReviewMode>(() => loadReviewMode());
+  const [savedReview, setSavedReview] = useState<ReviewState | null>(null);
+  useEffect(() => {
+    getSavedReview().then(setSavedReview);
+  }, []);
+  const savedTarget = savedReview ? parsePrKey(savedReview.prKey) : null;
+
+  const handleModeChange = (next: ReviewMode) => {
+    setMode(next);
+    saveReviewMode(next);
+  };
+
+  const handleResume = () => {
+    if (busyElsewhere) return;
+    const target = savedTarget;
+    const resumeMode = (savedReview?.mode as ReviewMode | undefined) ?? mode;
+    setSavedReview(null);
+    if (target && target.prId !== prId) {
+      // Saved progress belongs to a different PR — navigate there so the user
+      // can watch it resume; the engine matches on pr_key.
+      selectedProject.value = target.projectId;
+      selectedRepo.value = target.repoId;
+      currentView.value = { kind: "pr-detail", prId: target.prId };
+      startBackgroundReview(target.projectId, target.repoId, target.prId, `PR #${target.prId}`, true, resumeMode);
+    } else {
+      startBackgroundReview(projectId, repoId, prId, prTitle, true, resumeMode);
+    }
+  };
+
+  const handleDiscard = async () => {
+    await clearSavedReview();
+    setSavedReview(null);
+  };
 
   // Auto-scroll progress text as new updates land
   useEffect(() => {
@@ -167,8 +249,10 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   const busyElsewhere =
     activeReviewPrId.value !== null && activeReviewPrId.value !== prId;
 
-  const restart = () => startBackgroundReview(projectId, repoId, prId, prTitle);
-  const close = () => (sidebarMode.value = null);
+  const restart = () => {
+    setSavedReview(null);
+    startBackgroundReview(projectId, repoId, prId, prTitle, false, mode);
+  };
 
   // Selection + posted state lives here so the footer's "Post N to ADO"
   // button can drive a per-finding post loop over the user's selection.
@@ -309,20 +393,10 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     }
   };
 
-  return (
-    <aside
-      class="border-l border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 shrink-0 flex flex-col relative"
-      style={{ width: `${resize.width}px` }}
-    >
-      <div
-        onMouseDown={resize.onMouseDown}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize PR review sidebar"
-        title="Drag to resize"
-        class="absolute top-0 left-0 bottom-0 w-1.5 -ml-0.5 cursor-col-resize hover:bg-accent/40 active:bg-accent/70 z-10"
-      />
+  const pickerDisabled = running || posting || busyElsewhere;
 
+  return (
+    <div class="bg-gray-50 dark:bg-gray-800/50 flex-1 flex flex-col min-w-0 overflow-hidden">
       {/* Header */}
       <div class="px-4 py-2 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2 shrink-0">
         <span class="text-sm font-semibold">🔍 PR review</span>
@@ -335,14 +409,16 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
             {run.status === "error" && "error"}
           </span>
         )}
-        <button
-          onClick={close}
-          aria-label="Close PR review sidebar"
-          title="Close"
-          class="ml-auto text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none px-1"
+        <select
+          value={mode}
+          disabled={pickerDisabled}
+          onChange={(e) => handleModeChange(e.currentTarget.value as ReviewMode)}
+          title="Review strategy. Thorough runs multiple specialist passes per hunk (slower)."
+          class="ml-auto text-xs px-1.5 py-1 rounded-lg border bg-bg-surface border-border disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          ×
-        </button>
+          <option value="fast">Fast</option>
+          <option value="thorough">Thorough</option>
+        </select>
       </div>
 
       {/* Body */}
@@ -350,7 +426,7 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
         {!run ? (
           <div class="text-gray-400">
             No review yet for this PR.
-            <div class="mt-3">
+            <div class="mt-3 flex items-center gap-3 flex-wrap">
               <button
                 onClick={restart}
                 disabled={busyElsewhere}
@@ -359,6 +435,30 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
               >
                 Start review
               </button>
+              {savedReview && (() => {
+                const savedPrId = savedTarget?.prId;
+                const savedLabel = savedPrId != null ? `PR #${savedPrId}` : "another PR";
+                const pct = savedProgressPercent(savedReview);
+                const pctSuffix = pct != null ? ` (${pct}%)` : "";
+                const resumeTitle = savedPrId != null && savedPrId !== prId
+                  ? `Jump to PR #${savedPrId} and resume its review`
+                  : "Resume the saved review";
+                return (
+                  <span class="text-xs text-amber-500">
+                    Saved progress for {savedLabel}{pctSuffix} —
+                    <button
+                      onClick={handleResume}
+                      disabled={busyElsewhere}
+                      title={resumeTitle}
+                      class="underline ml-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      resume
+                    </button>
+                    {" · "}
+                    <button onClick={handleDiscard} class="underline">discard</button>
+                  </span>
+                );
+              })()}
             </div>
           </div>
         ) : (
@@ -469,7 +569,7 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
           )}
         </div>
       )}
-    </aside>
+    </div>
   );
 }
 

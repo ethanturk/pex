@@ -112,6 +112,59 @@ export const visibleFilePaths = signal<string[]>([]);
 // this to refetch threads so the Comments pane stays in sync with ADO.
 export const threadsRefreshTick = signal<number>(0);
 
+// ---- Main-area tabs (VS Code style) ----
+// The center area is a tab strip. The PR Review panel is a permanent, pinned
+// pseudo-tab identified by this sentinel; it never appears in `openTabs`. All
+// other tabs are file paths.
+export const PR_REVIEW_TAB = "__pr-review__";
+export type ActiveTab = string; // a file path, or PR_REVIEW_TAB
+
+// Pinned file tabs, in display order (never contains PR_REVIEW_TAB).
+export const openTabs = signal<string[]>([]);
+// The transient "preview" tab (italic, replaced by the next single-click), or
+// null. A preview path is never also in `openTabs`.
+export const previewPath = signal<string | null>(null);
+// Which tab is focused: a file path (pinned or preview) or PR_REVIEW_TAB.
+export const activeTab = signal<ActiveTab>(PR_REVIEW_TAB);
+
+// Single-click a file: open it as the preview tab (replacing any prior preview,
+// unless it's already pinned) and focus it.
+export function openPreviewTab(path: string) {
+  if (!openTabs.value.includes(path)) previewPath.value = path;
+  activeTab.value = path;
+  selectedFile.value = path;
+}
+
+// Double-click a file (or its preview tab): pin it permanently.
+export function pinTab(path: string) {
+  if (!openTabs.value.includes(path)) openTabs.value = [...openTabs.value, path];
+  if (previewPath.value === path) previewPath.value = null;
+  activeTab.value = path;
+  selectedFile.value = path;
+}
+
+export function closeTab(path: string) {
+  const remaining = openTabs.value.filter((p) => p !== path);
+  if (remaining.length !== openTabs.value.length) openTabs.value = remaining;
+  if (previewPath.value === path) previewPath.value = null;
+  if (activeTab.value === path) {
+    // Focus the last pinned tab, else the preview, else fall back to PR Review.
+    const next = remaining[remaining.length - 1] ?? previewPath.value ?? PR_REVIEW_TAB;
+    activeTab.value = next;
+    selectedFile.value = next === PR_REVIEW_TAB ? null : next;
+  }
+}
+
+export function focusPrReviewTab() {
+  activeTab.value = PR_REVIEW_TAB;
+}
+
+export function resetTabs() {
+  openTabs.value = [];
+  previewPath.value = null;
+  activeTab.value = PR_REVIEW_TAB;
+}
+
 // ---- PR Review (background, per-PR) ----
 // The Rust engine runs a review serially (one resumable state at a time), so we
 // track a single "active" PR — but each PR keeps its last result so a user can
@@ -165,9 +218,9 @@ export const reviewRuns = signal<Map<number, PRReviewRun>>(new Map());
 // "Review PR" on other PRs while one is in flight.
 export const activeReviewPrId = signal<number | null>(null);
 
-// Which right-side sidebar is open in the PR detail view. Explain ("hunks") and
-// PR review share the slot.
-export type SidebarMode = "hunks" | "pr-review" | null;
+// Which right-side sidebar is open in the PR detail view. Currently just the
+// Explain ("hunks") panel — PR review now lives in a main-area tab.
+export type SidebarMode = "hunks" | null;
 export const sidebarMode = signal<SidebarMode>(null);
 
 export function updateReviewRun(prId: number, patch: Partial<PRReviewRun> | ((prev: PRReviewRun | undefined) => PRReviewRun)) {
