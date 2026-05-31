@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { marked } from "marked";
 import {
   reviewRuns,
@@ -199,10 +199,12 @@ function progressFileCount(p: ReviewProgress | null): string {
   return `${fileNum}/${p.totalFiles}`;
 }
 
+type SubTab = "summary" | "findings";
+
 export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   const run: PRReviewRun | undefined = reviewRuns.value.get(prId);
-  const summaryRef = useRef<HTMLDivElement>(null);
 
+  const [subTab, setSubTab] = useState<SubTab>("summary");
   const [mode, setMode] = useState<ReviewMode>(() => loadReviewMode());
   const [savedReview, setSavedReview] = useState<ReviewState | null>(null);
   useEffect(() => {
@@ -236,13 +238,6 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     await clearSavedReview();
     setSavedReview(null);
   };
-
-  // Auto-scroll progress text as new updates land
-  useEffect(() => {
-    if (summaryRef.current) {
-      summaryRef.current.scrollTop = summaryRef.current.scrollHeight;
-    }
-  }, [run?.progress]);
 
   const running = run?.status === "running";
   const posting = run?.status === "posting";
@@ -394,9 +389,10 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   };
 
   const pickerDisabled = running || posting || busyElsewhere;
+  const findingCount = run?.output?.findings.length ?? 0;
 
   return (
-    <div class="bg-gray-50 dark:bg-gray-800/50 flex-1 flex flex-col min-w-0 overflow-hidden">
+    <div class="bg-gray-50 dark:bg-gray-800/50 h-full flex flex-col min-w-0 overflow-hidden">
       {/* Header */}
       <div class="px-4 py-2 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2 shrink-0">
         <span class="text-sm font-semibold">🔍 PR review</span>
@@ -404,7 +400,7 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
           <span class="text-xs text-gray-400">
             {run.status === "running" && "running"}
             {run.status === "posting" && "posting"}
-            {run.status === "done" && `${run.output?.findings.length ?? 0} findings`}
+            {run.status === "done" && `${findingCount} findings`}
             {run.status === "posted" && "posted ✓"}
             {run.status === "error" && "error"}
           </span>
@@ -421,8 +417,72 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
         </select>
       </div>
 
+      {/* Progress / error — always visible (not inside a scroll area) so the
+          status stays put while the user reads either sub-tab. */}
+      {run && (running || posting) && (
+        <div class="mx-4 mt-3 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 shrink-0">
+          <div class="flex items-center gap-2">
+            <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full shrink-0" />
+            <span class="text-xs font-semibold text-gray-700 dark:text-gray-200">
+              Review in Progress
+            </span>
+            {progressFileCount(run.progress) && (
+              <span class="ml-auto text-xs font-mono text-gray-500 dark:text-gray-400">
+                {progressFileCount(run.progress)}
+              </span>
+            )}
+            {running && (
+              <button
+                onClick={cancel}
+                class="ml-2 px-2 py-0.5 text-[11px] text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded font-medium hover:bg-red-50 dark:hover:bg-red-900/30"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+          <div class="mt-2 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
+            <div
+              class="bg-accent h-full rounded-full transition-all duration-300"
+              style={{ width: `${progressPercent(run.progress)}%` }}
+            />
+          </div>
+          <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400 truncate">
+            {progressText(run.progress)}
+          </div>
+        </div>
+      )}
+
+      {run?.error && (
+        <div class="mx-4 mt-3 text-red-600 dark:text-red-400 whitespace-pre-wrap text-sm shrink-0">
+          {run.error}
+        </div>
+      )}
+
+      {/* Sub-tabs: Summary and Findings live on separate panes so a long
+          summary never buries the findings list (and each scrolls on its own). */}
+      {run?.output && (
+        <div class="flex items-stretch gap-1 px-3 pt-2 shrink-0 border-b border-gray-200 dark:border-gray-700">
+          {([
+            ["summary", "Summary"],
+            ["findings", `Findings${findingCount ? ` (${findingCount})` : ""}`],
+          ] as [SubTab, string][]).map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setSubTab(id)}
+              class={`px-3 py-1.5 text-xs font-medium rounded-t border-b-2 -mb-px ${
+                subTab === id
+                  ? "border-accent text-accent"
+                  : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Body */}
-      <div class="flex-1 overflow-y-auto p-4 text-sm" ref={summaryRef}>
+      <div class="flex-1 overflow-y-auto p-4 text-sm min-h-0">
         {!run ? (
           <div class="text-gray-400">
             No review yet for this PR.
@@ -461,61 +521,29 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
               })()}
             </div>
           </div>
-        ) : (
+        ) : !run.output ? (
+          <div class="text-gray-400 text-xs">
+            {running || posting ? "Working — findings will appear here as the review completes." : "Waiting for results…"}
+          </div>
+        ) : subTab === "summary" ? (
           <>
-            {(running || posting) && (
-              <div class="mb-4 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2">
-                <div class="flex items-center gap-2">
-                  <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full shrink-0" />
-                  <span class="text-xs font-semibold text-gray-700 dark:text-gray-200">
-                    Review in Progress
-                  </span>
-                  {progressFileCount(run.progress) && (
-                    <span class="ml-auto text-xs font-mono text-gray-500 dark:text-gray-400">
-                      {progressFileCount(run.progress)}
-                    </span>
-                  )}
-                  {running && (
-                    <button
-                      onClick={cancel}
-                      class="ml-2 px-2 py-0.5 text-[11px] text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded font-medium hover:bg-red-50 dark:hover:bg-red-900/30"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </div>
-                <div class="mt-2 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    class="bg-accent h-full rounded-full transition-all duration-300"
-                    style={{ width: `${progressPercent(run.progress)}%` }}
-                  />
-                </div>
-                <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                  {progressText(run.progress)}
-                </div>
-              </div>
-            )}
-
-            {run.error && (
-              <div class="text-red-600 dark:text-red-400 whitespace-pre-wrap mb-4">
-                {run.error}
-              </div>
-            )}
-
-            {run.output?.summary && (
+            {run.output.summary ? (
               <>
                 <MarkdownSummary markdown={stripStatisticsSection(run.output.summary)} />
                 <ExactStatistics findings={run.output.findings} />
               </>
+            ) : (
+              <div class="text-gray-400 text-xs">No summary was produced for this review.</div>
             )}
-
+          </>
+        ) : (
+          <>
             {bulkError && (
-              <div class="mt-3 text-red-600 dark:text-red-400 whitespace-pre-wrap text-xs">
+              <div class="mb-3 text-red-600 dark:text-red-400 whitespace-pre-wrap text-xs">
                 {bulkError}
               </div>
             )}
-
-            {run.output && run.output.findings.length > 0 && (
+            {findingCount > 0 ? (
               <FindingsList
                 projectId={projectId}
                 repoId={repoId}
@@ -531,6 +559,8 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
                 anySelectable={selectableIndices.length > 0}
                 onToggleSelectAll={toggleSelectAll}
               />
+            ) : (
+              <div class="text-gray-400 text-xs">No findings — nothing flagged in this review.</div>
             )}
           </>
         )}
