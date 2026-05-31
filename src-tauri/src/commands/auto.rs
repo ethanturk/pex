@@ -107,6 +107,7 @@ pub async fn auto_post_review_findings(
                 tier_str(finding.tier),
                 finding.confidence,
                 &finding.comment,
+                &finding.sources.join(","),
             );
         }
     }

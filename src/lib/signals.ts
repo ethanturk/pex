@@ -149,6 +149,7 @@ export interface PRReviewRun {
       severity: "critical" | "moderate" | "minor";
       confidence: number;
       tier: "blocking" | "should-fix" | "nit" | "fyi";
+      sources: string[];
       lineStart: number | null;
       lineEnd: number | null;
       comment: string;

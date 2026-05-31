@@ -28,6 +28,7 @@ For every candidate finding:
    - 76–90: important, warrants attention
    - 91–100: critical bug or explicit guideline violation
 4. Record `evidence`: the exact new-side line(s) from the file that justify the finding.
+5. Record `sources`: the specialist label(s) shown in square brackets on the candidate(s) you used (e.g. "code-reviewer", "silent-failure-hunter"). If you merged several candidates into one finding, include every label that raised it. If a candidate has no bracketed label, use an empty array.
 
 Respond with ONLY a single JSON object — no prose, no markdown, no code fences. Schema:
 
@@ -41,12 +42,14 @@ Respond with ONLY a single JSON object — no prose, no markdown, no code fences
       "lineStart":  <integer or null>,
       "lineEnd":    <integer or null>,
       "evidence":   "the new-side line(s) that justify this finding",
+      "sources":    ["specialist-label", ...],
       "comment":    "One concise paragraph describing the issue and the suggested change. No headings, no bullets, no markdown lists."
     }
   ]
 }
 
 Rules:
+- `sources` must only contain labels that actually appeared in brackets on the candidates; do not invent specialist names.
 - `lineStart` / `lineEnd` are NEW-side line numbers, matching the numbered file content provided. They MUST point at a line that actually exists in that content. If a finding is genuinely file-level (architecture, missing test file, etc.), set both to null.
 - `lineEnd >= lineStart`. For a single-line finding, set them equal.
 - Each `comment` must stand alone: a reviewer reading it inline on that line should understand the issue without further context.

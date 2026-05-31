@@ -34,6 +34,7 @@ pub async fn record_finding_verdict(
     severity: String,
     tier: String,
     confidence: u8,
+    sources: Vec<String>,
 ) -> Result<(), String> {
     let verdict = Verdict::from_str(&verdict).map_err(|e| e.to_string())?;
     let client = get_client(&state)?;
@@ -42,7 +43,16 @@ pub async fn record_finding_verdict(
 
     let db = state.db.lock().map_err(|e| e.to_string())?;
     feedback::record_verdict(
-        &db, &key, &fp, verdict, &file_path, &severity, &tier, confidence, &comment,
+        &db,
+        &key,
+        &fp,
+        verdict,
+        &file_path,
+        &severity,
+        &tier,
+        confidence,
+        &comment,
+        &sources.join(","),
     )
     .map_err(|e| e.to_string())
 }

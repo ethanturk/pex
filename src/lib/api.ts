@@ -409,6 +409,9 @@ export interface CalibrationStats {
   acceptRate: number | null;
   bySeverity: CalibrationBucket[];
   byTier: CalibrationBucket[];
+  /// Per-specialist buckets (Thorough mode). A finding merged from several
+  /// specialists credits each, so these may sum to more than `total`.
+  bySpecialist: CalibrationBucket[];
 }
 
 /// Record a reviewer's verdict on a finding. Dismissed findings are suppressed
@@ -430,6 +433,7 @@ export async function recordFindingVerdict(
     severity: finding.severity,
     tier: finding.tier,
     confidence: finding.confidence,
+    sources: finding.sources ?? [],
   });
 }
 
@@ -516,6 +520,9 @@ export interface ReviewFinding {
   confidence: number;
   /// Triage tier (blocking → fyi).
   tier: Tier;
+  /// Specialist label(s) that raised this finding; drives per-specialist
+  /// calibration. Empty when unattributed (e.g. Fast mode).
+  sources: string[];
   lineStart: number | null;
   lineEnd: number | null;
   comment: string;

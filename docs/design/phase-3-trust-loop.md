@@ -88,10 +88,14 @@ with a Refresh and a Reset (clears all verdicts → also clears suppression). Th
 point: if "minor" or "nit" is mostly dismissed, that's evidence to raise the
 confidence threshold or the critical line — tuning with data instead of vibes.
 
-> Note: per-*specialist* precision is deferred — findings are merged across
-> specialists during adjudication and lose attribution, so we calibrate on the
-> axes we can attribute (severity, tier), which are exactly the dials Phases 1–2
-> expose.
+> Per-*specialist* precision also ships, via a `sources` field on each finding:
+> the adjudicator echoes the `[specialist-label]` tags of the candidates it
+> merged, those are validated against the known specialist set, persisted on the
+> verdict, and aggregated into a "By specialist" calibration bucket (a merged
+> finding credits each contributing specialist). This attribution is
+> LLM-reported, so approximate; the plan to replace it with deterministic
+> Rust-side matching is filed in
+> [`future-deterministic-attribution.md`](./future-deterministic-attribution.md).
 
 ## 3.4 Incremental review
 

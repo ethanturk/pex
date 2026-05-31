@@ -52,11 +52,20 @@ pub fn init_db() -> Result<Connection, AppError> {
             tier TEXT NOT NULL DEFAULT '',
             confidence INTEGER NOT NULL DEFAULT 0,
             comment TEXT NOT NULL DEFAULT '',
+            sources TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (pr_key, fingerprint)
         );
     ",
     )?;
+
+    // Lightweight migration: add `sources` to finding_verdicts tables created
+    // before per-specialist calibration existed. Ignored if the column is
+    // already present (fresh DBs get it from the CREATE above).
+    let _ = conn.execute(
+        "ALTER TABLE finding_verdicts ADD COLUMN sources TEXT NOT NULL DEFAULT ''",
+        [],
+    );
 
     Ok(conn)
 }

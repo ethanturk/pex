@@ -143,6 +143,10 @@ pub struct Finding {
     /// Triage tier (Blocking → FYI), derived from severity + confidence + anchor.
     #[serde(default = "default_tier")]
     pub tier: Tier,
+    /// Specialist label(s) that raised this finding (e.g. "silent-failure-hunter").
+    /// Drives per-specialist calibration. Empty when unattributed (e.g. Fast mode).
+    #[serde(default)]
+    pub sources: Vec<String>,
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
     pub comment: String,
@@ -174,6 +178,11 @@ pub struct FileAggregateFinding {
     /// the deterministic anchor check and for logging; stripped before posting.
     #[serde(default)]
     pub evidence: Option<String>,
+    /// Specialist label(s) the adjudicator says raised this finding, echoed from
+    /// the `[label]` tags on the per-hunk candidates. Validated against the known
+    /// specialist set after parsing. Drives per-specialist calibration.
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 /// The complete review output.
@@ -253,6 +262,33 @@ fn line_in_any_hunk(line: usize, hunks: &[crate::diff::engine::DiffHunk]) -> boo
     hunks
         .iter()
         .any(|h| h.new_count > 0 && line >= h.new_start && line < h.new_start + h.new_count)
+}
+
+/// The canonical specialist labels (the closed vocabulary the adjudicator may
+/// cite in a finding's `sources`). Used to validate LLM-reported attribution.
+fn known_specialist_labels() -> Vec<&'static str> {
+    PromptKey::THOROUGH_SPECIALISTS
+        .iter()
+        .map(|k| k.specialist_label())
+        .collect()
+}
+
+/// Clean up adjudicator-reported `sources`: lowercase/trim, keep only known
+/// specialist labels, dedupe. A hallucinated or empty label can't pollute the
+/// per-specialist calibration; findings with no valid source stay empty and are
+/// bucketed as "unattributed" downstream.
+pub fn normalize_finding_sources(aggregate: &mut FileAggregateResult) {
+    let known = known_specialist_labels();
+    for f in &mut aggregate.findings {
+        let mut cleaned: Vec<String> = Vec::new();
+        for s in f.sources.drain(..) {
+            let s = s.trim().to_ascii_lowercase();
+            if known.contains(&s.as_str()) && !cleaned.contains(&s) {
+                cleaned.push(s);
+            }
+        }
+        f.sources = cleaned;
+    }
 }
 
 fn emit_progress(app: &tauri::AppHandle, phase: &str, detail: &str, extra: serde_json::Value) {
@@ -544,6 +580,7 @@ pub async fn run_review(
 
             // Deterministic precision guards: drop sub-threshold and
             // hallucinated-line findings before they reach the reviewer.
+            normalize_finding_sources(&mut aggregate);
             apply_finding_guards(&mut aggregate, &file.path, confidence_threshold, hunks);
 
             state.completed_files.push((file.path.clone(), aggregate));
@@ -666,6 +703,7 @@ pub async fn run_review(
                 severity: f.severity,
                 confidence: f.confidence,
                 tier: tier_for(f.severity, f.confidence, f.line_start, blocking_confidence),
+                sources: f.sources.clone(),
                 line_start: f.line_start,
                 line_end: f.line_end,
                 comment: f.comment.clone(),
@@ -830,6 +868,7 @@ pub async fn review_single_file(
 
     let raw = chat_with_retries(&provider, &agg_messages, retry_count).await?;
     let mut aggregate = parse_file_aggregate(&raw).map_err(AppError::Ai)?;
+    normalize_finding_sources(&mut aggregate);
     apply_finding_guards(&mut aggregate, &file.path, confidence_threshold, &hunks);
     Ok(aggregate)
 }
@@ -1248,6 +1287,7 @@ mod tests {
             line_end: line_start,
             comment: "x".into(),
             evidence: None,
+            sources: vec![],
         }
     }
 
@@ -1365,6 +1405,7 @@ mod tests {
             severity: Severity::Minor,
             confidence: 90,
             tier: Tier::Nit,
+            sources: vec![],
             line_start: Some(3),
             line_end: Some(3),
             comment: "rename x".into(),
@@ -1374,6 +1415,7 @@ mod tests {
             severity: Severity::Moderate,
             confidence: 88,
             tier: Tier::Fyi,
+            sources: vec![],
             line_start: None,
             line_end: None,
             comment: "consider a test file".into(),
@@ -1402,6 +1444,7 @@ mod tests {
             severity: Severity::Critical,
             confidence,
             tier,
+            sources: vec![],
             line_start: Some(1),
             line_end: Some(1),
             comment: comment.into(),

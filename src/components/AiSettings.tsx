@@ -923,6 +923,10 @@ function CalibrationPanel({
 
           <CalibrationTable title="By severity" buckets={stats.bySeverity} />
           <CalibrationTable title="By tier" buckets={stats.byTier} />
+          <CalibrationTable
+            title="By specialist (Thorough — a finding may credit several)"
+            buckets={stats.bySpecialist}
+          />
         </>
       )}
     </section>

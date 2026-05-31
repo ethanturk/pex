@@ -100,11 +100,12 @@ pub fn record_verdict(
     tier: &str,
     confidence: u8,
     comment: &str,
+    sources: &str,
 ) -> Result<(), AppError> {
     conn.execute(
         "INSERT OR REPLACE INTO finding_verdicts
-            (pr_key, fingerprint, verdict, file_path, severity, tier, confidence, comment, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+            (pr_key, fingerprint, verdict, file_path, severity, tier, confidence, comment, sources, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
         rusqlite::params![
             pr_key,
             fingerprint,
@@ -113,7 +114,8 @@ pub fn record_verdict(
             severity,
             tier,
             confidence as i64,
-            comment
+            comment,
+            sources
         ],
     )?;
     Ok(())
@@ -191,18 +193,23 @@ pub struct CalibrationStats {
     pub by_severity: Vec<BucketStats>,
     /// Per-tier buckets, in the order blocking → should-fix → nit → fyi.
     pub by_tier: Vec<BucketStats>,
+    /// Per-specialist buckets (Thorough mode). A finding merged from several
+    /// specialists credits each, so these may sum to more than `total`.
+    /// Findings with no attribution are bucketed under "unattributed".
+    pub by_specialist: Vec<BucketStats>,
 }
 
 /// Aggregate every recorded verdict (across all PRs) into calibration metrics.
 pub fn calibration(conn: &Connection) -> Result<CalibrationStats, AppError> {
     let mut stmt =
-        conn.prepare("SELECT verdict, severity, tier FROM finding_verdicts")?;
+        conn.prepare("SELECT verdict, severity, tier, sources FROM finding_verdicts")?;
     let rows = stmt
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -210,6 +217,7 @@ pub fn calibration(conn: &Connection) -> Result<CalibrationStats, AppError> {
     let mut stats = CalibrationStats::default();
     let mut sev: std::collections::HashMap<String, BucketStats> = std::collections::HashMap::new();
     let mut tier: std::collections::HashMap<String, BucketStats> = std::collections::HashMap::new();
+    let mut spec: std::collections::HashMap<String, BucketStats> = std::collections::HashMap::new();
 
     let bump = |b: &mut BucketStats, v: &str| match v {
         "accepted" => b.accepted += 1,
@@ -218,7 +226,7 @@ pub fn calibration(conn: &Connection) -> Result<CalibrationStats, AppError> {
         _ => {}
     };
 
-    for (verdict, severity, tier_name) in rows {
+    for (verdict, severity, tier_name, sources) in rows {
         stats.total += 1;
         match verdict.as_str() {
             "accepted" => stats.accepted += 1,
@@ -232,6 +240,23 @@ pub fn calibration(conn: &Connection) -> Result<CalibrationStats, AppError> {
         let t = tier.entry(tier_name.clone()).or_default();
         t.label = tier_name;
         bump(t, &verdict);
+        // Credit each contributing specialist; a merged finding credits all of
+        // them. No attribution → "unattributed".
+        let labels: Vec<String> = sources
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let labels = if labels.is_empty() {
+            vec!["unattributed".to_string()]
+        } else {
+            labels
+        };
+        for label in labels {
+            let b = spec.entry(label.clone()).or_default();
+            b.label = label;
+            bump(b, &verdict);
+        }
     }
 
     if stats.total > 0 {
@@ -252,6 +277,25 @@ pub fn calibration(conn: &Connection) -> Result<CalibrationStats, AppError> {
             stats.by_tier.push(b);
         }
     }
+    // Specialists: stable order (worst accept rate first so noisy ones stand
+    // out), with "unattributed" pinned last.
+    let mut specialists: Vec<BucketStats> = spec.into_values().collect();
+    for b in &mut specialists {
+        b.finalize();
+    }
+    specialists.sort_by(|a, b| {
+        let pin = |x: &BucketStats| (x.label == "unattributed") as u8;
+        pin(a)
+            .cmp(&pin(b))
+            .then(
+                a.accept_rate
+                    .unwrap_or(0.0)
+                    .partial_cmp(&b.accept_rate.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.label.cmp(&b.label))
+    });
+    stats.by_specialist = specialists;
 
     Ok(stats)
 }
@@ -290,7 +334,8 @@ mod tests {
                 pr_key TEXT NOT NULL, fingerprint TEXT NOT NULL, verdict TEXT NOT NULL,
                 file_path TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT '',
                 tier TEXT NOT NULL DEFAULT '', confidence INTEGER NOT NULL DEFAULT 0,
-                comment TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                comment TEXT NOT NULL DEFAULT '', sources TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (pr_key, fingerprint));
              CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )
@@ -302,11 +347,11 @@ mod tests {
     fn dismissed_are_remembered_per_pr() {
         let conn = mem_db();
         let fp = fingerprint("a.rs", "nit");
-        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 90, "nit")
+        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 90, "nit", "")
             .unwrap();
         record_verdict(
             &conn, "pr1", &fingerprint("b.rs", "keep"), Verdict::Accepted, "b.rs", "critical",
-            "blocking", 95, "keep",
+            "blocking", 95, "keep", "",
         )
         .unwrap();
 
@@ -320,8 +365,8 @@ mod tests {
     fn latest_verdict_wins() {
         let conn = mem_db();
         let fp = fingerprint("a.rs", "x");
-        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 80, "x").unwrap();
-        record_verdict(&conn, "pr1", &fp, Verdict::Accepted, "a.rs", "minor", "nit", 80, "x").unwrap();
+        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 80, "x", "").unwrap();
+        record_verdict(&conn, "pr1", &fp, Verdict::Accepted, "a.rs", "minor", "nit", 80, "x", "").unwrap();
         assert!(dismissed_fingerprints(&conn, "pr1").unwrap().is_empty());
         assert_eq!(calibration(&conn).unwrap().accepted, 1);
     }
@@ -329,9 +374,9 @@ mod tests {
     #[test]
     fn calibration_counts_and_rates() {
         let conn = mem_db();
-        record_verdict(&conn, "p", &fingerprint("a", "null deref"), Verdict::Accepted, "a", "critical", "blocking", 95, "null deref").unwrap();
-        record_verdict(&conn, "p", &fingerprint("a", "rename this"), Verdict::Edited, "a", "moderate", "should-fix", 85, "rename this").unwrap();
-        record_verdict(&conn, "p", &fingerprint("a", "add a test"), Verdict::Dismissed, "a", "minor", "nit", 80, "add a test").unwrap();
+        record_verdict(&conn, "p", &fingerprint("a", "null deref"), Verdict::Accepted, "a", "critical", "blocking", 95, "null deref", "code-reviewer").unwrap();
+        record_verdict(&conn, "p", &fingerprint("a", "rename this"), Verdict::Edited, "a", "moderate", "should-fix", 85, "rename this", "code-reviewer,silent-failure-hunter").unwrap();
+        record_verdict(&conn, "p", &fingerprint("a", "add a test"), Verdict::Dismissed, "a", "minor", "nit", 80, "add a test", "").unwrap();
         let c = calibration(&conn).unwrap();
         assert_eq!(c.total, 3);
         assert_eq!(c.accepted, 1);
@@ -341,6 +386,11 @@ mod tests {
         assert!((c.accept_rate.unwrap() - 66.6).abs() < 1.0);
         assert_eq!(c.by_severity.len(), 3);
         assert_eq!(c.by_tier.len(), 3);
+        // code-reviewer (2), silent-failure-hunter (1), unattributed (1)
+        assert_eq!(c.by_specialist.len(), 3);
+        let cr = c.by_specialist.iter().find(|b| b.label == "code-reviewer").unwrap();
+        assert_eq!(cr.accepted + cr.edited, 2);
+        assert!(c.by_specialist.iter().any(|b| b.label == "unattributed"));
     }
 
     #[test]
