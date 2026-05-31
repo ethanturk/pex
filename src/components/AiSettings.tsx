@@ -829,44 +829,39 @@ export function AiSettings({ open, onClose }: Props) {
                     selectedModel && !modelOptions.includes(selectedModel);
                   return (
                     <div key={p.key}>
-                      <div class="flex items-center justify-between gap-3 mb-1">
-                        <span class="text-xs text-gray-500 dark:text-gray-400 min-w-0 flex-1 truncate">
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="text-xs text-gray-500 dark:text-gray-400 min-w-0 truncate">
                           {p.label}
-                          {p.isCustomized && (
-                            <span class="ml-2 text-[10px] uppercase tracking-wide text-accent">
-                              customized
-                            </span>
-                          )}
-                          {selectedModel && (
-                            <span class="ml-2 text-[10px] uppercase tracking-wide text-accent">
-                              model: {selectedModel}
-                            </span>
-                          )}
                         </span>
-                        <div class="flex items-center gap-1 shrink-0">
-                          <label class="text-[11px] text-gray-500 dark:text-gray-400">
-                            Model:
-                          </label>
-                          <select
-                            value={selectedModel}
-                            onChange={(e) =>
-                              handleChangePromptModel(p.key, e.currentTarget.value)
-                            }
-                            class="text-[11px] px-1.5 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 max-w-[200px] min-w-0"
-                            title="Override the model used by this prompt. 'Default' uses the model from the AI Defaults tab."
-                          >
-                            <option value="">Default</option>
-                            {showOrphan && (
-                              <option value={selectedModel}>
-                                {selectedModel} (not in list)
-                              </option>
-                            )}
-                            {modelOptions.map((m) => (
-                              <option value={m}>{m}</option>
-                            ))}
-                          </select>
-                        </div>
+                        {p.isCustomized && (
+                          <span class="text-[10px] uppercase tracking-wide text-accent shrink-0">
+                            customized
+                          </span>
+                        )}
                       </div>
+                      <label class="flex items-center gap-2 mb-1">
+                        <span class="text-[11px] text-gray-500 dark:text-gray-400 shrink-0">
+                          Model:
+                        </span>
+                        <select
+                          value={selectedModel}
+                          onChange={(e) =>
+                            handleChangePromptModel(p.key, e.currentTarget.value)
+                          }
+                          class="flex-1 min-w-0 text-[11px] px-1.5 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                          title="Override the model used by this prompt. 'Default' uses the model from the AI Defaults tab."
+                        >
+                          <option value="">Default</option>
+                          {showOrphan && (
+                            <option value={selectedModel}>
+                              {selectedModel} (not in list)
+                            </option>
+                          )}
+                          {modelOptions.map((m) => (
+                            <option value={m}>{m}</option>
+                          ))}
+                        </select>
+                      </label>
                       <textarea
                         value={draft}
                         onInput={(e) =>
