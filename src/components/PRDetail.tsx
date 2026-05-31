@@ -408,8 +408,13 @@ export function PRDetail({ prId }: Props) {
       await updateReviewerStatus(projectId, repoId, prId, vote);
       currentView.value = { kind: "pr-list" };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error("Vote failed:", msg);
+      const raw = e instanceof Error ? e.message : String(e);
+      // GitHub forbids reviewing a PR you authored; surface a plain-language
+      // reason instead of the raw 422 body.
+      const msg = /can ?not approve your own|review your own/i.test(raw)
+        ? "GitHub doesn't let you review your own pull request. Ask another collaborator to review it."
+        : raw;
+      console.error("Vote failed:", raw);
       alert(`Vote failed: ${msg}`);
     }
   };
