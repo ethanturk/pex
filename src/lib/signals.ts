@@ -20,6 +20,54 @@ export function applyTheme(t: Theme) {
 applyTheme(theme.value);
 theme.subscribe(applyTheme);
 
+// ---- Appearance: font + text sizes ----
+// Discrete text-size steps shared by the app UI and the diff viewer (each
+// tracked independently). Values map to concrete pixel sizes when applied.
+export type TextSize = "small" | "medium" | "large" | "xl";
+
+// App font family. The value is a CSS font-family stack; "" means "use the
+// app default" (clears the inline override so the stylesheet default applies).
+export const appFont = signal<string>(localStorage.getItem("pex-app-font") || "");
+function applyAppFont(f: string) {
+  // Inline style on <html> wins over the stylesheet default; clearing it
+  // (empty string) falls back to the default sans stack. Monospace elements
+  // (e.g. the diff) set their own font and are unaffected.
+  document.documentElement.style.fontFamily = f;
+  localStorage.setItem("pex-app-font", f);
+}
+applyAppFont(appFont.value);
+appFont.subscribe(applyAppFont);
+
+// App UI text size — scales the root font-size, so all rem-based sizing tracks
+// it. "medium" (16px) is the browser default, i.e. today's baseline.
+const APP_TEXT_PX: Record<TextSize, string> = {
+  small: "14px",
+  medium: "16px",
+  large: "18px",
+  xl: "20px",
+};
+export const appTextSize = signal<TextSize>(
+  (localStorage.getItem("pex-app-text-size") as TextSize) || "medium",
+);
+function applyAppTextSize(s: TextSize) {
+  document.documentElement.style.fontSize = APP_TEXT_PX[s] ?? APP_TEXT_PX.medium;
+  localStorage.setItem("pex-app-text-size", s);
+}
+applyAppTextSize(appTextSize.value);
+appTextSize.subscribe(applyAppTextSize);
+
+// Diff viewer text size — independent of the app size. Drives CSS variables
+// (see global.css `html[data-diff-size]`) so only the diff scales.
+export const diffTextSize = signal<TextSize>(
+  (localStorage.getItem("pex-diff-text-size") as TextSize) || "medium",
+);
+function applyDiffTextSize(s: TextSize) {
+  document.documentElement.dataset.diffSize = s;
+  localStorage.setItem("pex-diff-text-size", s);
+}
+applyDiffTextSize(diffTextSize.value);
+diffTextSize.subscribe(applyDiffTextSize);
+
 // ---- Diff view (inline vs side-by-side) ----
 export type DiffView = "inline" | "split";
 export const diffView = signal<DiffView>(
