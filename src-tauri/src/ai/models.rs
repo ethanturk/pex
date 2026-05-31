@@ -99,6 +99,20 @@ pub async fn fetch_and_cache(
     Ok(models)
 }
 
+/// Fetch the model list for an explicit provider/endpoint/key, without reading
+/// or writing any stored settings. Used by the "Test" button on the AI Defaults
+/// form so the user can validate credentials before saving them.
+pub async fn probe_models(
+    kind: AiProviderKind,
+    endpoint: &str,
+    api_key: &str,
+) -> Result<Vec<String>, AppError> {
+    match kind {
+        AiProviderKind::OpenAI => fetch_openai_models(endpoint, api_key).await,
+        AiProviderKind::Anthropic => fetch_anthropic_models(endpoint, api_key).await,
+    }
+}
+
 #[derive(Deserialize)]
 struct OpenAiModelsResponse {
     data: Vec<OpenAiModel>,

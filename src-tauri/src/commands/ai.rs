@@ -58,10 +58,21 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
     let ai_diagnostics =
         crate::ai::read_ai_diagnostics(&db).map_err(|e: crate::AppError| e.to_string())?;
 
+    // Whether a key is stored for the *current* provider — drives the masked
+    // placeholder in the UI. We never return the key itself.
+    let provider_key = match provider.as_str() {
+        "anthropic" => "anthropic",
+        _ => "openai",
+    };
+    let has_api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)
+        .map(|t| t.map(|s| !s.is_empty()).unwrap_or(false))
+        .unwrap_or(false);
+
     Ok(AiSettingsNoKey {
         provider,
         endpoint,
         model,
+        has_api_key,
         connect_timeout_secs,
         read_timeout_secs,
         hunk_concurrency,
@@ -78,8 +89,36 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
     })
 }
 
+/// Resolve a form API key against what's stored: a non-empty value is the new
+/// key; an empty value means "keep the existing stored key" (the UI never echoes
+/// the real key back, so blank = unchanged).
+fn resolve_api_key(provider_key: &str, form_key: &str) -> Result<String, String> {
+    if form_key.trim().is_empty() {
+        Ok(
+            crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)
+                .map_err(|e: crate::AppError| e.to_string())?
+                .unwrap_or_default(),
+        )
+    } else {
+        crate::auth::keyring_store::KeyringStore::save_ai_token(provider_key, form_key)
+            .map_err(|e: crate::AppError| e.to_string())?;
+        Ok(form_key.to_string())
+    }
+}
+
+fn clamp_timeout(secs: u64, default: u64) -> u64 {
+    if secs == 0 {
+        default
+    } else {
+        secs.min(crate::ai::MAX_TIMEOUT_SECS)
+    }
+}
+
+/// Persist the "AI Defaults": provider, endpoint, model, API key, and the
+/// connect/read timeouts — and reconfigure the live provider. This is the only
+/// settings command gated behind an explicit Save (after a successful Test).
 #[tauri::command]
-pub async fn save_ai_settings(
+pub async fn save_ai_defaults(
     state: State<'_, AppState>,
     provider: String,
     endpoint: String,
@@ -87,6 +126,57 @@ pub async fn save_ai_settings(
     api_key: String,
     connect_timeout_secs: u64,
     read_timeout_secs: u64,
+) -> Result<(), String> {
+    let kind: AiProviderKind = provider
+        .parse()
+        .map_err(|e: crate::AppError| e.to_string())?;
+    let provider_key = match kind {
+        AiProviderKind::OpenAI => "openai",
+        AiProviderKind::Anthropic => "anthropic",
+    };
+
+    let connect_timeout = clamp_timeout(connect_timeout_secs, crate::ai::DEFAULT_CONNECT_TIMEOUT_SECS);
+    let read_timeout = clamp_timeout(read_timeout_secs, crate::ai::DEFAULT_READ_TIMEOUT_SECS);
+
+    let api_key = resolve_api_key(provider_key, &api_key)?;
+
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        crate::cache::set_setting(&db, "ai_provider", &provider)
+            .map_err(|e: crate::AppError| e.to_string())?;
+        crate::cache::set_setting(&db, "ai_endpoint", &endpoint)
+            .map_err(|e: crate::AppError| e.to_string())?;
+        crate::cache::set_setting(&db, "ai_model", &model)
+            .map_err(|e: crate::AppError| e.to_string())?;
+        crate::cache::set_setting(&db, "ai_connect_timeout_secs", &connect_timeout.to_string())
+            .map_err(|e: crate::AppError| e.to_string())?;
+        crate::cache::set_setting(&db, "ai_read_timeout_secs", &read_timeout.to_string())
+            .map_err(|e: crate::AppError| e.to_string())?;
+        // Drop the legacy total-request timeout so future reads use the new semantics.
+        let _ = crate::cache::delete_setting(&db, "ai_request_timeout_secs");
+    }
+
+    // Reconfigure the live provider.
+    let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
+    match ai_mgr_lock.as_mut() {
+        Some(mgr) => mgr.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout),
+        None => {
+            let mut mgr = crate::ai::AiManager::new();
+            mgr.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout);
+            *ai_mgr_lock = Some(mgr);
+        }
+    }
+
+    Ok(())
+}
+
+/// Persist the review/automation preferences. These autosave on change in the
+/// UI; they never touch the provider credentials, so saving them can't leak an
+/// untested default to disk.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn save_ai_preferences(
+    state: State<'_, AppState>,
     hunk_concurrency: u32,
     standards_max_chars: u32,
     retry_count: u32,
@@ -101,29 +191,11 @@ pub async fn save_ai_settings(
 ) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
-    // Validate provider
-    let kind: AiProviderKind = provider
-        .parse()
-        .map_err(|e: crate::AppError| e.to_string())?;
-
-    // Clamp timeouts to a sane range; 0 falls back to default.
-    let connect_timeout = if connect_timeout_secs == 0 {
-        crate::ai::DEFAULT_CONNECT_TIMEOUT_SECS
-    } else {
-        connect_timeout_secs.min(crate::ai::MAX_TIMEOUT_SECS)
-    };
-    let read_timeout = if read_timeout_secs == 0 {
-        crate::ai::DEFAULT_READ_TIMEOUT_SECS
-    } else {
-        read_timeout_secs.min(crate::ai::MAX_TIMEOUT_SECS)
-    };
-
     let concurrency = if hunk_concurrency == 0 {
         crate::ai::DEFAULT_HUNK_CONCURRENCY
     } else {
         hunk_concurrency.min(crate::ai::MAX_HUNK_CONCURRENCY)
     };
-
     let std_chars = if standards_max_chars == 0 {
         crate::ai::DEFAULT_STANDARDS_MAX_CHARS
     } else {
@@ -132,37 +204,19 @@ pub async fn save_ai_settings(
             .min(crate::ai::MAX_STANDARDS_MAX_CHARS)
     };
 
-    // Save non-sensitive settings to SQLite
-    crate::cache::set_setting(&db, "ai_provider", &provider)
-        .map_err(|e: crate::AppError| e.to_string())?;
-    crate::cache::set_setting(&db, "ai_endpoint", &endpoint)
-        .map_err(|e: crate::AppError| e.to_string())?;
-    crate::cache::set_setting(&db, "ai_model", &model)
-        .map_err(|e: crate::AppError| e.to_string())?;
-    crate::cache::set_setting(&db, "ai_connect_timeout_secs", &connect_timeout.to_string())
-        .map_err(|e: crate::AppError| e.to_string())?;
-    crate::cache::set_setting(&db, "ai_read_timeout_secs", &read_timeout.to_string())
-        .map_err(|e: crate::AppError| e.to_string())?;
-    // Drop the legacy total-request timeout once the new keys are set so future
-    // reads use the new semantics instead of silently falling back.
-    let _ = crate::cache::delete_setting(&db, "ai_request_timeout_secs");
     crate::cache::set_setting(&db, "ai_hunk_concurrency", &concurrency.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
-    // retry_count: 0 is a valid value ("do not retry"), unlike the other
-    // numeric settings where 0 means "use default". Just clamp the upper bound.
+    // retry_count: 0 is valid ("do not retry"); just clamp the upper bound.
     let retries = retry_count.min(crate::ai::MAX_RETRY_COUNT);
-
     crate::cache::set_setting(&db, "ai_retry_count", &retries.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(&db, "ai_standards_max_chars", &std_chars.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
-    // confidence_threshold: 0 is valid ("surface everything"); just clamp the
-    // upper bound to 100.
+    // confidence_threshold: 0 is valid ("surface everything"); clamp upper bound.
     let threshold = confidence_threshold.min(crate::ai::MAX_CONFIDENCE_THRESHOLD);
     crate::cache::set_setting(&db, "ai_confidence_threshold", &threshold.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
-    // blocking_confidence (the "critical line"): 0 is valid (every critical
-    // blocks); just clamp the upper bound.
+    // blocking_confidence (the "critical line"): 0 is valid; clamp upper bound.
     let blocking = blocking_confidence.min(crate::ai::MAX_BLOCKING_CONFIDENCE);
     crate::cache::set_setting(&db, "ai_blocking_confidence", &blocking.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
@@ -200,49 +254,47 @@ pub async fn save_ai_settings(
     )
     .map_err(|e: crate::AppError| e.to_string())?;
 
-    // Save API key to keyring when the user provided one. The UI intentionally
-    // does not echo stored keys back into the password field, so an empty value
-    // means "keep the existing key" instead of "overwrite with blank".
-    let provider_key = match provider.as_str() {
-        "openai" => "openai",
-        "anthropic" => "anthropic",
-        _ => return Err(format!("Unknown provider: {}", provider)),
+    Ok(())
+}
+
+/// Test the AI Defaults form *without persisting anything*. Probes the given
+/// provider/endpoint/key by listing models; an empty `api_key` falls back to the
+/// stored key so the user can re-test without re-typing it. On success returns
+/// the model list so the UI can populate (and validate) the Model dropdown.
+/// This is what gates the Save button — Save is only enabled after Test passes.
+#[tauri::command]
+pub async fn test_ai_defaults(
+    provider: String,
+    endpoint: String,
+    api_key: String,
+) -> Result<Vec<String>, String> {
+    let kind: AiProviderKind = provider
+        .parse()
+        .map_err(|e: crate::AppError| e.to_string())?;
+    let provider_key = match kind {
+        AiProviderKind::OpenAI => "openai",
+        AiProviderKind::Anthropic => "anthropic",
     };
-    let api_key = if api_key.trim().is_empty() {
+
+    let key = if api_key.trim().is_empty() {
         crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)
             .map_err(|e: crate::AppError| e.to_string())?
             .unwrap_or_default()
     } else {
-        crate::auth::keyring_store::KeyringStore::save_ai_token(provider_key, &api_key)
-            .map_err(|e: crate::AppError| e.to_string())?;
         api_key
     };
-
-    // Reconfigure the AI manager
-    let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
-    if let Some(ref mut mgr) = *ai_mgr_lock {
-        mgr.configure(
-            kind,
-            &endpoint,
-            &model,
-            &api_key,
-            connect_timeout,
-            read_timeout,
-        );
-    } else {
-        let mut mgr = crate::ai::AiManager::new();
-        mgr.configure(
-            kind,
-            &endpoint,
-            &model,
-            &api_key,
-            connect_timeout,
-            read_timeout,
-        );
-        *ai_mgr_lock = Some(mgr);
+    if key.is_empty() {
+        return Err("Enter an API key to test.".to_string());
+    }
+    if endpoint.trim().is_empty() {
+        return Err("Enter an endpoint URL to test.".to_string());
     }
 
-    Ok(())
+    crate::ai::models::probe_models(kind, &endpoint, &key)
+        .await
+        .map_err(|e| e.to_string())
+    // Note: the working provider in `state` is intentionally left untouched —
+    // Test must not have side effects, so the user still has to Save.
 }
 
 // ---- Explain hunk ----

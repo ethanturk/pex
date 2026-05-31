@@ -160,6 +160,10 @@ pub struct AiSettingsNoKey {
     pub provider: String,
     pub endpoint: String,
     pub model: String,
+    /// Whether an API key is stored for the current provider. The key itself is
+    /// never returned; the UI uses this to show a masked placeholder instead of
+    /// a misleadingly-empty field.
+    pub has_api_key: bool,
     /// TCP/TLS handshake budget in seconds.
     pub connect_timeout_secs: u64,
     /// Per-read stalled-stream budget in seconds. Does NOT bound total generation

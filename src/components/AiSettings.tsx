@@ -1,8 +1,10 @@
-import { useState, useEffect } from "preact/hooks";
+import { useState, useEffect, useRef } from "preact/hooks";
 import { showPrChecks } from "@/lib/signals";
 import {
   getAiSettings,
-  saveAiSettings,
+  saveAiDefaults,
+  saveAiPreferences,
+  testAiDefaults,
   getAiPrompts,
   saveAiPrompt,
   resetAiPrompt,
@@ -20,11 +22,15 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "ai" | "prompts" | "calibration" | "pr-list";
+type Tab = "ai-defaults" | "review" | "prompts" | "calibration" | "pr-list";
 
 const DEFAULT_STANDARDS_MAX_CHARS = 8000;
 const MIN_STANDARDS_MAX_CHARS = 500;
 const MAX_STANDARDS_MAX_CHARS = 65535;
+
+// Placeholder shown in the API Key field when a key is already stored. Typing
+// replaces it; leaving it blank keeps the stored key.
+const API_KEY_MASK = "••••••••••••";
 
 function normalizeStandardsMaxChars(value: string | number): number {
   const n = typeof value === "number" ? value : parseInt(value, 10);
@@ -32,16 +38,28 @@ function normalizeStandardsMaxChars(value: string | number): number {
   return Math.min(MAX_STANDARDS_MAX_CHARS, Math.max(MIN_STANDARDS_MAX_CHARS, n));
 }
 
-export function AiSettings({ open, onClose }: Props) {
-  const [tab, setTab] = useState<Tab>("ai");
+const INPUT_CLASS =
+  "w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent";
 
-  // ---- AI tab ----
+export function AiSettings({ open, onClose }: Props) {
+  const [tab, setTab] = useState<Tab>("ai-defaults");
+
+  // ---- AI Defaults tab (provider creds — save-button gated) ----
   const [provider, setProvider] = useState("openai");
   const [endpoint, setEndpoint] = useState("");
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [hasApiKey, setHasApiKey] = useState(false);
   const [connectTimeoutSecs, setConnectTimeoutSecs] = useState(10);
   const [readTimeoutSecs, setReadTimeoutSecs] = useState(60);
+  // Save is gated on a successful Test of the current form values. Any edit to a
+  // credential field clears this so the user must re-test before saving.
+  const [tested, setTested] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  // ---- Review preferences tab (autosaved) ----
   const [hunkConcurrency, setHunkConcurrency] = useState(1);
   const [standardsMaxChars, setStandardsMaxChars] = useState(String(DEFAULT_STANDARDS_MAX_CHARS));
   const [retryCount, setRetryCount] = useState(1);
@@ -54,9 +72,8 @@ export function AiSettings({ open, onClose }: Props) {
   const [autoPostConfidence, setAutoPostConfidence] = useState(90);
   const [aiDiagnostics, setAiDiagnostics] = useState(false);
   const [diagnosticsDir, setDiagnosticsDir] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
-  const [testing, setTesting] = useState(false);
+  const [prefsSaved, setPrefsSaved] = useState(false);
+
   const [backdropMouseDown, setBackdropMouseDown] = useState(false);
 
   // ---- Prompts tab ----
@@ -72,6 +89,9 @@ export function AiSettings({ open, onClose }: Props) {
   // ---- Calibration tab ----
   const [calibration, setCalibration] = useState<CalibrationStats | null>(null);
   const [calibrationLoading, setCalibrationLoading] = useState(false);
+
+  // Guards autosave: don't persist while loadSettings is populating state.
+  const hydrating = useRef(false);
 
   useEffect(() => {
     if (open) {
@@ -113,6 +133,7 @@ export function AiSettings({ open, onClose }: Props) {
   };
 
   const loadSettings = async () => {
+    hydrating.current = true;
     try {
       const [settings, ps] = await Promise.all([
         getAiSettings(),
@@ -121,6 +142,7 @@ export function AiSettings({ open, onClose }: Props) {
       setProvider(settings.provider);
       setEndpoint(settings.endpoint);
       setModel(settings.model);
+      setHasApiKey(settings.hasApiKey);
       setConnectTimeoutSecs(settings.connectTimeoutSecs || 10);
       setReadTimeoutSecs(settings.readTimeoutSecs || 60);
       setHunkConcurrency(settings.hunkConcurrency || 1);
@@ -146,8 +168,10 @@ export function AiSettings({ open, onClose }: Props) {
         Number.isFinite(settings.autoPostConfidence) ? settings.autoPostConfidence : 90,
       );
       setAiDiagnostics(!!settings.aiDiagnostics);
-      getDiagnosticsDir().then(setDiagnosticsDir).catch(() => {});
       setApiKey("");
+      setTested(false);
+      setMessage(null);
+      getDiagnosticsDir().then(setDiagnosticsDir).catch(() => {});
       setPrompts(ps);
       setPromptDrafts(Object.fromEntries(ps.map((p) => [p.key, p.value])));
       setPromptStatus({});
@@ -166,8 +190,53 @@ export function AiSettings({ open, onClose }: Props) {
         });
     } catch {
       // defaults are fine
+    } finally {
+      hydrating.current = false;
     }
   };
+
+  // Autosave the review/automation preferences whenever any of them change
+  // (but not during initial hydration). Defaults live on their own tab and are
+  // intentionally excluded.
+  useEffect(() => {
+    if (!open || hydrating.current) return;
+    const normalized = normalizeStandardsMaxChars(standardsMaxChars);
+    let cancelled = false;
+    saveAiPreferences({
+      hunkConcurrency,
+      standardsMaxChars: normalized,
+      retryCount,
+      confidenceThreshold,
+      blockingConfidence,
+      autoVoteOnBlocking,
+      incrementalReview,
+      autoReview,
+      autoPostBlocking,
+      autoPostConfidence,
+      aiDiagnostics,
+    })
+      .then(() => {
+        if (cancelled) return;
+        setPrefsSaved(true);
+        window.setTimeout(() => !cancelled && setPrefsSaved(false), 1500);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    hunkConcurrency,
+    standardsMaxChars,
+    retryCount,
+    confidenceThreshold,
+    blockingConfidence,
+    autoVoteOnBlocking,
+    incrementalReview,
+    autoReview,
+    autoPostBlocking,
+    autoPostConfidence,
+    aiDiagnostics,
+  ]);
 
   const handleRefreshModels = async () => {
     setModelsRefreshing(true);
@@ -234,54 +303,58 @@ export function AiSettings({ open, onClose }: Props) {
     }
   };
 
-  const handleSaveAi = async () => {
-    setSaving(true);
+  // ---- AI Defaults: credential-field edits invalidate the last Test ----
+  const markDirty = () => {
+    setTested(false);
     setMessage(null);
-    try {
-      const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
-      setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence, aiDiagnostics);
-      setMessage({ text: "AI settings saved.", ok: true });
-    } catch (e: any) {
-      setMessage({ text: String(e), ok: false });
-    } finally {
-      setSaving(false);
-    }
+    setModelsError(null);
   };
 
-  const handleTestConnection = async () => {
+  const handleTestDefaults = async () => {
     setTesting(true);
     setMessage(null);
     setModelsError(null);
     try {
-      const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
-      setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence, aiDiagnostics);
-      const models = await listAiModels(true);
+      const models = await testAiDefaults(provider, endpoint, apiKey);
       setAvailableModels(models);
-
-      const selectedModel = models.includes(model) ? model : models[0] ?? "";
-      if (selectedModel !== model) {
-        setModel(selectedModel);
-        if (selectedModel) {
-          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence, aiDiagnostics);
-          setMessage({
-            text: `Connected. Model changed to ${selectedModel} because the previous model is not available from this provider.`,
-            ok: true,
-          });
-        } else {
-          setMessage({
-            text: "Connected, but this provider did not return any models. Select a model after refreshing the model list.",
-            ok: true,
-          });
-        }
+      // Validate / settle the selected model against what the provider offers.
+      const selected = models.includes(model) ? model : models[0] ?? "";
+      if (selected !== model) setModel(selected);
+      setTested(true);
+      if (models.length === 0) {
+        setMessage({
+          text: "Connected, but the provider returned no models. You can still save and pick a model later.",
+          ok: true,
+        });
+      } else if (selected !== model) {
+        setMessage({
+          text: `Connected. Selected ${selected} (the previous model isn't offered by this provider).`,
+          ok: true,
+        });
       } else {
         setMessage({ text: `Connected. Found ${models.length} model${models.length === 1 ? "" : "s"}.`, ok: true });
       }
     } catch (e: any) {
+      setTested(false);
       setMessage({ text: String(e), ok: false });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleSaveDefaults = async () => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      await saveAiDefaults(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs);
+      // The key (if any) is now stored; clear the field and show the mask.
+      if (apiKey.trim()) setHasApiKey(true);
+      setApiKey("");
+      setMessage({ text: "AI defaults saved.", ok: true });
+    } catch (e: any) {
+      setMessage({ text: String(e), ok: false });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -314,15 +387,19 @@ export function AiSettings({ open, onClose }: Props) {
 
         {/* Tabs */}
         <div class="flex border-b border-gray-200 dark:border-gray-700 px-5">
-          <TabButton label="AI" active={tab === "ai"} onClick={() => setTab("ai")} />
+          <TabButton label="AI Defaults" active={tab === "ai-defaults"} onClick={() => setTab("ai-defaults")} />
+          <TabButton label="Review" active={tab === "review"} onClick={() => setTab("review")} />
           <TabButton label="Prompts" active={tab === "prompts"} onClick={() => setTab("prompts")} />
           <TabButton label="Calibration" active={tab === "calibration"} onClick={() => setTab("calibration")} />
           <TabButton label="PR List" active={tab === "pr-list"} onClick={() => setTab("pr-list")} />
         </div>
 
         <div class="px-5 py-4 space-y-5">
-          {tab === "ai" && (
+          {tab === "ai-defaults" && (
             <section>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                The default provider and model used for AI review. Test your connection, then Save — these changes only apply when you click Save.
+              </p>
               <div class="space-y-3">
                 <Field label="Provider">
                   <select
@@ -331,10 +408,9 @@ export function AiSettings({ open, onClose }: Props) {
                       setProvider(e.currentTarget.value);
                       setModel("");
                       setAvailableModels(null);
-                      setModelsError(null);
-                      setMessage(null);
+                      markDirty();
                     }}
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    class={INPUT_CLASS}
                   >
                     <option value="openai">OpenAI-compatible</option>
                     <option value="anthropic">Anthropic-compatible</option>
@@ -349,37 +425,29 @@ export function AiSettings({ open, onClose }: Props) {
                       setEndpoint(e.currentTarget.value);
                       setModel("");
                       setAvailableModels(null);
-                      setModelsError(null);
-                      setMessage(null);
+                      markDirty();
                     }}
                     placeholder={provider === "openai" ? "https://api.openai.com" : "https://api.anthropic.com"}
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    class={INPUT_CLASS}
                   />
                 </Field>
 
                 <Field label="API Key">
-                  <div class="flex items-center gap-2">
-                    <input
-                      type="password"
-                      value={apiKey}
-                      onInput={(e) => {
-                        setApiKey(e.currentTarget.value);
-                        setAvailableModels(null);
-                        setModelsError(null);
-                        setMessage(null);
-                      }}
-                      placeholder="Enter API key"
-                      class="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleTestConnection}
-                      disabled={testing || !endpoint}
-                      class="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-                    >
-                      {testing ? "Testing..." : "Test"}
-                    </button>
-                  </div>
+                  <input
+                    type="password"
+                    value={apiKey}
+                    onInput={(e) => {
+                      setApiKey(e.currentTarget.value);
+                      markDirty();
+                    }}
+                    placeholder={hasApiKey ? API_KEY_MASK : "Enter API key"}
+                    class={INPUT_CLASS}
+                  />
+                  {hasApiKey && !apiKey && (
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      A key is saved. Leave blank to keep it, or type a new one to replace it.
+                    </p>
+                  )}
                 </Field>
 
                 <Field label="Model">
@@ -390,8 +458,12 @@ export function AiSettings({ open, onClose }: Props) {
                       <div class="flex items-center gap-2">
                         <select
                           value={model}
-                          onChange={(e) => setModel(e.currentTarget.value)}
-                          class="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                          onChange={(e) => {
+                            setModel(e.currentTarget.value);
+                            // Model is offered by the tested provider, so picking
+                            // a different one doesn't require re-testing.
+                          }}
+                          class={`flex-1 ${INPUT_CLASS}`}
                         >
                           {!model && <option value="">Select a model…</option>}
                           {showOrphan && (
@@ -406,7 +478,7 @@ export function AiSettings({ open, onClose }: Props) {
                           onClick={handleRefreshModels}
                           disabled={modelsRefreshing}
                           title="Re-fetch the available models from your provider"
-                          class="text-xs px-2 py-1 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                          class="text-xs px-2 py-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
                         >
                           {modelsRefreshing ? "Refreshing…" : "Refresh"}
                         </button>
@@ -431,7 +503,7 @@ export function AiSettings({ open, onClose }: Props) {
                       setConnectTimeoutSecs(Number.isFinite(n) && n > 0 ? n : 10);
                     }}
                     placeholder="10"
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    class={INPUT_CLASS}
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Maximum time for the TCP / TLS handshake. Catches a dead or unreachable server quickly. Does not bound generation time.
@@ -449,13 +521,55 @@ export function AiSettings({ open, onClose }: Props) {
                       setReadTimeoutSecs(Number.isFinite(n) && n > 0 ? n : 60);
                     }}
                     placeholder="60"
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    class={INPUT_CLASS}
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Stalled-stream guard: maximum time between successive bytes from the server. <strong>Does not bound total generation time</strong> — a slow local model that keeps the connection alive will be allowed to finish. Only raise this if your provider returns large bursts with long pauses between them.
                   </p>
                 </Field>
+              </div>
 
+              {message && (
+                <div class={`mt-3 text-sm px-3 py-2 rounded-lg ${message.ok ? "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300" : "bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300"}`}>
+                  {message.text}
+                </div>
+              )}
+
+              <div class="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleTestDefaults}
+                  disabled={testing || !endpoint}
+                  class="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                >
+                  {testing ? "Testing..." : "Test"}
+                </button>
+                <button
+                  onClick={handleSaveDefaults}
+                  disabled={saving || !tested || !endpoint || !model}
+                  title={!tested ? "Run Test successfully before saving" : undefined}
+                  class="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saving ? "Saving..." : "Save"}
+                </button>
+                {!tested && (
+                  <span class="text-xs text-gray-400">Test to enable Save</span>
+                )}
+              </div>
+            </section>
+          )}
+
+          {tab === "review" && (
+            <section>
+              <div class="flex items-center justify-between mb-1">
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  How PR review behaves. Changes save automatically.
+                </p>
+                {prefsSaved && (
+                  <span class="text-xs text-green-600 dark:text-green-400">Saved ✓</span>
+                )}
+              </div>
+              <div class="space-y-3">
                 <Field label="Review concurrency">
                   <input
                     type="number"
@@ -467,7 +581,7 @@ export function AiSettings({ open, onClose }: Props) {
                       setHunkConcurrency(Number.isFinite(n) && n >= 1 ? Math.min(n, 16) : 1);
                     }}
                     placeholder="1"
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    class={INPUT_CLASS}
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Maximum number of hunks a PR review sends to the model at once. Default 1 = sequential. Increase only if your provider can handle parallel requests.
@@ -485,7 +599,7 @@ export function AiSettings({ open, onClose }: Props) {
                       setStandardsMaxChars(String(normalizeStandardsMaxChars(standardsMaxChars)));
                     }}
                     placeholder="8000"
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    class={INPUT_CLASS}
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Per-file cap (in characters) for AGENTS.md / STYLE.md content injected into Review prompts. Anything beyond this is truncated with a visible marker.
@@ -500,8 +614,6 @@ export function AiSettings({ open, onClose }: Props) {
                     value={retryCount}
                     onInput={(e) => {
                       const n = parseInt(e.currentTarget.value, 10);
-                      // 0 is a deliberate value here ("don't retry"), so don't
-                      // collapse it to the default like the other fields do.
                       if (!Number.isFinite(n) || n < 0) {
                         setRetryCount(0);
                       } else {
@@ -509,7 +621,7 @@ export function AiSettings({ open, onClose }: Props) {
                       }
                     }}
                     placeholder="1"
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    class={INPUT_CLASS}
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     How many times to retry an LLM call after it fails during a PR review. Set to <strong>0</strong> for slow local providers — a "failure" there is usually just the request timeout firing while the model is still generating, and retrying just doubles the orphaned work.
@@ -524,7 +636,6 @@ export function AiSettings({ open, onClose }: Props) {
                     value={confidenceThreshold}
                     onInput={(e) => {
                       const n = parseInt(e.currentTarget.value, 10);
-                      // 0 is a deliberate value ("surface everything"); clamp to 0–100.
                       if (!Number.isFinite(n) || n < 0) {
                         setConfidenceThreshold(0);
                       } else {
@@ -532,7 +643,7 @@ export function AiSettings({ open, onClose }: Props) {
                       }
                     }}
                     placeholder="80"
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    class={INPUT_CLASS}
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Minimum confidence a PR review finding must reach to be surfaced. The default <strong>80</strong> filters out likely false positives and low-impact nits. Lower it to see more (noisier) findings; raise it for only the highest-confidence issues. Set to <strong>0</strong> to surface everything.
@@ -547,7 +658,6 @@ export function AiSettings({ open, onClose }: Props) {
                     value={blockingConfidence}
                     onInput={(e) => {
                       const n = parseInt(e.currentTarget.value, 10);
-                      // 0 is deliberate ("every critical blocks"); clamp to 0–100.
                       if (!Number.isFinite(n) || n < 0) {
                         setBlockingConfidence(0);
                       } else {
@@ -555,7 +665,7 @@ export function AiSettings({ open, onClose }: Props) {
                       }
                     }}
                     placeholder="85"
-                    class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent"
+                    class={INPUT_CLASS}
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     The confidence a <strong>critical</strong> finding must reach to be tiered <strong>Blocking</strong> (pulled to the top and posted as its own comment). Critical findings below this line are still surfaced as <strong>Should fix</strong>. Default <strong>85</strong>. Set to <strong>0</strong> to treat every critical finding as blocking.
@@ -652,7 +762,7 @@ export function AiSettings({ open, onClose }: Props) {
                           }
                         }}
                         placeholder="90"
-                        class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                        class={`${INPUT_CLASS} disabled:opacity-50`}
                       />
                       <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                         Only blocking findings this confident are auto-posted. Default <strong>90</strong> — autonomy is earned, so keep this high.
@@ -683,14 +793,6 @@ export function AiSettings({ open, onClose }: Props) {
                   </label>
                 </div>
               </div>
-
-              <button
-                onClick={handleSaveAi}
-                disabled={saving || !endpoint || !model}
-                class="mt-3 px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium disabled:opacity-50"
-              >
-                {saving ? "Saving..." : "Save AI Settings"}
-              </button>
             </section>
           )}
 
@@ -698,7 +800,7 @@ export function AiSettings({ open, onClose }: Props) {
             <section>
               <div class="flex items-start justify-between gap-3 mb-3">
                 <p class="text-xs text-gray-500 dark:text-gray-400">
-                  Customize the system prompts used by AI features. Each prompt can also be pinned to a specific provider model — leave it on <em>Default</em> to use the model from the AI tab.
+                  Customize the system prompts used by AI features. Each prompt can also be pinned to a specific provider model — leave it on <em>Default</em> to use the model from the AI Defaults tab.
                 </p>
                 <button
                   onClick={handleRefreshModels}
@@ -722,9 +824,6 @@ export function AiSettings({ open, onClose }: Props) {
                   const status = promptStatus[p.key];
                   const dirty = draft !== p.value;
                   const selectedModel = p.model ?? "";
-                  // The currently-selected model may not appear in the list
-                  // (provider /models doesn't include it, or it's a stale
-                  // pin). Surface it anyway so the picker stays honest.
                   const modelOptions = availableModels ?? [];
                   const showOrphan =
                     selectedModel && !modelOptions.includes(selectedModel);
@@ -754,7 +853,7 @@ export function AiSettings({ open, onClose }: Props) {
                               handleChangePromptModel(p.key, e.currentTarget.value)
                             }
                             class="text-[11px] px-1.5 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 max-w-[200px]"
-                            title="Override the model used by this prompt. 'Default' uses the model from the AI tab."
+                            title="Override the model used by this prompt. 'Default' uses the model from the AI Defaults tab."
                           >
                             <option value="">Default</option>
                             {showOrphan && (
@@ -845,13 +944,6 @@ export function AiSettings({ open, onClose }: Props) {
                 </span>
               </label>
             </section>
-          )}
-
-          {/* Status message (AI tab only) */}
-          {tab === "ai" && message && (
-            <div class={`text-sm px-3 py-2 rounded-lg ${message.ok ? "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300" : "bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300"}`}>
-              {message.text}
-            </div>
           )}
         </div>
       </div>

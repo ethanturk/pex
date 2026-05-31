@@ -302,6 +302,9 @@ export interface AiSettingsNoKey {
   provider: string;
   endpoint: string;
   model: string;
+  /// Whether an API key is stored for the current provider. The key itself is
+  /// never returned — the UI shows a masked placeholder when this is true.
+  hasApiKey: boolean;
   /// TCP/TLS handshake budget. Catches dead servers fast.
   connectTimeoutSecs: number;
   /// Stalled-stream guard: max time between successive bytes from the server.
@@ -338,44 +341,54 @@ export async function getAiSettings(): Promise<AiSettingsNoKey> {
   return invoke<AiSettingsNoKey>("get_ai_settings");
 }
 
-export async function saveAiSettings(
+/// Persist the "AI Defaults" (provider/endpoint/model/key/timeouts) and
+/// reconfigure the live provider. An empty `apiKey` keeps the stored key.
+/// Requires an explicit Save in the UI (after a successful Test).
+export async function saveAiDefaults(
   provider: string,
   endpoint: string,
   model: string,
   apiKey: string,
   connectTimeoutSecs: number,
   readTimeoutSecs: number,
-  hunkConcurrency: number,
-  standardsMaxChars: number,
-  retryCount: number,
-  confidenceThreshold: number,
-  blockingConfidence: number,
-  autoVoteOnBlocking: boolean,
-  incrementalReview: boolean,
-  autoReview: boolean,
-  autoPostBlocking: boolean,
-  autoPostConfidence: number,
-  aiDiagnostics: boolean,
 ): Promise<void> {
-  return invoke("save_ai_settings", {
+  return invoke("save_ai_defaults", {
     provider,
     endpoint,
     model,
     apiKey,
     connectTimeoutSecs,
     readTimeoutSecs,
-    hunkConcurrency,
-    standardsMaxChars,
-    retryCount,
-    confidenceThreshold,
-    blockingConfidence,
-    autoVoteOnBlocking,
-    incrementalReview,
-    autoReview,
-    autoPostBlocking,
-    autoPostConfidence,
-    aiDiagnostics,
   });
+}
+
+/// Test the AI Defaults form WITHOUT persisting. Returns the provider's model
+/// list on success (used to validate the key and populate the Model dropdown).
+/// An empty `apiKey` falls back to the stored key.
+export async function testAiDefaults(
+  provider: string,
+  endpoint: string,
+  apiKey: string,
+): Promise<string[]> {
+  return invoke<string[]>("test_ai_defaults", { provider, endpoint, apiKey });
+}
+
+/// Persist the review/automation preferences. Autosaved on change; never
+/// touches provider credentials.
+export async function saveAiPreferences(prefs: {
+  hunkConcurrency: number;
+  standardsMaxChars: number;
+  retryCount: number;
+  confidenceThreshold: number;
+  blockingConfidence: number;
+  autoVoteOnBlocking: boolean;
+  incrementalReview: boolean;
+  autoReview: boolean;
+  autoPostBlocking: boolean;
+  autoPostConfidence: number;
+  aiDiagnostics: boolean;
+}): Promise<void> {
+  return invoke("save_ai_preferences", prefs);
 }
 
 /// The directory where opt-in review diagnostic traces (.jsonl) are written.
@@ -508,10 +521,6 @@ export async function explainHunk(
   hunkIndex: number,
 ): Promise<string> {
   return invoke<string>("explain_hunk", { filePath, oldContent, newContent, hunkIndex });
-}
-
-export async function testAiConnection(): Promise<string> {
-  return invoke<string>("test_ai_connection");
 }
 
 // ---- Native PR Review ----
