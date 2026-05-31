@@ -372,10 +372,10 @@ export function AiSettings({ open, onClose }: Props) {
       }}
     >
       <div
-        class="bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto"
+        class="bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-full max-w-2xl mx-4 h-[85vh] max-h-[720px] flex flex-col overflow-hidden"
       >
         {/* Header */}
-        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+        <div class="shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
           <h2 class="text-base font-semibold">Settings</h2>
           <button
             class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none"
@@ -386,7 +386,7 @@ export function AiSettings({ open, onClose }: Props) {
         </div>
 
         {/* Tabs */}
-        <div class="flex border-b border-gray-200 dark:border-gray-700 px-5">
+        <div class="shrink-0 flex border-b border-gray-200 dark:border-gray-700 px-5">
           <TabButton label="AI Defaults" active={tab === "ai-defaults"} onClick={() => setTab("ai-defaults")} />
           <TabButton label="Review" active={tab === "review"} onClick={() => setTab("review")} />
           <TabButton label="Prompts" active={tab === "prompts"} onClick={() => setTab("prompts")} />
@@ -394,7 +394,7 @@ export function AiSettings({ open, onClose }: Props) {
           <TabButton label="PR List" active={tab === "pr-list"} onClick={() => setTab("pr-list")} />
         </div>
 
-        <div class="px-5 py-4 space-y-5 overflow-x-hidden">
+        <div class="flex-1 min-h-0 px-5 py-4 space-y-5 overflow-y-auto overflow-x-hidden">
           {tab === "ai-defaults" && (
             <section>
               <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
