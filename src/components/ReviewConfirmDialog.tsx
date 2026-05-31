@@ -167,7 +167,7 @@ export function ReviewConfirmDialog({
           <div class="mt-1.5 text-[11px] text-gray-400">
             {mode === "thorough"
               ? "Multiple specialist agents per hunk — slower, broader coverage."
-              : "A single generalist pass per hunk — fast."}
+              : "A single generalist pass per hunk, with a lite design-principles check — fast."}
           </div>
         </div>
 
@@ -177,6 +177,10 @@ export function ReviewConfirmDialog({
             <div class="text-red-600 dark:text-red-400 whitespace-pre-wrap text-xs">{error}</div>
           ) : mode === "fast" ? (
             <div class="text-gray-600 dark:text-gray-300">
+              <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                One pass per hunk covering bugs, logic and edge cases, and security,
+                plus a lite design-principles (DRY/SOLID) check.
+              </p>
               <div class="flex items-center gap-2 text-xs">
                 <span class="text-gray-500 dark:text-gray-400">Model</span>
                 <span class="font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200">
