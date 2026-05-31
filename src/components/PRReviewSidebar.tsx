@@ -1,4 +1,5 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
+import { signal } from "@preact/signals";
 import { marked } from "marked";
 import {
   reviewRuns,
@@ -211,10 +212,26 @@ function progressFileCount(p: ReviewProgress | null): string {
 
 type SubTab = "summary" | "findings";
 
+// Persisted across (un)mounts so jumping to a finding's code and back to the
+// PR Review tab returns the user to the Findings sub-tab and their scroll
+// position — the panel is unmounted while the diff is shown, so component-local
+// state would reset to the default.
+const reviewSubTab = signal<SubTab>("summary");
+let savedFindingsScrollTop = 0;
+
 export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   const run: PRReviewRun | undefined = reviewRuns.value.get(prId);
 
-  const [subTab, setSubTab] = useState<SubTab>("summary");
+  const subTab = reviewSubTab.value;
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const setSubTab = (t: SubTab) => {
+    reviewSubTab.value = t;
+    // Land at the right scroll position for the destination sub-tab once it
+    // has rendered: the saved spot for Findings, top for Summary.
+    requestAnimationFrame(() => {
+      if (bodyRef.current) bodyRef.current.scrollTop = t === "findings" ? savedFindingsScrollTop : 0;
+    });
+  };
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [mode, setMode] = useState<ReviewMode>(() => loadReviewMode());
   const [savedReview, setSavedReview] = useState<ReviewState | null>(null);
@@ -249,6 +266,16 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   const posting = run?.status === "posting";
   const busyElsewhere =
     activeReviewPrId.value !== null && activeReviewPrId.value !== prId;
+
+  // Restore the Findings scroll position on (re)mount so returning from a
+  // finding's code lands the user back where they were.
+  useEffect(() => {
+    if (bodyRef.current && reviewSubTab.value === "findings") {
+      bodyRef.current.scrollTop = savedFindingsScrollTop;
+    }
+    // Run once per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Re-render once a second while a file is under review so its running timer
   // ticks. Idle (no active file / not running) means no interval.
@@ -507,7 +534,15 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
       )}
 
       {/* Body */}
-      <div class="flex-1 overflow-y-auto p-4 text-sm min-h-0">
+      <div
+        ref={bodyRef}
+        onScroll={() => {
+          if (reviewSubTab.value === "findings" && bodyRef.current) {
+            savedFindingsScrollTop = bodyRef.current.scrollTop;
+          }
+        }}
+        class="flex-1 overflow-y-auto p-4 text-sm min-h-0"
+      >
         {!run ? (
           <div class="text-gray-400">
             No review yet for this PR.
