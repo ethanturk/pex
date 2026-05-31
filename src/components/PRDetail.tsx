@@ -110,6 +110,7 @@ export function PRDetail({ prId }: Props) {
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [copied, setCopied] = useState(false);
+  const [voteError, setVoteError] = useState<string>("");
   const [checksState, setChecksState] = useState<PRChecksState>({
     loading: false,
     checks: [],
@@ -404,18 +405,20 @@ export function PRDetail({ prId }: Props) {
   };
 
   const handleApprove = async (vote: number) => {
+    setVoteError("");
     try {
       await updateReviewerStatus(projectId, repoId, prId, vote);
       currentView.value = { kind: "pr-list" };
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e);
       // GitHub forbids reviewing a PR you authored; surface a plain-language
-      // reason instead of the raw 422 body.
+      // reason instead of the raw 422 body. (alert() is a no-op in the Tauri
+      // webview, so render the error inline instead.)
       const msg = /can ?not approve your own|review your own/i.test(raw)
         ? "GitHub doesn't let you review your own pull request. Ask another collaborator to review it."
         : raw;
       console.error("Vote failed:", raw);
-      alert(`Vote failed: ${msg}`);
+      setVoteError(msg);
     }
   };
 
@@ -551,6 +554,18 @@ export function PRDetail({ prId }: Props) {
           <ApprovalBar onVote={handleApprove} />
         </div>
       </div>
+      {voteError && (
+        <div class="px-4 py-2 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
+          <span class="flex-1 break-words">{voteError}</span>
+          <button
+            onClick={() => setVoteError("")}
+            class="shrink-0 text-red-400 hover:text-red-600 dark:hover:text-red-200"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Body: File Tree + Diff */}
       <div class="flex flex-1 overflow-hidden">
