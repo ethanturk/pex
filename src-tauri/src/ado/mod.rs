@@ -228,6 +228,34 @@ impl AdoClient {
         Ok(resp.value)
     }
 
+    /// Collect the set of file paths changed across iterations
+    /// `(from_iteration, to_iteration]` — i.e. the delta introduced since the
+    /// last reviewed iteration. Paths are returned without a leading slash so
+    /// they compare directly against `FileChange.item.path` from the full
+    /// file list. Used by incremental review.
+    pub async fn changed_paths_since_iteration(
+        &self,
+        project: &str,
+        repo_id: &str,
+        pr_id: i64,
+        from_iteration: i32,
+        to_iteration: i32,
+    ) -> Result<std::collections::HashSet<String>, AppError> {
+        let mut paths = std::collections::HashSet::new();
+        for it in (from_iteration + 1)..=to_iteration {
+            let changes = self
+                .list_iteration_changes(project, repo_id, pr_id, it)
+                .await?;
+            for c in changes {
+                let p = c.item.path.trim_start_matches('/').to_string();
+                if !p.is_empty() {
+                    paths.insert(p);
+                }
+            }
+        }
+        Ok(paths)
+    }
+
     // ---- Files & Diffs ----
 
     /// Fetch a single iteration with its ref-commit pointers.

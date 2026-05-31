@@ -1,0 +1,6 @@
+{
+  "path": "config.py",
+  "expected": [
+    { "lineStart": 6, "lineEnd": 6, "falsePositive": true, "note": "return None on missing file is explicitly handled by main(); must NOT be flagged as a silent failure" }
+  ]
+}

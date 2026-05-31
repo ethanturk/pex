@@ -302,6 +302,9 @@ export interface AiSettingsNoKey {
   provider: string;
   endpoint: string;
   model: string;
+  /// Whether an API key is stored for the current provider. The key itself is
+  /// never returned — the UI shows a masked placeholder when this is true.
+  hasApiKey: boolean;
   /// TCP/TLS handshake budget. Catches dead servers fast.
   connectTimeoutSecs: number;
   /// Stalled-stream guard: max time between successive bytes from the server.
@@ -313,41 +316,163 @@ export interface AiSettingsNoKey {
   /// Number of retries after a failed LLM call in a PR review.
   /// 0 = no retries (recommended for slow local providers).
   retryCount: number;
+  /// Minimum confidence (0–100) a finding must reach to be reported.
+  /// 0 surfaces everything; higher values raise the precision bar.
+  confidenceThreshold: number;
+  /// Confidence (0–100) at/above which a Critical finding is tiered Blocking
+  /// (the "critical line"). Below it, criticals are Should-fix.
+  blockingConfidence: number;
+  /// Opt-in: cast a "wait for author" vote when posting a review that has at
+  /// least one blocking finding.
+  autoVoteOnBlocking: boolean;
+  /// Opt-in: review only files changed since the last reviewed iteration.
+  incrementalReview: boolean;
+  /// Opt-in: auto-trigger a review on a new PR / iteration.
+  autoReview: boolean;
+  /// Opt-in: after an auto-review, auto-post high-confidence blocking findings.
+  autoPostBlocking: boolean;
+  /// Confidence floor (0–100) for auto-posting a blocking finding.
+  autoPostConfidence: number;
+  /// Opt-in: write a JSONL diagnostic trace per review run.
+  aiDiagnostics: boolean;
 }
 
 export async function getAiSettings(): Promise<AiSettingsNoKey> {
   return invoke<AiSettingsNoKey>("get_ai_settings");
 }
 
-export async function saveAiSettings(
+/// Persist the "AI Defaults" (provider/endpoint/model/key/timeouts) and
+/// reconfigure the live provider. An empty `apiKey` keeps the stored key.
+/// Requires an explicit Save in the UI (after a successful Test).
+export async function saveAiDefaults(
   provider: string,
   endpoint: string,
   model: string,
   apiKey: string,
   connectTimeoutSecs: number,
   readTimeoutSecs: number,
-  hunkConcurrency: number,
-  standardsMaxChars: number,
-  retryCount: number,
 ): Promise<void> {
-  return invoke("save_ai_settings", {
+  return invoke("save_ai_defaults", {
     provider,
     endpoint,
     model,
     apiKey,
     connectTimeoutSecs,
     readTimeoutSecs,
-    hunkConcurrency,
-    standardsMaxChars,
-    retryCount,
   });
 }
 
-export interface ReviewHunkContext {
-  orgUrl: string;
-  projectId: string;
-  repoId: string;
-  sourceCommit: string;
+/// Test the AI Defaults form WITHOUT persisting. Returns the provider's model
+/// list on success (used to validate the key and populate the Model dropdown).
+/// An empty `apiKey` falls back to the stored key.
+export async function testAiDefaults(
+  provider: string,
+  endpoint: string,
+  apiKey: string,
+): Promise<string[]> {
+  return invoke<string[]>("test_ai_defaults", { provider, endpoint, apiKey });
+}
+
+/// Persist the review/automation preferences. Autosaved on change; never
+/// touches provider credentials.
+export async function saveAiPreferences(prefs: {
+  hunkConcurrency: number;
+  standardsMaxChars: number;
+  retryCount: number;
+  confidenceThreshold: number;
+  blockingConfidence: number;
+  autoVoteOnBlocking: boolean;
+  incrementalReview: boolean;
+  autoReview: boolean;
+  autoPostBlocking: boolean;
+  autoPostConfidence: number;
+  aiDiagnostics: boolean;
+}): Promise<void> {
+  return invoke("save_ai_preferences", prefs);
+}
+
+/// The directory where opt-in review diagnostic traces (.jsonl) are written.
+export async function getDiagnosticsDir(): Promise<string> {
+  return invoke<string>("get_diagnostics_dir");
+}
+
+// ---- Phase 4: automation ----
+
+/// Of the given PRs (with their current iteration counts), return the IDs that
+/// should be auto-reviewed. Returns [] when auto-review is disabled.
+export async function autoReviewCandidates(
+  projectId: string,
+  repoId: string,
+  prs: { prId: number; iterationCount: number }[],
+): Promise<number[]> {
+  return invoke<number[]>("auto_review_candidates", { projectId, repoId, prs });
+}
+
+/// Auto-post the high-confidence blocking findings from a completed review.
+/// Returns the number posted (0 when auto-post is disabled).
+export async function autoPostReviewFindings(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  findings: ReviewFinding[],
+): Promise<number> {
+  return invoke<number>("auto_post_review_findings", { projectId, repoId, prId, findings });
+}
+
+// ---- Review feedback loop (Phase 3) ----
+
+export type Verdict = "accepted" | "dismissed" | "edited";
+
+export interface CalibrationBucket {
+  label: string;
+  accepted: number;
+  dismissed: number;
+  edited: number;
+  acceptRate: number | null;
+}
+
+export interface CalibrationStats {
+  total: number;
+  accepted: number;
+  dismissed: number;
+  edited: number;
+  acceptRate: number | null;
+  bySeverity: CalibrationBucket[];
+  byTier: CalibrationBucket[];
+  /// Per-specialist buckets (Thorough mode). A finding merged from several
+  /// specialists credits each, so these may sum to more than `total`.
+  bySpecialist: CalibrationBucket[];
+}
+
+/// Record a reviewer's verdict on a finding. Dismissed findings are suppressed
+/// on future review runs for this PR.
+export async function recordFindingVerdict(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  verdict: Verdict,
+  finding: ReviewFinding,
+): Promise<void> {
+  return invoke("record_finding_verdict", {
+    projectId,
+    repoId,
+    prId,
+    verdict,
+    filePath: finding.filePath ?? "",
+    comment: finding.comment,
+    severity: finding.severity,
+    tier: finding.tier,
+    confidence: finding.confidence,
+    sources: finding.sources ?? [],
+  });
+}
+
+export async function getReviewCalibration(): Promise<CalibrationStats> {
+  return invoke<CalibrationStats>("get_review_calibration");
+}
+
+export async function clearReviewFeedback(): Promise<void> {
+  return invoke("clear_review_feedback");
 }
 
 export interface AiPromptInfo {
@@ -398,17 +523,25 @@ export async function explainHunk(
   return invoke<string>("explain_hunk", { filePath, oldContent, newContent, hunkIndex });
 }
 
-export async function testAiConnection(): Promise<string> {
-  return invoke<string>("test_ai_connection");
-}
-
 // ---- Native PR Review ----
 
 export type Severity = "critical" | "moderate" | "minor";
 
+/// Triage tier derived from severity + confidence + anchor. Blocking and
+/// should-fix are "pulled forward"; nit and fyi are "pushed back".
+export type Tier = "blocking" | "should-fix" | "nit" | "fyi";
+
 export interface ReviewFinding {
   filePath: string;
   severity: Severity;
+  /// How sure the reviewer is the finding is real (0–100), distinct from
+  /// severity (how bad it is if real).
+  confidence: number;
+  /// Triage tier (blocking → fyi).
+  tier: Tier;
+  /// Specialist label(s) that raised this finding; drives per-specialist
+  /// calibration. Empty when unattributed (e.g. Fast mode).
+  sources: string[];
   lineStart: number | null;
   lineEnd: number | null;
   comment: string;
@@ -513,23 +646,4 @@ export async function getDiffHunks(
   newContent: string,
 ): Promise<DiffHunk[]> {
   return invoke<DiffHunk[]>("get_diff_hunks", { oldContent, newContent });
-}
-
-export async function reviewHunk(
-  filePath: string,
-  oldContent: string,
-  newContent: string,
-  hunkIndex: number,
-  ctx?: ReviewHunkContext,
-): Promise<string> {
-  return invoke<string>("review_hunk", {
-    filePath,
-    oldContent,
-    newContent,
-    hunkIndex,
-    orgUrl: ctx?.orgUrl ?? null,
-    projectId: ctx?.projectId ?? null,
-    repoId: ctx?.repoId ?? null,
-    sourceCommit: ctx?.sourceCommit ?? null,
-  });
 }

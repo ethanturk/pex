@@ -42,8 +42,30 @@ pub fn init_db() -> Result<Connection, AppError> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS finding_verdicts (
+            pr_key TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            file_path TEXT NOT NULL DEFAULT '',
+            severity TEXT NOT NULL DEFAULT '',
+            tier TEXT NOT NULL DEFAULT '',
+            confidence INTEGER NOT NULL DEFAULT 0,
+            comment TEXT NOT NULL DEFAULT '',
+            sources TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (pr_key, fingerprint)
+        );
     ",
     )?;
+
+    // Lightweight migration: add `sources` to finding_verdicts tables created
+    // before per-specialist calibration existed. Ignored if the column is
+    // already present (fresh DBs get it from the CREATE above).
+    let _ = conn.execute(
+        "ALTER TABLE finding_verdicts ADD COLUMN sources TEXT NOT NULL DEFAULT ''",
+        [],
+    );
 
     Ok(conn)
 }
@@ -53,6 +75,15 @@ fn dirs_db_path() -> Result<String, AppError> {
     std::fs::create_dir_all(&data_dir)
         .map_err(|_e| AppError::Cache(rusqlite::Error::InvalidPath(data_dir.clone().into())))?;
     Ok(format!("{}/pex.db", data_dir))
+}
+
+/// Directory where opt-in review diagnostic traces are written
+/// (`<data_dir>/diagnostics`). Created on demand.
+pub fn diagnostics_dir() -> Result<String, AppError> {
+    let dir = format!("{}/diagnostics", dirs_data_dir()?);
+    std::fs::create_dir_all(&dir)
+        .map_err(|_e| AppError::Cache(rusqlite::Error::InvalidPath(dir.clone().into())))?;
+    Ok(dir)
 }
 
 fn dirs_data_dir() -> Result<String, AppError> {

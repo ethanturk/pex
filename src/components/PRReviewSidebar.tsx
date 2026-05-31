@@ -11,12 +11,13 @@ import {
   type ReviewProgress,
 } from "@/lib/signals";
 import { startBackgroundReview } from "@/lib/reviewBus";
-import { cancelReview, postReviewFinding, type Severity } from "@/lib/api";
+import { cancelReview, postReviewFinding, recordFindingVerdict, type Severity, type Tier } from "@/lib/api";
 import { useResizableWidth } from "@/lib/useResizableWidth";
 
 type Finding = NonNullable<PRReviewRun["output"]>["findings"][number];
 
-const SEVERITY_ORDER: Severity[] = ["critical", "moderate", "minor"];
+// Triage order: blocking issues first (pulled forward), informational last.
+const TIER_ORDER: Tier[] = ["blocking", "should-fix", "nit", "fyi"];
 
 function severityBadgeClass(s: Severity): string {
   switch (s) {
@@ -28,6 +29,30 @@ function severityBadgeClass(s: Severity): string {
 
 function severityLabel(s: Severity): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function tierLabel(t: Tier): string {
+  switch (t) {
+    case "blocking":   return "Blocking";
+    case "should-fix": return "Should fix";
+    case "nit":        return "Nit";
+    case "fyi":        return "FYI";
+  }
+}
+
+function tierBadgeClass(t: Tier): string {
+  switch (t) {
+    case "blocking":   return "bg-red-500";
+    case "should-fix": return "bg-amber-500";
+    case "nit":        return "bg-gray-400";
+    case "fyi":        return "bg-sky-400";
+  }
+}
+
+// Blocking + should-fix are surfaced expanded and pre-selected for posting;
+// nit + fyi are "pushed back" — collapsed and unselected by default.
+function tierIsActionable(t: Tier): boolean {
+  return t === "blocking" || t === "should-fix";
 }
 
 function fileName(path: string): string {
@@ -59,6 +84,15 @@ function findingCounts(findings: Finding[]) {
     critical: findings.filter((f) => f.severity === "critical").length,
     moderate: findings.filter((f) => f.severity === "moderate").length,
     minor: findings.filter((f) => f.severity === "minor").length,
+  };
+}
+
+function tierCounts(findings: Finding[]) {
+  return {
+    blocking: findings.filter((f) => f.tier === "blocking").length,
+    "should-fix": findings.filter((f) => f.tier === "should-fix").length,
+    nit: findings.filter((f) => f.tier === "nit").length,
+    fyi: findings.filter((f) => f.tier === "fyi").length,
   };
 }
 
@@ -140,23 +174,72 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   // button can drive a per-finding post loop over the user's selection.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [posted, setPosted] = useState<Set<number>>(new Set());
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
   const [bulkPosting, setBulkPosting] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
 
   const findings = run?.output?.findings ?? [];
 
-  // Drop selection/posted state if the run is replaced (re-review, cancel).
+  // When a run's output is (re)set, pre-select the actionable findings
+  // (blocking + should-fix) so the default "Post" action pulls them forward;
+  // nits and FYIs start unselected and pushed back.
   useEffect(() => {
-    setSelected(new Set());
+    const fs = run?.output?.findings ?? [];
+    const preselect = new Set<number>();
+    fs.forEach((f, i) => {
+      if (tierIsActionable(f.tier)) preselect.add(i);
+    });
+    setSelected(preselect);
     setPosted(new Set());
+    setDismissed(new Set());
     setBulkError(null);
   }, [run?.output]);
+
+  // Record a dismissal so this finding is suppressed on the next review run,
+  // and drop it from the posting selection.
+  const dismissFinding = async (i: number) => {
+    const f = findings[i];
+    if (!f) return;
+    setDismissed((prev) => new Set(prev).add(i));
+    setSelected((prev) => {
+      if (!prev.has(i)) return prev;
+      const next = new Set(prev);
+      next.delete(i);
+      return next;
+    });
+    try {
+      await recordFindingVerdict(projectId, repoId, prId, "dismissed", f);
+    } catch {
+      // Non-fatal: the UI already reflects the dismissal; suppression just
+      // won't persist for next run if this failed.
+    }
+  };
 
   const toggleSelected = (i: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(i)) next.delete(i);
       else next.add(i);
+      return next;
+    });
+  };
+
+  // A finding can be selected for posting only if it hasn't already been posted
+  // or dismissed. "Select all" operates over exactly those.
+  const selectableIndices = findings
+    .map((_, i) => i)
+    .filter((i) => !posted.has(i) && !dismissed.has(i));
+  const allSelected =
+    selectableIndices.length > 0 && selectableIndices.every((i) => selected.has(i));
+
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        selectableIndices.forEach((i) => next.delete(i));
+      } else {
+        selectableIndices.forEach((i) => next.add(i));
+      }
       return next;
     });
   };
@@ -196,6 +279,8 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
           f.lineEnd ?? null,
           f.comment,
         );
+        // Posting unedited = accepted as-is. Best-effort; don't fail the post.
+        recordFindingVerdict(projectId, repoId, prId, "accepted", f).catch(() => {});
         markPosted(i);
         anyPosted = true;
       } catch (e) {
@@ -338,8 +423,13 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
                 findings={run.output.findings}
                 selected={selected}
                 posted={posted}
+                dismissed={dismissed}
                 onToggleSelected={toggleSelected}
                 onPosted={markPosted}
+                onDismiss={dismissFinding}
+                allSelected={allSelected}
+                anySelectable={selectableIndices.length > 0}
+                onToggleSelectAll={toggleSelectAll}
               />
             )}
           </>
@@ -394,12 +484,16 @@ function MarkdownSummary({ markdown }: { markdown: string }) {
 
 function ExactStatistics({ findings }: { findings: Finding[] }) {
   const counts = findingCounts(findings);
+  const tiers = tierCounts(findings);
   return (
     <div class="pr-review-markdown text-gray-700 dark:text-gray-300 leading-relaxed mt-4">
       <h2>Statistics</h2>
       <ul>
         <li>
           Issues found: {counts.critical} critical, {counts.moderate} moderate, {counts.minor} minor
+        </li>
+        <li>
+          Triage: {tiers.blocking} blocking, {tiers["should-fix"]} should-fix, {tiers.nit} nit, {tiers.fyi} FYI
         </li>
       </ul>
     </div>
@@ -415,8 +509,33 @@ interface FindingsListProps {
   findings: Finding[];
   selected: Set<number>;
   posted: Set<number>;
+  dismissed: Set<number>;
   onToggleSelected: (i: number) => void;
   onPosted: (i: number) => void;
+  onDismiss: (i: number) => void;
+  allSelected: boolean;
+  anySelectable: boolean;
+  onToggleSelectAll: () => void;
+}
+
+function SelectAllButton({
+  allSelected,
+  anySelectable,
+  onToggleSelectAll,
+}: {
+  allSelected: boolean;
+  anySelectable: boolean;
+  onToggleSelectAll: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggleSelectAll}
+      disabled={!anySelectable}
+      class="text-[11px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      {allSelected ? "Deselect all" : "Select all"}
+    </button>
+  );
 }
 
 function FindingsList({
@@ -426,27 +545,28 @@ function FindingsList({
   findings,
   selected,
   posted,
+  dismissed,
   onToggleSelected,
   onPosted,
+  onDismiss,
+  allSelected,
+  anySelectable,
+  onToggleSelectAll,
 }: FindingsListProps) {
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
 
-  // Group by severity (critical → moderate → minor); within each severity,
-  // sort by file path so related files cluster together. Each finding keeps
-  // its original index so post-tracking survives the regrouping.
+  // Group by triage tier (blocking → fyi). The backend already orders findings
+  // by tier, then confidence, then file, so preserving array order within each
+  // tier keeps the strict triage ordering. Each finding keeps its original
+  // index so selection / post-tracking survives the regrouping.
   const indexed = findings.map((f, i) => ({ f, i }));
-  const bySeverity = new Map<Severity, { f: Finding; i: number }[]>();
+  const byTier = new Map<Tier, { f: Finding; i: number }[]>();
   for (const entry of indexed) {
-    const list = bySeverity.get(entry.f.severity) ?? [];
+    const list = byTier.get(entry.f.tier) ?? [];
     list.push(entry);
-    bySeverity.set(entry.f.severity, list);
+    byTier.set(entry.f.tier, list);
   }
-  for (const list of bySeverity.values()) {
-    list.sort((a, b) =>
-      (a.f.filePath || "").localeCompare(b.f.filePath || ""),
-    );
-  }
-  const severityOrder = SEVERITY_ORDER.filter((s) => bySeverity.has(s));
+  const tierOrder = TIER_ORDER.filter((t) => byTier.has(t));
 
   const handlePosted = (i: number) => {
     onPosted(i);
@@ -455,39 +575,123 @@ function FindingsList({
 
   return (
     <div class="mt-4">
-      <div class="text-[10px] uppercase tracking-wide text-gray-400 mb-2">
-        Findings ({findings.length})
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-[10px] uppercase tracking-wide text-gray-400">
+          Findings ({findings.length})
+        </span>
+        <SelectAllButton
+          allSelected={allSelected}
+          anySelectable={anySelectable}
+          onToggleSelectAll={onToggleSelectAll}
+        />
       </div>
       <div class="space-y-3">
-        {severityOrder.map((sev) => (
-          <div key={sev}>
-            <div class="flex items-center gap-1.5 mb-1">
-              <span class={`inline-block w-2 h-2 rounded-full ${severityBadgeClass(sev)}`} />
-              <span class="text-[10px] uppercase tracking-wide text-gray-500">
-                {severityLabel(sev)} ({bySeverity.get(sev)!.length})
-              </span>
-            </div>
-            <ul class="space-y-2">
-              {bySeverity.get(sev)!.map(({ f, i }) => (
-                <FindingRow
-                  key={i}
-                  finding={f}
-                  projectId={projectId}
-                  repoId={repoId}
-                  prId={prId}
-                  isPosted={posted.has(i)}
-                  isSelected={selected.has(i)}
-                  onToggleSelected={() => onToggleSelected(i)}
-                  isEditing={editingIdx === i}
-                  onEdit={() => setEditingIdx(i)}
-                  onCancel={() => setEditingIdx(null)}
-                  onPosted={() => handlePosted(i)}
-                />
-              ))}
-            </ul>
-          </div>
+        {tierOrder.map((tier) => (
+          <TierSection
+            key={tier}
+            tier={tier}
+            entries={byTier.get(tier)!}
+            projectId={projectId}
+            repoId={repoId}
+            prId={prId}
+            selected={selected}
+            posted={posted}
+            dismissed={dismissed}
+            onToggleSelected={onToggleSelected}
+            editingIdx={editingIdx}
+            setEditingIdx={setEditingIdx}
+            onPosted={handlePosted}
+            onDismiss={onDismiss}
+          />
         ))}
       </div>
+      <div class="flex justify-end mt-3">
+        <SelectAllButton
+          allSelected={allSelected}
+          anySelectable={anySelectable}
+          onToggleSelectAll={onToggleSelectAll}
+        />
+      </div>
+    </div>
+  );
+}
+
+interface TierSectionProps {
+  tier: Tier;
+  entries: { f: Finding; i: number }[];
+  projectId: string;
+  repoId: string;
+  prId: number;
+  selected: Set<number>;
+  posted: Set<number>;
+  dismissed: Set<number>;
+  onToggleSelected: (i: number) => void;
+  editingIdx: number | null;
+  setEditingIdx: (i: number | null) => void;
+  onPosted: (i: number) => void;
+  onDismiss: (i: number) => void;
+}
+
+function TierSection({
+  tier,
+  entries,
+  projectId,
+  repoId,
+  prId,
+  selected,
+  posted,
+  dismissed,
+  onToggleSelected,
+  editingIdx,
+  setEditingIdx,
+  onPosted,
+  onDismiss,
+}: TierSectionProps) {
+  // Push back low-priority tiers: nit / fyi start collapsed so they never bury
+  // the blocking and should-fix findings above them.
+  const actionable = tierIsActionable(tier);
+  const [expanded, setExpanded] = useState(actionable);
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        class="flex items-center gap-1.5 mb-1 w-full text-left"
+        aria-expanded={expanded}
+      >
+        <span class={`inline-block w-2 h-2 rounded-full ${tierBadgeClass(tier)}`} />
+        <span class="text-[10px] uppercase tracking-wide text-gray-500">
+          {tierLabel(tier)} ({entries.length})
+        </span>
+        {!actionable && (
+          <span class="text-[10px] text-gray-400 ml-auto">
+            {expanded ? "▾ hide" : "▸ show"}
+          </span>
+        )}
+      </button>
+      {expanded && (
+        <ul class="space-y-2">
+          {entries.map(({ f, i }) => (
+            <FindingRow
+              key={i}
+              finding={f}
+              projectId={projectId}
+              repoId={repoId}
+              prId={prId}
+              isPosted={posted.has(i)}
+              isSelected={selected.has(i)}
+              isDismissed={dismissed.has(i)}
+              onToggleSelected={() => onToggleSelected(i)}
+              isEditing={editingIdx === i}
+              onEdit={() => setEditingIdx(i)}
+              onCancel={() => setEditingIdx(null)}
+              onPosted={() => onPosted(i)}
+              onDismiss={() => onDismiss(i)}
+            />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -499,11 +703,13 @@ interface FindingRowProps {
   prId: number;
   isPosted: boolean;
   isSelected: boolean;
+  isDismissed: boolean;
   onToggleSelected: () => void;
   isEditing: boolean;
   onEdit: () => void;
   onCancel: () => void;
   onPosted: () => void;
+  onDismiss: () => void;
 }
 
 function FindingRow({
@@ -513,11 +719,13 @@ function FindingRow({
   prId,
   isPosted,
   isSelected,
+  isDismissed,
   onToggleSelected,
   isEditing,
   onEdit,
   onCancel,
   onPosted,
+  onDismiss,
 }: FindingRowProps) {
   const jumpToFinding = () => {
     if (!finding.filePath) return;
@@ -535,12 +743,16 @@ function FindingRow({
   };
   const canJump = !!finding.filePath;
   return (
-    <li class="text-xs border border-gray-200 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-900">
+    <li
+      class={`text-xs border border-gray-200 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-900 ${
+        isDismissed ? "opacity-50" : ""
+      }`}
+    >
       <div class="flex items-start gap-2 mb-1">
         <input
           type="checkbox"
           checked={isSelected}
-          disabled={isPosted}
+          disabled={isPosted || isDismissed}
           onChange={onToggleSelected}
           aria-label={isPosted ? "Already posted" : "Select to post"}
           title={isPosted ? "Already posted" : "Select to post"}
@@ -551,8 +763,18 @@ function FindingRow({
           title={severityLabel(finding.severity)}
         />
         <div class="flex-1 min-w-0">
-          <div class="font-mono text-[11px] text-gray-700 dark:text-gray-300 truncate">
-            {finding.filePath ? `${fileName(finding.filePath)}${lineSuffix(finding)}` : "(PR-level)"}
+          <div class="flex items-center gap-1.5 min-w-0">
+            <div class="font-mono text-[11px] text-gray-700 dark:text-gray-300 truncate">
+              {finding.filePath ? `${fileName(finding.filePath)}${lineSuffix(finding)}` : "(PR-level)"}
+            </div>
+            {Number.isFinite(finding.confidence) && (
+              <span
+                class="shrink-0 text-[10px] tabular-nums text-gray-400 dark:text-gray-500"
+                title={`${severityLabel(finding.severity)} · ${finding.confidence}% confidence`}
+              >
+                {finding.confidence}%
+              </span>
+            )}
           </div>
           {finding.filePath && (
             <div
@@ -587,16 +809,29 @@ function FindingRow({
       </div>
 
       {!isEditing && (
-        <div class="flex justify-end mt-1">
+        <div class="flex justify-end items-center gap-2 mt-1">
           {isPosted ? (
             <span class="text-[11px] text-green-600 dark:text-green-400">Posted ✓</span>
+          ) : isDismissed ? (
+            <span class="text-[11px] text-gray-500 dark:text-gray-400">
+              Dismissed ✓ <span class="text-gray-400">(suppressed next run)</span>
+            </span>
           ) : (
-            <button
-              onClick={onEdit}
-              class="text-[11px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
-            >
-              Create comment
-            </button>
+            <>
+              <button
+                onClick={onDismiss}
+                title="Dismiss this finding — it won't be suggested again on this PR"
+                class="text-[11px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Dismiss
+              </button>
+              <button
+                onClick={onEdit}
+                class="text-[11px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Create comment
+              </button>
+            </>
           )}
         </div>
       )}
@@ -669,6 +904,15 @@ function FindingEditor({
         lineEnd,
         text,
       );
+      // Capture the verdict: edited if the reviewer changed the wording before
+      // posting, otherwise accepted as-is. Best-effort — don't fail the post.
+      recordFindingVerdict(
+        projectId,
+        repoId,
+        prId,
+        text.trim() === finding.comment.trim() ? "accepted" : "edited",
+        finding,
+      ).catch(() => {});
       // Notify PRDetail so its Comments pane re-fetches threads — without this
       // the comment lands in ADO but never appears in the diff view.
       threadsRefreshTick.value = threadsRefreshTick.value + 1;

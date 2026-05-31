@@ -6,7 +6,6 @@ use crate::AppError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKey {
     ExplainHunkSystem,
-    ReviewHunkSystem,
     // Multi-pass specialist prompts (used by Thorough review mode).
     // Modeled after https://github.com/anthropics/claude-code/tree/main/plugins/pr-review-toolkit
     ReviewCodeReviewerSystem,
@@ -14,17 +13,18 @@ pub enum PromptKey {
     ReviewCommentAnalyzerSystem,
     ReviewTestAnalyzerSystem,
     ReviewTypeDesignSystem,
+    ReviewCodeSimplifierSystem,
 }
 
 impl PromptKey {
     pub const ALL: &'static [PromptKey] = &[
         PromptKey::ExplainHunkSystem,
-        PromptKey::ReviewHunkSystem,
         PromptKey::ReviewCodeReviewerSystem,
         PromptKey::ReviewSilentFailureSystem,
         PromptKey::ReviewCommentAnalyzerSystem,
         PromptKey::ReviewTestAnalyzerSystem,
         PromptKey::ReviewTypeDesignSystem,
+        PromptKey::ReviewCodeSimplifierSystem,
     ];
 
     /// Specialist prompts used by Thorough multi-pass review. Order here is the
@@ -35,17 +35,18 @@ impl PromptKey {
         PromptKey::ReviewCommentAnalyzerSystem,
         PromptKey::ReviewTestAnalyzerSystem,
         PromptKey::ReviewTypeDesignSystem,
+        PromptKey::ReviewCodeSimplifierSystem,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             PromptKey::ExplainHunkSystem => "explain_hunk_system",
-            PromptKey::ReviewHunkSystem => "review_hunk_system",
             PromptKey::ReviewCodeReviewerSystem => "review_code_reviewer_system",
             PromptKey::ReviewSilentFailureSystem => "review_silent_failure_system",
             PromptKey::ReviewCommentAnalyzerSystem => "review_comment_analyzer_system",
             PromptKey::ReviewTestAnalyzerSystem => "review_test_analyzer_system",
             PromptKey::ReviewTypeDesignSystem => "review_type_design_system",
+            PromptKey::ReviewCodeSimplifierSystem => "review_code_simplifier_system",
         }
     }
 
@@ -57,6 +58,7 @@ impl PromptKey {
             PromptKey::ReviewCommentAnalyzerSystem => "comment-analyzer",
             PromptKey::ReviewTestAnalyzerSystem => "test-analyzer",
             PromptKey::ReviewTypeDesignSystem => "type-design-analyzer",
+            PromptKey::ReviewCodeSimplifierSystem => "code-simplifier",
             _ => "reviewer",
         }
     }
@@ -64,12 +66,12 @@ impl PromptKey {
     pub fn from_str(s: &str) -> Result<Self, AppError> {
         match s {
             "explain_hunk_system" => Ok(PromptKey::ExplainHunkSystem),
-            "review_hunk_system" => Ok(PromptKey::ReviewHunkSystem),
             "review_code_reviewer_system" => Ok(PromptKey::ReviewCodeReviewerSystem),
             "review_silent_failure_system" => Ok(PromptKey::ReviewSilentFailureSystem),
             "review_comment_analyzer_system" => Ok(PromptKey::ReviewCommentAnalyzerSystem),
             "review_test_analyzer_system" => Ok(PromptKey::ReviewTestAnalyzerSystem),
             "review_type_design_system" => Ok(PromptKey::ReviewTypeDesignSystem),
+            "review_code_simplifier_system" => Ok(PromptKey::ReviewCodeSimplifierSystem),
             other => Err(AppError::Ai(format!("Unknown prompt key: {}", other))),
         }
     }
@@ -79,12 +81,12 @@ impl PromptKey {
     pub fn default_text(self) -> &'static str {
         match self {
             PromptKey::ExplainHunkSystem => DEFAULT_EXPLAIN_HUNK_SYSTEM,
-            PromptKey::ReviewHunkSystem => DEFAULT_REVIEW_HUNK_SYSTEM,
             PromptKey::ReviewCodeReviewerSystem => DEFAULT_REVIEW_CODE_REVIEWER_SYSTEM,
             PromptKey::ReviewSilentFailureSystem => DEFAULT_REVIEW_SILENT_FAILURE_SYSTEM,
             PromptKey::ReviewCommentAnalyzerSystem => DEFAULT_REVIEW_COMMENT_ANALYZER_SYSTEM,
             PromptKey::ReviewTestAnalyzerSystem => DEFAULT_REVIEW_TEST_ANALYZER_SYSTEM,
             PromptKey::ReviewTypeDesignSystem => DEFAULT_REVIEW_TYPE_DESIGN_SYSTEM,
+            PromptKey::ReviewCodeSimplifierSystem => DEFAULT_REVIEW_CODE_SIMPLIFIER_SYSTEM,
         }
     }
 
@@ -107,23 +109,12 @@ For the given hunk:
 
 Focus only on this hunk; do not speculate about other changes in the file. Keep your response to 2-3 short paragraphs. Use markdown for formatting. Do not include greetings or sign-offs."#;
 
-/// Default prompt for reviewing a single diff hunk.
-pub const DEFAULT_REVIEW_HUNK_SYSTEM: &str = r#"You are a careful code reviewer analyzing a single diff hunk from a pull request. Your task is to provide a concise, actionable review of just this specific change.
-
-For the given hunk:
-1. Summarize what this change does in one sentence
-2. Identify any issues: bugs, logic errors, edge cases, race conditions, security concerns
-3. Suggest improvements if applicable (naming, structure, performance)
-4. Note anything that looks good and why
-
-Be specific — reference exact line numbers from the hunk header. Keep your response focused and brief (3-5 bullet points max). Use markdown. Do not include greetings or sign-offs."#;
-
 // ---- Multi-pass specialist prompts ----
 //
-// Each specialist reviews the SAME hunk through a narrow lens. They share the
-// same output contract as `DEFAULT_REVIEW_HUNK_SYSTEM` (bullet points, "No issues
-// found." sentinel) so the downstream file-aggregate step can consume them
-// uniformly. Distilled from anthropics/claude-code/plugins/pr-review-toolkit.
+// Each specialist reviews the SAME hunk through a narrow lens. They share a
+// common output contract (bullet points, "No issues found." sentinel) so the
+// downstream file-aggregate step can consume them uniformly. Distilled from
+// anthropics/claude-code/plugins/pr-review-toolkit.
 
 /// Defaults for the "code-reviewer" specialist — adherence to guidelines, style, best practices.
 pub const DEFAULT_REVIEW_CODE_REVIEWER_SYSTEM: &str = r#"You are an elite code reviewer focused on adherence to project guidelines, style, and best practices. You review a single diff hunk as one pass of a multi-agent review.
@@ -203,6 +194,21 @@ If you find nothing worth flagging, respond with exactly: No issues found.
 
 Do not include greetings or sign-offs."#;
 
+/// Defaults for the "code-simplifier" specialist — clarity and unnecessary complexity.
+pub const DEFAULT_REVIEW_CODE_SIMPLIFIER_SYSTEM: &str = r#"You are an expert at code clarity and simplification. You review a single diff hunk as one pass of a multi-agent review.
+
+For the given hunk, look only for changes that would make the code meaningfully simpler without changing behavior:
+1. Duplicated logic that could reuse an existing helper, or redundant code that restates work already done
+2. Convoluted control flow that has a clear, flatter equivalent (needless nesting, double negatives, dead branches)
+3. Unnecessary intermediate state, variables, or abstraction that adds no value at this size
+4. Over-engineering: premature generalization or indirection for a single caller
+
+Reference exact NEW-side line numbers from the hunk header. Do NOT flag pure style or naming — other specialists own that. Suggest a simplification only when you are confident it preserves behavior and is genuinely clearer; skip subjective rewrites. Keep your response to 2-4 bullet points.
+
+If you find nothing worth flagging, respond with exactly: No issues found.
+
+Do not include greetings or sign-offs."#;
+
 /// Resolve a prompt: returns the user override from SQLite if present, otherwise the default.
 pub fn resolve_prompt(conn: &rusqlite::Connection, key: PromptKey) -> Result<String, AppError> {
     let stored = crate::cache::get_setting(conn, &key.db_key())?;
@@ -253,35 +259,4 @@ pub fn explain_hunk_user(file_path: &str, hunk_header: &str, hunk_text: &str) ->
         "Please explain this hunk from `{}`:\n\n{}\n{}",
         file_path, hunk_header, hunk_text
     )
-}
-
-/// Prompt for generating review-hunk user message. `agents` and `style` are the
-/// nearest project-conventions / style-guide files, when found (see ai::standards).
-/// Sections for unavailable docs are omitted entirely so the model isn't fed empty
-/// headings.
-pub fn review_hunk_user(
-    file_path: &str,
-    hunk_header: &str,
-    hunk_text: &str,
-    agents: Option<(&str, &str)>,
-    style: Option<(&str, &str)>,
-) -> String {
-    let mut out = String::new();
-    if let Some((path, content)) = agents {
-        out.push_str(&format!(
-            "## Project conventions (AGENTS.md, found at `{}`)\n{}\n\n",
-            path, content
-        ));
-    }
-    if let Some((path, content)) = style {
-        out.push_str(&format!(
-            "## Project style guide (STYLE.md, found at `{}`)\n{}\n\n",
-            path, content
-        ));
-    }
-    out.push_str(&format!(
-        "## Hunk\nReview this hunk from `{}`:\n\n{}\n{}",
-        file_path, hunk_header, hunk_text
-    ));
-    out
 }

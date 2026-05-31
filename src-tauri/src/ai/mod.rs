@@ -114,6 +114,36 @@ pub const DEFAULT_STANDARDS_MAX_CHARS: u32 = 8000;
 pub const MIN_STANDARDS_MAX_CHARS: u32 = 500;
 pub const MAX_STANDARDS_MAX_CHARS: u32 = 65535;
 
+/// Minimum confidence (0–100) a review finding must reach to be surfaced.
+/// Mirrors the pr-review-toolkit's ≥80 reporting threshold: below this a
+/// finding is treated as a likely false positive or low-impact nit and
+/// dropped before the reviewer ever sees it. 0 surfaces everything.
+pub const DEFAULT_CONFIDENCE_THRESHOLD: u8 = 80;
+pub const MAX_CONFIDENCE_THRESHOLD: u8 = 100;
+
+/// Confidence (0–100) at or above which a Critical finding is tiered as
+/// Blocking rather than Should-fix — the "critical line." Configurable so teams
+/// can decide how sure the reviewer must be before a critical issue gates the
+/// PR. Critical findings below this line are still actionable (Should-fix).
+pub const DEFAULT_BLOCKING_CONFIDENCE: u8 = 85;
+pub const MAX_BLOCKING_CONFIDENCE: u8 = 100;
+
+/// Hard ceiling (characters) on the surrounding-file context injected into
+/// hunk reviews and the file adjudicator. Bounds token cost and latency on
+/// large files while still letting reviewers see definitions / callers that
+/// kill the most common false positives. Not user-configurable in Phase 1.
+pub const FILE_CONTEXT_MAX_CHARS: usize = 12000;
+
+/// Whether posting a review with at least one Blocking finding also casts a
+/// "wait for author" reviewer vote. Off by default — auto-voting is a visible
+/// side effect, so it is strictly opt-in.
+pub const DEFAULT_AUTO_VOTE_ON_BLOCKING: bool = false;
+
+/// ADO reviewer vote value for "wait for author". Used by the opt-in
+/// auto-vote-on-blocking behavior. (10 approve, 5 approve w/ suggestions,
+/// 0 none, -5 wait for author, -10 reject.)
+pub const VOTE_WAIT_FOR_AUTHOR: i32 = -5;
+
 /// AI settings stored in SQLite + keyring.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiSettings {
@@ -130,6 +160,10 @@ pub struct AiSettingsNoKey {
     pub provider: String,
     pub endpoint: String,
     pub model: String,
+    /// Whether an API key is stored for the current provider. The key itself is
+    /// never returned; the UI uses this to show a masked placeholder instead of
+    /// a misleadingly-empty field.
+    pub has_api_key: bool,
     /// TCP/TLS handshake budget in seconds.
     pub connect_timeout_secs: u64,
     /// Per-read stalled-stream budget in seconds. Does NOT bound total generation
@@ -140,6 +174,24 @@ pub struct AiSettingsNoKey {
     /// Number of retries the review engine performs after a failed LLM call.
     /// 0 = no retries (recommended for local providers).
     pub retry_count: u32,
+    /// Minimum confidence (0–100) a finding must reach to be reported.
+    pub confidence_threshold: u8,
+    /// Confidence (0–100) at/above which a Critical finding is tiered Blocking
+    /// (the "critical line").
+    pub blocking_confidence: u8,
+    /// Opt-in: cast a "wait for author" vote when posting a review that has at
+    /// least one Blocking finding.
+    pub auto_vote_on_blocking: bool,
+    /// Opt-in: review only files changed since the last reviewed iteration.
+    pub incremental_review: bool,
+    /// Opt-in: auto-trigger a review on a new PR / iteration.
+    pub auto_review: bool,
+    /// Opt-in: after an auto-review, auto-post high-confidence Blocking findings.
+    pub auto_post_blocking: bool,
+    /// Confidence floor (0–100) for auto-posting a Blocking finding.
+    pub auto_post_confidence: u8,
+    /// Opt-in: write a JSONL diagnostic trace per review run.
+    pub ai_diagnostics: bool,
 }
 
 /// Read the TCP/TLS connect timeout (seconds), defaulting if missing.
@@ -196,6 +248,90 @@ pub fn read_retry_count(conn: &rusqlite::Connection) -> Result<u32, AppError> {
         .and_then(|s| s.parse::<u32>().ok())
         .map(|n| n.min(MAX_RETRY_COUNT))
         .unwrap_or(DEFAULT_RETRY_COUNT))
+}
+
+/// Read the configured minimum confidence threshold (0–100) for surfacing
+/// findings. Unlike most numeric settings, 0 is a valid, meaningful value
+/// ("surface everything"), so it is not coerced to the default.
+pub fn read_confidence_threshold(conn: &rusqlite::Connection) -> Result<u8, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_confidence_threshold")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|n| n.min(MAX_CONFIDENCE_THRESHOLD))
+        .unwrap_or(DEFAULT_CONFIDENCE_THRESHOLD))
+}
+
+/// Read the "critical line": the confidence at/above which a Critical finding
+/// is tiered Blocking. 0 means every Critical finding blocks; just clamp the
+/// upper bound.
+pub fn read_blocking_confidence(conn: &rusqlite::Connection) -> Result<u8, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_blocking_confidence")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|n| n.min(MAX_BLOCKING_CONFIDENCE))
+        .unwrap_or(DEFAULT_BLOCKING_CONFIDENCE))
+}
+
+/// Read whether posting a review should auto-cast a "wait for author" vote when
+/// there is at least one Blocking finding. Defaults to off.
+pub fn read_auto_vote_on_blocking(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_vote_on_blocking")?;
+    Ok(raw
+        .map(|s| s == "true")
+        .unwrap_or(DEFAULT_AUTO_VOTE_ON_BLOCKING))
+}
+
+/// Whether reviews are incremental: on a re-review, only files changed since the
+/// last reviewed iteration are reviewed. Defaults to off (always full review).
+pub const DEFAULT_INCREMENTAL_REVIEW: bool = false;
+
+/// Read whether incremental review is enabled.
+pub fn read_incremental_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_incremental_review")?;
+    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_INCREMENTAL_REVIEW))
+}
+
+/// Write a JSONL diagnostic trace per review run (prompts, responses, and every
+/// deterministic decision) for evaluation/tuning. Off by default — traces
+/// contain source content and full prompts.
+pub const DEFAULT_AI_DIAGNOSTICS: bool = false;
+
+pub fn read_ai_diagnostics(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_diagnostics")?;
+    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_AI_DIAGNOSTICS))
+}
+
+// ---- Phase 4: automation (earned autonomy) ----
+
+/// Auto-trigger a review when a PR is first seen or has a new iteration.
+/// Off by default — auto-review consumes provider quota.
+pub const DEFAULT_AUTO_REVIEW: bool = false;
+
+/// After an auto-review, auto-post the highest-confidence Blocking findings.
+/// Off by default — this posts comments without a human in the loop.
+pub const DEFAULT_AUTO_POST_BLOCKING: bool = false;
+
+/// Confidence (0–100) a Blocking finding must reach to be auto-posted. Set high
+/// by default: autonomy is earned, so only near-certain blockers post unattended.
+pub const DEFAULT_AUTO_POST_CONFIDENCE: u8 = 90;
+pub const MAX_AUTO_POST_CONFIDENCE: u8 = 100;
+
+pub fn read_auto_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_review")?;
+    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_AUTO_REVIEW))
+}
+
+pub fn read_auto_post_blocking(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_post_blocking")?;
+    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_AUTO_POST_BLOCKING))
+}
+
+pub fn read_auto_post_confidence(conn: &rusqlite::Connection) -> Result<u8, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_post_confidence")?;
+    Ok(raw
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|n| n.min(MAX_AUTO_POST_CONFIDENCE))
+        .unwrap_or(DEFAULT_AUTO_POST_CONFIDENCE))
 }
 
 /// Read the configured per-file size cap for injected AGENTS.md / STYLE.md content.

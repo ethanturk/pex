@@ -1,0 +1,6 @@
+def main():
+    cfg = load_config("config.yaml")
+    if cfg is None:
+        print("No config found; using defaults")
+        cfg = default_config()
+    run(cfg)

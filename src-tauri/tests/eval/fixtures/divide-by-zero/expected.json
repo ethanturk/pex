@@ -1,0 +1,6 @@
+{
+  "path": "stats.py",
+  "expected": [
+    { "lineStart": 5, "lineEnd": 5, "falsePositive": false, "note": "ZeroDivisionError when values is empty" }
+  ]
+}

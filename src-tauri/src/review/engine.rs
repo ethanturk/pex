@@ -45,6 +45,90 @@ pub enum Severity {
     Minor,
 }
 
+/// Confidence (0–100) assigned to findings that predate explicit scoring or
+/// that the model failed to score. Set to the default reporting threshold so a
+/// missing score surfaces exactly as findings did before confidence existed,
+/// rather than being silently dropped.
+pub fn default_confidence() -> u8 {
+    crate::ai::DEFAULT_CONFIDENCE_THRESHOLD
+}
+
+/// Triage tier for a finding, derived deterministically from severity,
+/// confidence, and whether it is line-anchored (a proxy for blast radius —
+/// file-level findings can't be actioned on a specific line). Drives ordering,
+/// which findings are "pulled forward" as individual comments, and which are
+/// "pushed back" into a single rollup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Tier {
+    /// High-impact, high-confidence — surfaced first, posted individually.
+    Blocking,
+    /// Real and worth fixing, but not gating.
+    ShouldFix,
+    /// Low-impact polish — collapsed into a rollup so it never buries signal.
+    Nit,
+    /// File-level / informational — no specific line to act on.
+    Fyi,
+}
+
+impl Tier {
+    /// Lower rank sorts first (Blocking → FYI).
+    pub fn rank(self) -> u8 {
+        match self {
+            Tier::Blocking => 0,
+            Tier::ShouldFix => 1,
+            Tier::Nit => 2,
+            Tier::Fyi => 3,
+        }
+    }
+
+    /// Whether this tier is "pulled forward": surfaced prominently and posted
+    /// as its own comment. The rest are "pushed back" into a single rollup.
+    pub fn is_actionable(self) -> bool {
+        matches!(self, Tier::Blocking | Tier::ShouldFix)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tier::Blocking => "Blocking",
+            Tier::ShouldFix => "Should fix",
+            Tier::Nit => "Nit",
+            Tier::Fyi => "FYI",
+        }
+    }
+}
+
+/// Default tier used only when deserializing a finding that lacks one. Defaults
+/// to `ShouldFix` so an un-tiered finding is treated as actionable rather than
+/// silently hidden in the rollup.
+pub fn default_tier() -> Tier {
+    Tier::ShouldFix
+}
+
+/// Compute the triage tier for a finding. Critical findings are always
+/// actionable (Blocking when confidence is at/above the configurable
+/// `blocking_confidence` "critical line", else Should-fix) regardless of
+/// anchor; non-critical findings with no line anchor are informational (FYI).
+pub fn tier_for(
+    severity: Severity,
+    confidence: u8,
+    line_start: Option<usize>,
+    blocking_confidence: u8,
+) -> Tier {
+    match severity {
+        Severity::Critical => {
+            if confidence >= blocking_confidence {
+                Tier::Blocking
+            } else {
+                Tier::ShouldFix
+            }
+        }
+        _ if line_start.is_none() => Tier::Fyi,
+        Severity::Moderate if confidence >= 80 => Tier::ShouldFix,
+        _ => Tier::Nit,
+    }
+}
+
 /// A single review finding produced by the engine. Each finding is intended to
 /// become one ADO comment, anchored to a line range when possible.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -52,6 +136,17 @@ pub enum Severity {
 pub struct Finding {
     pub file_path: String,
     pub severity: Severity,
+    /// How sure the reviewer is the finding is real (0–100), distinct from
+    /// `severity` (how bad it is if real).
+    #[serde(default = "default_confidence")]
+    pub confidence: u8,
+    /// Triage tier (Blocking → FYI), derived from severity + confidence + anchor.
+    #[serde(default = "default_tier")]
+    pub tier: Tier,
+    /// Specialist label(s) that raised this finding (e.g. "silent-failure-hunter").
+    /// Drives per-specialist calibration. Empty when unattributed (e.g. Fast mode).
+    #[serde(default)]
+    pub sources: Vec<String>,
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
     pub comment: String,
@@ -72,9 +167,22 @@ pub struct FileAggregateResult {
 #[serde(rename_all = "camelCase")]
 pub struct FileAggregateFinding {
     pub severity: Severity,
+    /// Adjudicator confidence (0–100). Defaulted for back-compat with states
+    /// persisted before confidence scoring existed.
+    #[serde(default = "default_confidence")]
+    pub confidence: u8,
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
     pub comment: String,
+    /// New-side line(s) the adjudicator cited to justify the finding. Used by
+    /// the deterministic anchor check and for logging; stripped before posting.
+    #[serde(default)]
+    pub evidence: Option<String>,
+    /// Specialist label(s) the adjudicator says raised this finding, echoed from
+    /// the `[label]` tags on the per-hunk candidates. Validated against the known
+    /// specialist set after parsing. Drives per-specialist calibration.
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 /// The complete review output.
@@ -86,7 +194,7 @@ pub struct ReviewOutput {
 
 /// Best-effort JSON extraction from an LLM response. Strips ``` fences and
 /// trims surrounding prose; returns the parsed result or an error string.
-fn parse_file_aggregate(raw: &str) -> Result<FileAggregateResult, String> {
+pub fn parse_file_aggregate(raw: &str) -> Result<FileAggregateResult, String> {
     let trimmed = raw.trim();
     // Strip leading/trailing code fences if the model ignored "no fences".
     let inner = if let Some(stripped) = trimmed
@@ -112,6 +220,77 @@ fn parse_file_aggregate(raw: &str) -> Result<FileAggregateResult, String> {
         .map_err(|e| format!("JSON parse error: {} — body was: {}", e, json_str))
 }
 
+/// Deterministic, no-LLM precision guards applied to a freshly-adjudicated
+/// file aggregate:
+///   1. drop findings whose `confidence` is below `threshold`;
+///   2. drop line-anchored findings whose `line_start` falls outside every
+///      reviewed hunk's new-side range — a strong hallucinated-line signal.
+/// File-level findings (`line_start == None`) are exempt from the anchor check.
+/// Returns the number of findings dropped (for logging / tests).
+pub fn apply_finding_guards(
+    aggregate: &mut FileAggregateResult,
+    file_path: &str,
+    threshold: u8,
+    hunks: &[crate::diff::engine::DiffHunk],
+) -> usize {
+    let before = aggregate.findings.len();
+    aggregate.findings.retain(|f| {
+        if f.confidence < threshold {
+            eprintln!(
+                "[review] dropped finding in {} (confidence {} < threshold {})",
+                file_path, f.confidence, threshold
+            );
+            return false;
+        }
+        if let Some(line) = f.line_start {
+            if !line_in_any_hunk(line, hunks) {
+                eprintln!(
+                    "[review] dropped finding in {} (line {} outside any reviewed hunk — likely hallucinated)",
+                    file_path, line
+                );
+                return false;
+            }
+        }
+        true
+    });
+    before - aggregate.findings.len()
+}
+
+/// True if `line` (1-based, new-side) falls within any hunk's new-side range.
+/// Hunks with no new-side lines (pure deletions, `new_count == 0`) match nothing.
+fn line_in_any_hunk(line: usize, hunks: &[crate::diff::engine::DiffHunk]) -> bool {
+    hunks
+        .iter()
+        .any(|h| h.new_count > 0 && line >= h.new_start && line < h.new_start + h.new_count)
+}
+
+/// The canonical specialist labels (the closed vocabulary the adjudicator may
+/// cite in a finding's `sources`). Used to validate LLM-reported attribution.
+fn known_specialist_labels() -> Vec<&'static str> {
+    PromptKey::THOROUGH_SPECIALISTS
+        .iter()
+        .map(|k| k.specialist_label())
+        .collect()
+}
+
+/// Clean up adjudicator-reported `sources`: lowercase/trim, keep only known
+/// specialist labels, dedupe. A hallucinated or empty label can't pollute the
+/// per-specialist calibration; findings with no valid source stay empty and are
+/// bucketed as "unattributed" downstream.
+pub fn normalize_finding_sources(aggregate: &mut FileAggregateResult) {
+    let known = known_specialist_labels();
+    for f in &mut aggregate.findings {
+        let mut cleaned: Vec<String> = Vec::new();
+        for s in f.sources.drain(..) {
+            let s = s.trim().to_ascii_lowercase();
+            if known.contains(&s.as_str()) && !cleaned.contains(&s) {
+                cleaned.push(s);
+            }
+        }
+        f.sources = cleaned;
+    }
+}
+
 fn emit_progress(app: &tauri::AppHandle, phase: &str, detail: &str, extra: serde_json::Value) {
     let mut payload = serde_json::json!({
         "phase": phase,
@@ -134,6 +313,7 @@ pub async fn run_review(
     input: ReviewInput,
     db: &std::sync::Mutex<rusqlite::Connection>,
     cancel: Arc<AtomicBool>,
+    diag: crate::review::diagnostics::Diagnostics,
 ) -> Result<ReviewOutput, AppError> {
     // ---- Prepare: sort files by hunk count (largest first) ----
     let mut file_entries: Vec<(FileInput, Vec<crate::diff::engine::DiffHunk>)> = input
@@ -165,6 +345,42 @@ pub async fn run_review(
     }
     .max(1) as usize;
     let llm_permits = Arc::new(Semaphore::new(hunk_concurrency));
+
+    // Minimum confidence a finding must reach to survive the deterministic
+    // guard applied after each file's adjudication. Resolved once per run.
+    let confidence_threshold = match db.lock() {
+        Ok(c) => crate::ai::read_confidence_threshold(&c)
+            .unwrap_or(crate::ai::DEFAULT_CONFIDENCE_THRESHOLD),
+        Err(_) => crate::ai::DEFAULT_CONFIDENCE_THRESHOLD,
+    };
+    // The "critical line": confidence at/above which a Critical finding tiers
+    // Blocking. Resolved once per run so it stays stable across the synthesis.
+    let blocking_confidence = match db.lock() {
+        Ok(c) => crate::ai::read_blocking_confidence(&c)
+            .unwrap_or(crate::ai::DEFAULT_BLOCKING_CONFIDENCE),
+        Err(_) => crate::ai::DEFAULT_BLOCKING_CONFIDENCE,
+    };
+
+    if diag.is_enabled() {
+        diag.event(
+            "run_start",
+            serde_json::json!({
+                "prKey": input.pr_key,
+                "prTitle": input.pr_title,
+                "mode": input.mode,
+                "fileCount": file_entries.len(),
+                "settings": {
+                    "confidenceThreshold": confidence_threshold,
+                    "blockingConfidence": blocking_confidence,
+                    "retryCount": retry_count,
+                    "hunkConcurrency": hunk_concurrency,
+                },
+            }),
+        );
+        if let Some(p) = diag.path() {
+            eprintln!("[diagnostics] writing review trace to {p}");
+        }
+    }
 
     // Resolve specialist system prompts + per-specialist model overrides once for
     // the run (Thorough mode only). Resolved up front so user edits in Settings
@@ -212,6 +428,9 @@ pub async fn run_review(
         cancelled(&cancel)?;
         let (file, hunks) = &file_entries[state.current_file_idx];
         let total_hunks = hunks.len();
+        // Shared once per file: each hunk pass windows a bounded slice of this
+        // for surrounding context, so we clone the Arc, not the string.
+        let file_new_content = Arc::new(file.new_content.clone());
 
         if state.current_file_hunks == 0 {
             state.current_file_hunks = total_hunks;
@@ -250,6 +469,7 @@ pub async fn run_review(
                 let standards = input.standards.clone();
                 let specialist_prompts = specialist_prompts.clone();
                 let llm_permits = llm_permits.clone();
+                let file_new_content = file_new_content.clone();
                 let mode = input.mode;
                 handles.push((
                     hunk_idx,
@@ -265,6 +485,7 @@ pub async fn run_review(
                             specialist_prompts,
                             retry_count,
                             llm_permits,
+                            file_new_content,
                         )
                         .await
                     }),
@@ -306,6 +527,16 @@ pub async fn run_review(
                 };
 
                 if response.trim() != "No issues found." {
+                    if diag.is_enabled() {
+                        diag.event(
+                            "hunk_candidate",
+                            serde_json::json!({
+                                "filePath": file.path,
+                                "hunk": hunk_idx + 1,
+                                "text": response,
+                            }),
+                        );
+                    }
                     state.current_file_findings.push((hunk_idx + 1, response));
                 }
 
@@ -357,15 +588,29 @@ pub async fn run_review(
                         &file.path,
                         &state.current_file_findings,
                         &input.standards,
+                        &file.new_content,
                     ),
                 },
             ];
 
+            let agg_started = std::time::Instant::now();
             let raw = chat_with_retries(&provider, &agg_messages, retry_count)
                 .await
                 .unwrap_or_else(|e| format!("[aggregate failed — {}]", e));
+            if diag.is_enabled() {
+                diag.event(
+                    "llm_call",
+                    serde_json::json!({
+                        "stage": "adjudicate",
+                        "filePath": file.path,
+                        "latencyMs": agg_started.elapsed().as_millis() as u64,
+                        "messages": &agg_messages,
+                        "response": raw,
+                    }),
+                );
+            }
 
-            let aggregate = parse_file_aggregate(&raw).unwrap_or_else(|err| {
+            let mut aggregate = parse_file_aggregate(&raw).unwrap_or_else(|err| {
                 // Log to stderr so the user can see what the model produced.
                 eprintln!(
                     "[review] file-aggregate JSON parse failed for {}: {}",
@@ -377,6 +622,47 @@ pub async fn run_review(
                     findings: Vec::new(),
                 }
             });
+
+            // Deterministic precision guards: drop sub-threshold and
+            // hallucinated-line findings before they reach the reviewer.
+            normalize_finding_sources(&mut aggregate);
+            // Snapshot the parsed findings so we can log which the deterministic
+            // guards kept vs dropped (and why) — the core deterministic-behavior
+            // signal for tuning the threshold and anchor check.
+            let pre_guard: Vec<FileAggregateFinding> = if diag.is_enabled() {
+                aggregate.findings.clone()
+            } else {
+                Vec::new()
+            };
+            apply_finding_guards(&mut aggregate, &file.path, confidence_threshold, hunks);
+            if diag.is_enabled() {
+                for f in &pre_guard {
+                    let kept = aggregate
+                        .findings
+                        .iter()
+                        .any(|s| s.line_start == f.line_start && s.comment == f.comment);
+                    let mut payload = serde_json::json!({
+                        "filePath": file.path,
+                        "severity": f.severity,
+                        "confidence": f.confidence,
+                        "lineStart": f.line_start,
+                        "lineEnd": f.line_end,
+                        "sources": f.sources,
+                        "comment": f.comment,
+                    });
+                    if !kept {
+                        let reason = if f.confidence < confidence_threshold {
+                            "below_threshold"
+                        } else {
+                            "outside_hunk"
+                        };
+                        if let Some(o) = payload.as_object_mut() {
+                            o.insert("reason".into(), serde_json::json!(reason));
+                        }
+                    }
+                    diag.event(if kept { "adjudicated_finding" } else { "guard_drop" }, payload);
+                }
+            }
 
             state.completed_files.push((file.path.clone(), aggregate));
         } else {
@@ -460,9 +746,22 @@ pub async fn run_review(
             },
         ];
 
+        let batch_started = std::time::Instant::now();
         let batch_summary = chat_with_retries(&provider, &batch_messages, retry_count)
             .await
             .unwrap_or_else(|e| format!("[batch aggregate failed — {}]", e));
+        if diag.is_enabled() {
+            diag.event(
+                "llm_call",
+                serde_json::json!({
+                    "stage": "batch",
+                    "batch": state.current_batch,
+                    "latencyMs": batch_started.elapsed().as_millis() as u64,
+                    "messages": &batch_messages,
+                    "response": batch_summary,
+                }),
+            );
+        }
 
         state.batch_summaries.push(batch_summary);
         state.current_batch += 1;
@@ -486,19 +785,75 @@ pub async fn run_review(
 
     // Flatten per-file findings into a single list, injecting the file path
     // onto each one so the frontend can render and post them independently.
-    let findings: Vec<Finding> = state
+    // Compute each finding's triage tier, then order strictly by tier
+    // (Blocking first) so high-priority fixes are pulled forward; within a tier,
+    // higher confidence first, then by file for locality.
+    let mut findings: Vec<Finding> = state
         .completed_files
         .iter()
         .flat_map(|(file_path, agg)| {
             agg.findings.iter().map(move |f| Finding {
                 file_path: file_path.clone(),
                 severity: f.severity,
+                confidence: f.confidence,
+                tier: tier_for(f.severity, f.confidence, f.line_start, blocking_confidence),
+                sources: f.sources.clone(),
                 line_start: f.line_start,
                 line_end: f.line_end,
                 comment: f.comment.clone(),
             })
         })
         .collect();
+    findings.sort_by(|a, b| {
+        a.tier
+            .rank()
+            .cmp(&b.tier.rank())
+            .then(b.confidence.cmp(&a.confidence))
+            .then_with(|| a.file_path.cmp(&b.file_path))
+            .then(a.line_start.cmp(&b.line_start))
+    });
+
+    // Suppression memory: drop findings the reviewer previously dismissed on
+    // this PR so they don't re-surface on the next iteration.
+    let dismissed = db
+        .lock()
+        .ok()
+        .and_then(|c| crate::review::feedback::dismissed_fingerprints(&c, &input.pr_key).ok())
+        .unwrap_or_default();
+    let suppressed = if dismissed.is_empty() {
+        0
+    } else {
+        // Log suppressions in a borrow-only pass before the retain mutates.
+        if diag.is_enabled() {
+            for f in &findings {
+                let fp = crate::review::feedback::fingerprint(&f.file_path, &f.comment);
+                if dismissed.contains(&fp) {
+                    diag.event(
+                        "suppressed",
+                        serde_json::json!({
+                            "filePath": f.file_path,
+                            "fingerprint": fp,
+                            "lineStart": f.line_start,
+                            "tier": f.tier,
+                            "comment": f.comment,
+                        }),
+                    );
+                }
+            }
+        }
+        let before = findings.len();
+        findings.retain(|f| {
+            let fp = crate::review::feedback::fingerprint(&f.file_path, &f.comment);
+            !dismissed.contains(&fp)
+        });
+        before - findings.len()
+    };
+    if suppressed > 0 {
+        eprintln!(
+            "[review] suppressed {} previously-dismissed finding(s) for {}",
+            suppressed, input.pr_key
+        );
+    }
 
     let final_messages = vec![
         ChatMessage {
@@ -516,14 +871,57 @@ pub async fn run_review(
         },
     ];
 
+    let synth_started = std::time::Instant::now();
     let final_review = chat_with_retries(&provider, &final_messages, retry_count)
         .await
         .unwrap_or_else(|e| format!("[final synthesis failed — {}]", e));
+    if diag.is_enabled() {
+        diag.event(
+            "llm_call",
+            serde_json::json!({
+                "stage": "synthesis",
+                "latencyMs": synth_started.elapsed().as_millis() as u64,
+                "messages": &final_messages,
+                "response": final_review,
+            }),
+        );
+    }
     let final_review = append_exact_statistics(&final_review, file_entries.len(), &findings);
 
     state.phase = "done".into();
     state.final_review = Some(final_review.clone());
     clear_state_from_db(db);
+
+    if diag.is_enabled() {
+        for f in &findings {
+            diag.event(
+                "finding_final",
+                serde_json::json!({
+                    "filePath": f.file_path,
+                    "severity": f.severity,
+                    "confidence": f.confidence,
+                    "tier": f.tier,
+                    "lineStart": f.line_start,
+                    "lineEnd": f.line_end,
+                    "sources": f.sources,
+                    "comment": f.comment,
+                    "fingerprint": crate::review::feedback::fingerprint(&f.file_path, &f.comment),
+                }),
+            );
+        }
+        diag.event(
+            "run_done",
+            serde_json::json!({
+                "totalFiles": file_entries.len(),
+                "findings": findings.len(),
+                "suppressed": suppressed,
+                "blocking": findings.iter().filter(|f| f.tier == Tier::Blocking).count(),
+                "shouldFix": findings.iter().filter(|f| f.tier == Tier::ShouldFix).count(),
+                "nit": findings.iter().filter(|f| f.tier == Tier::Nit).count(),
+                "fyi": findings.iter().filter(|f| f.tier == Tier::Fyi).count(),
+            }),
+        );
+    }
 
     emit_progress(
         &app,
@@ -532,6 +930,7 @@ pub async fn run_review(
         serde_json::json!({
             "totalFiles": file_entries.len(),
             "findingsCount": findings.len(),
+            "suppressed": suppressed,
         }),
     );
 
@@ -539,6 +938,94 @@ pub async fn run_review(
         summary: final_review,
         findings,
     })
+}
+
+/// Review a single file end-to-end without Tauri, state persistence, progress
+/// events, or resumability: run the hunk passes, adjudicate into a structured
+/// file result, and apply the deterministic guards. The live `run_review`
+/// inlines an equivalent flow with those concerns layered on; this is the
+/// headless entry point used by the eval harness so both share the same hunk,
+/// adjudication, and guard logic.
+pub async fn review_single_file(
+    provider: Arc<dyn AiProvider>,
+    mode: ReviewMode,
+    file: &FileInput,
+    standards: &str,
+    confidence_threshold: u8,
+    retry_count: u32,
+) -> Result<FileAggregateResult, AppError> {
+    let hunks = extract_hunks(&file.old_content, &file.new_content);
+    if hunks.is_empty() {
+        return Ok(FileAggregateResult {
+            summary: "No reviewable changes in this file.".into(),
+            verdict: "approve".into(),
+            findings: Vec::new(),
+        });
+    }
+
+    let specialist_prompts: Vec<(PromptKey, String, Option<String>)> =
+        if mode == ReviewMode::Thorough {
+            PromptKey::THOROUGH_SPECIALISTS
+                .iter()
+                .map(|k| (*k, k.default_text().to_string(), None))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+    let file_new_content = Arc::new(file.new_content.clone());
+    let permits = Arc::new(Semaphore::new(1));
+
+    let mut hunk_findings: Vec<(usize, String)> = Vec::new();
+    for (idx, hunk) in hunks.iter().enumerate() {
+        let response = review_single_hunk(
+            provider.clone(),
+            mode,
+            file.path.clone(),
+            idx,
+            hunks.len(),
+            hunk.clone(),
+            standards.to_string(),
+            specialist_prompts.clone(),
+            retry_count,
+            permits.clone(),
+            file_new_content.clone(),
+        )
+        .await?;
+        if response.trim() != "No issues found." {
+            hunk_findings.push((idx + 1, response));
+        }
+    }
+
+    if hunk_findings.is_empty() {
+        return Ok(FileAggregateResult {
+            summary: "No issues found in this file.".into(),
+            verdict: "approve".into(),
+            findings: Vec::new(),
+        });
+    }
+
+    let agg_messages = vec![
+        ChatMessage {
+            role: ChatRole::System,
+            content: prompts::FILE_AGGREGATE_SYSTEM.to_string(),
+        },
+        ChatMessage {
+            role: ChatRole::User,
+            content: prompts::file_aggregate_user_message(
+                &file.path,
+                &hunk_findings,
+                standards,
+                &file.new_content,
+            ),
+        },
+    ];
+
+    let raw = chat_with_retries(&provider, &agg_messages, retry_count).await?;
+    let mut aggregate = parse_file_aggregate(&raw).map_err(AppError::Ai)?;
+    normalize_finding_sources(&mut aggregate);
+    apply_finding_guards(&mut aggregate, &file.path, confidence_threshold, &hunks);
+    Ok(aggregate)
 }
 
 fn append_exact_statistics(summary: &str, files_reviewed: usize, findings: &[Finding]) -> String {
@@ -555,10 +1042,19 @@ fn append_exact_statistics(summary: &str, files_reviewed: usize, findings: &[Fin
         .iter()
         .filter(|f| f.severity == Severity::Minor)
         .count();
+    let tier = |t: Tier| findings.iter().filter(|f| f.tier == t).count();
 
     format!(
-        "{}\n\n## Statistics\n- Files reviewed: {}\n- Issues found: {} critical, {} moderate, {} minor",
-        without_stats, files_reviewed, critical, moderate, minor
+        "{}\n\n## Statistics\n- Files reviewed: {}\n- Issues found: {} critical, {} moderate, {} minor\n- Triage: {} blocking, {} should-fix, {} nit, {} FYI",
+        without_stats,
+        files_reviewed,
+        critical,
+        moderate,
+        minor,
+        tier(Tier::Blocking),
+        tier(Tier::ShouldFix),
+        tier(Tier::Nit),
+        tier(Tier::Fyi),
     )
 }
 
@@ -580,6 +1076,7 @@ async fn chat_with_retries(
     chat_with_retries_and_model(provider, messages, None, retries).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn review_single_hunk(
     provider: Arc<dyn AiProvider>,
     mode: ReviewMode,
@@ -591,6 +1088,7 @@ async fn review_single_hunk(
     specialist_prompts: Vec<(PromptKey, String, Option<String>)>,
     retry_count: u32,
     llm_permits: Arc<Semaphore>,
+    file_new_content: Arc<String>,
 ) -> Result<String, AppError> {
     let hunk_text: String = hunk
         .lines
@@ -600,6 +1098,10 @@ async fn review_single_hunk(
         .join("");
 
     let context_note = prompts::hunk_context_note(&file_path, hunk_idx + 1, total_hunks);
+    // Surrounding-file window so the reviewer can see definitions / callers and
+    // avoid the most common false positives. Empty for tiny / deletion-only hunks.
+    let file_ctx =
+        prompts::file_context_window(&file_new_content, &hunk, crate::ai::FILE_CONTEXT_MAX_CHARS);
     let user_msg = prompts::hunk_user_message(&file_path, &hunk.header, &hunk_text, "");
 
     if mode == ReviewMode::Thorough {
@@ -609,11 +1111,12 @@ async fn review_single_hunk(
             let standards = standards.clone();
             let context_note = context_note.clone();
             let user_msg = user_msg.clone();
+            let file_ctx = file_ctx.clone();
             let llm_permits = llm_permits.clone();
             handles.push((
                 idx,
                 tokio::spawn(async move {
-                    let pass_messages = vec![
+                    let mut pass_messages = vec![
                         ChatMessage {
                             role: ChatRole::System,
                             content: if standards.is_empty() {
@@ -626,11 +1129,17 @@ async fn review_single_hunk(
                             role: ChatRole::User,
                             content: context_note,
                         },
-                        ChatMessage {
-                            role: ChatRole::User,
-                            content: user_msg,
-                        },
                     ];
+                    if !file_ctx.is_empty() {
+                        pass_messages.push(ChatMessage {
+                            role: ChatRole::User,
+                            content: file_ctx,
+                        });
+                    }
+                    pass_messages.push(ChatMessage {
+                        role: ChatRole::User,
+                        content: user_msg,
+                    });
                     let result = match llm_permits.acquire_owned().await {
                         Ok(_permit) => {
                             chat_with_retries_and_model(
@@ -688,7 +1197,7 @@ async fn review_single_hunk(
             Ok(outputs.join("\n\n"))
         }
     } else {
-        let messages = vec![
+        let mut messages = vec![
             ChatMessage {
                 role: ChatRole::System,
                 content: format!(
@@ -705,11 +1214,17 @@ async fn review_single_hunk(
                 role: ChatRole::User,
                 content: context_note,
             },
-            ChatMessage {
-                role: ChatRole::User,
-                content: user_msg,
-            },
         ];
+        if !file_ctx.is_empty() {
+            messages.push(ChatMessage {
+                role: ChatRole::User,
+                content: file_ctx,
+            });
+        }
+        messages.push(ChatMessage {
+            role: ChatRole::User,
+            content: user_msg,
+        });
         let _permit = llm_permits
             .acquire_owned()
             .await
@@ -775,44 +1290,30 @@ pub async fn post_findings(
         .post_thread(project_id, repo_id, pr_id, &summary_thread)
         .await?;
 
-    // Post each finding. Anchor to the source line range when the LLM
-    // supplied one; otherwise fall back to a PR-level comment with the file
-    // path bolded into the body (file-level threadContext is attempted first
-    // by the dedicated `post_review_finding` command; the batch path keeps
-    // things simple).
+    // Triage split: actionable findings (Blocking, Should-fix) are PULLED
+    // FORWARD as their own comments; low-priority findings (Nit, FYI) are
+    // PUSHED BACK into a single rollup comment so they never bury the signal.
+    // `findings` arrives already ordered by tier, so blocking issues post first.
+    let mut pushed_back: Vec<&Finding> = Vec::new();
+
     for finding in findings {
         if finding.comment.trim().is_empty() {
             continue;
         }
+        if !finding.tier.is_actionable() {
+            pushed_back.push(finding);
+            continue;
+        }
+        post_single_finding(client, project_id, repo_id, pr_id, finding).await?;
+    }
 
-        let prefix = severity_prefix(finding.severity);
-        let body = format!(
-            "{} **{}**\n\n{}",
-            prefix, finding.file_path, finding.comment
-        );
-
-        let thread = if let (Some(lo), Some(hi)) = (finding.line_start, finding.line_end) {
-            let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
-            serde_json::json!({
-                "comments": [{ "parentCommentId": 0, "content": finding.comment, "commentType": 1 }],
-                "status": 1,
-                "threadContext": {
-                    "filePath": if finding.file_path.starts_with('/') {
-                        finding.file_path.clone()
-                    } else {
-                        format!("/{}", finding.file_path)
-                    },
-                    "rightFileStart": { "line": lo, "offset": 1 },
-                    "rightFileEnd":   { "line": hi, "offset": 1 },
-                },
-            })
-        } else {
-            serde_json::json!({
-                "comments": [{ "parentCommentId": 0, "content": body, "commentType": 1 }],
-                "status": 1,
-            })
-        };
-
+    // One rollup comment for everything pushed back.
+    if !pushed_back.is_empty() {
+        let rollup = build_rollup_comment(&pushed_back);
+        let thread = serde_json::json!({
+            "comments": [{ "parentCommentId": 0, "content": rollup, "commentType": 1 }],
+            "status": "active",
+        });
         client
             .post_thread(project_id, repo_id, pr_id, &thread)
             .await?;
@@ -821,10 +1322,321 @@ pub async fn post_findings(
     Ok(())
 }
 
-fn severity_prefix(s: Severity) -> &'static str {
-    match s {
-        Severity::Critical => "🔴 CRITICAL —",
-        Severity::Moderate => "🟡 MODERATE —",
-        Severity::Minor => "⚪ MINOR —",
+/// Build the single "pushed back" rollup comment listing low-priority findings,
+/// so they live in one place instead of N individual threads.
+fn build_rollup_comment(findings: &[&Finding]) -> String {
+    let mut out = format!(
+        "## ⚪ Lower-priority findings ({})\n_Grouped into one comment to keep the review focused on higher-priority issues._\n\n",
+        findings.len()
+    );
+    for f in findings {
+        let loc = match (f.line_start, f.line_end) {
+            (Some(lo), Some(hi)) if hi != lo => format!("{}:{}-{}", f.file_path, lo, hi),
+            (Some(lo), _) => format!("{}:{}", f.file_path, lo),
+            _ => f.file_path.clone(),
+        };
+        out.push_str(&format!(
+            "- **{}** ({}) — {}\n",
+            loc,
+            f.tier.label(),
+            f.comment.trim()
+        ));
+    }
+    out
+}
+
+fn tier_prefix(t: Tier) -> &'static str {
+    match t {
+        Tier::Blocking => "🔴 BLOCKING —",
+        Tier::ShouldFix => "🟡 SHOULD FIX —",
+        Tier::Nit => "⚪ NIT —",
+        Tier::Fyi => "💬 FYI —",
+    }
+}
+
+/// Post one finding as its own ADO thread, tier-tagged and anchored to its line
+/// range when known. Shared by the full `post_findings` path and the Phase 4
+/// auto-post path so formatting stays identical.
+pub async fn post_single_finding(
+    client: &crate::ado::AdoClient,
+    project_id: &str,
+    repo_id: &str,
+    pr_id: i64,
+    finding: &Finding,
+) -> Result<(), AppError> {
+    let prefix = tier_prefix(finding.tier);
+    let body = format!("{} **{}**\n\n{}", prefix, finding.file_path, finding.comment);
+    let inline = format!("{} {}", prefix, finding.comment);
+
+    let thread = if let (Some(lo), Some(hi)) = (finding.line_start, finding.line_end) {
+        let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+        serde_json::json!({
+            "comments": [{ "parentCommentId": 0, "content": inline, "commentType": 1 }],
+            "status": 1,
+            "threadContext": {
+                "filePath": if finding.file_path.starts_with('/') {
+                    finding.file_path.clone()
+                } else {
+                    format!("/{}", finding.file_path)
+                },
+                "rightFileStart": { "line": lo, "offset": 1 },
+                "rightFileEnd":   { "line": hi, "offset": 1 },
+            },
+        })
+    } else {
+        serde_json::json!({
+            "comments": [{ "parentCommentId": 0, "content": body, "commentType": 1 }],
+            "status": 1,
+        })
+    };
+
+    client
+        .post_thread(project_id, repo_id, pr_id, &thread)
+        .await?;
+    Ok(())
+}
+
+/// Phase 4: whether a PR needs an auto-review. True when auto-review is enabled
+/// and the PR has a newer iteration than the last one we reviewed (or was never
+/// reviewed — `last` is `None`).
+pub fn should_auto_review(enabled: bool, last_reviewed: Option<i32>, current: i32) -> bool {
+    enabled && current > last_reviewed.unwrap_or(0)
+}
+
+/// Phase 4: select the findings eligible for unattended auto-posting — Blocking
+/// tier at or above the confidence floor. Returned in the engine's existing
+/// (blocking-first, highest-confidence-first) order.
+pub fn select_auto_post_findings(findings: &[Finding], confidence_floor: u8) -> Vec<&Finding> {
+    findings
+        .iter()
+        .filter(|f| {
+            f.tier == Tier::Blocking
+                && f.confidence >= confidence_floor
+                && !f.comment.trim().is_empty()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A hunk covering new-side lines [new_start, new_start+new_count).
+    fn hunk(new_start: usize, new_count: usize) -> crate::diff::engine::DiffHunk {
+        crate::diff::engine::DiffHunk {
+            index: 0,
+            header: format!("@@ -1,1 +{},{} @@", new_start, new_count),
+            old_start: 1,
+            old_count: 1,
+            new_start,
+            new_count,
+            lines: Vec::new(),
+        }
+    }
+
+    fn finding(confidence: u8, line_start: Option<usize>) -> FileAggregateFinding {
+        FileAggregateFinding {
+            severity: Severity::Moderate,
+            confidence,
+            line_start,
+            line_end: line_start,
+            comment: "x".into(),
+            evidence: None,
+            sources: vec![],
+        }
+    }
+
+    fn aggregate(findings: Vec<FileAggregateFinding>) -> FileAggregateResult {
+        FileAggregateResult {
+            summary: "s".into(),
+            verdict: "review-required".into(),
+            findings,
+        }
+    }
+
+    #[test]
+    fn default_confidence_is_reporting_threshold() {
+        assert_eq!(default_confidence(), crate::ai::DEFAULT_CONFIDENCE_THRESHOLD);
+    }
+
+    #[test]
+    fn guard_drops_below_threshold_keeps_at_or_above() {
+        let hunks = [hunk(10, 5)]; // new-side lines 10..=14
+        let mut agg = aggregate(vec![
+            finding(79, Some(12)), // below 80 → dropped
+            finding(80, Some(12)), // exactly at threshold → kept
+            finding(95, Some(13)), // above → kept
+        ]);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks);
+        assert_eq!(dropped, 1);
+        assert_eq!(agg.findings.len(), 2);
+        assert!(agg.findings.iter().all(|f| f.confidence >= 80));
+    }
+
+    #[test]
+    fn guard_drops_line_outside_any_hunk() {
+        let hunks = [hunk(10, 5)]; // new-side lines 10..=14
+        let mut agg = aggregate(vec![
+            finding(95, Some(9)),  // just before the hunk → dropped
+            finding(95, Some(14)), // last line of the hunk → kept
+            finding(95, Some(15)), // just after the hunk → dropped
+        ]);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks);
+        assert_eq!(dropped, 2);
+        assert_eq!(agg.findings.len(), 1);
+        assert_eq!(agg.findings[0].line_start, Some(14));
+    }
+
+    #[test]
+    fn guard_exempts_file_level_findings_from_anchor_check() {
+        let hunks = [hunk(10, 5)];
+        let mut agg = aggregate(vec![finding(90, None)]); // file-level, high confidence
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks);
+        assert_eq!(dropped, 0);
+        assert_eq!(agg.findings.len(), 1);
+    }
+
+    #[test]
+    fn guard_zero_threshold_surfaces_everything_in_range() {
+        let hunks = [hunk(1, 100)];
+        let mut agg = aggregate(vec![finding(0, Some(5)), finding(10, Some(6))]);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 0, &hunks);
+        assert_eq!(dropped, 0);
+        assert_eq!(agg.findings.len(), 2);
+    }
+
+    // Default "critical line" used by most tier tests.
+    const BLOCK: u8 = crate::ai::DEFAULT_BLOCKING_CONFIDENCE;
+
+    #[test]
+    fn tier_critical_is_always_actionable() {
+        // Critical at/above the critical line blocks; below it is still
+        // actionable (should-fix), never demoted to a nit, and never FYI even
+        // without a line anchor.
+        assert_eq!(tier_for(Severity::Critical, 90, Some(5), BLOCK), Tier::Blocking);
+        assert_eq!(tier_for(Severity::Critical, 84, Some(5), BLOCK), Tier::ShouldFix);
+        assert_eq!(tier_for(Severity::Critical, 99, None, BLOCK), Tier::Blocking);
+        assert!(tier_for(Severity::Critical, 50, None, BLOCK).is_actionable());
+    }
+
+    #[test]
+    fn tier_critical_line_is_configurable() {
+        // A confidence-80 critical is should-fix at the default line (85) but
+        // blocking once the line is lowered to 80; raising it past the score
+        // pushes it back to should-fix.
+        assert_eq!(tier_for(Severity::Critical, 80, Some(5), 85), Tier::ShouldFix);
+        assert_eq!(tier_for(Severity::Critical, 80, Some(5), 80), Tier::Blocking);
+        assert_eq!(tier_for(Severity::Critical, 80, Some(5), 95), Tier::ShouldFix);
+        // A line of 0 makes every critical finding block.
+        assert_eq!(tier_for(Severity::Critical, 1, Some(5), 0), Tier::Blocking);
+    }
+
+    #[test]
+    fn tier_moderate_splits_on_confidence_and_anchor() {
+        assert_eq!(tier_for(Severity::Moderate, 85, Some(5), BLOCK), Tier::ShouldFix);
+        assert_eq!(tier_for(Severity::Moderate, 79, Some(5), BLOCK), Tier::Nit);
+        // Non-critical with no line anchor is informational.
+        assert_eq!(tier_for(Severity::Moderate, 95, None, BLOCK), Tier::Fyi);
+    }
+
+    #[test]
+    fn tier_minor_is_nit_or_fyi() {
+        assert_eq!(tier_for(Severity::Minor, 100, Some(5), BLOCK), Tier::Nit);
+        assert_eq!(tier_for(Severity::Minor, 100, None, BLOCK), Tier::Fyi);
+        assert!(!tier_for(Severity::Minor, 100, Some(5), BLOCK).is_actionable());
+    }
+
+    #[test]
+    fn tier_rank_orders_blocking_first() {
+        assert!(Tier::Blocking.rank() < Tier::ShouldFix.rank());
+        assert!(Tier::ShouldFix.rank() < Tier::Nit.rank());
+        assert!(Tier::Nit.rank() < Tier::Fyi.rank());
+    }
+
+    #[test]
+    fn rollup_lists_each_pushed_back_finding() {
+        let nit = Finding {
+            file_path: "a.rs".into(),
+            severity: Severity::Minor,
+            confidence: 90,
+            tier: Tier::Nit,
+            sources: vec![],
+            line_start: Some(3),
+            line_end: Some(3),
+            comment: "rename x".into(),
+        };
+        let fyi = Finding {
+            file_path: "b.rs".into(),
+            severity: Severity::Moderate,
+            confidence: 88,
+            tier: Tier::Fyi,
+            sources: vec![],
+            line_start: None,
+            line_end: None,
+            comment: "consider a test file".into(),
+        };
+        let body = build_rollup_comment(&[&nit, &fyi]);
+        assert!(body.contains("Lower-priority findings (2)"));
+        assert!(body.contains("a.rs:3"));
+        assert!(body.contains("(Nit)"));
+        assert!(body.contains("b.rs"));
+        assert!(body.contains("(FYI)"));
+    }
+
+    #[test]
+    fn should_auto_review_respects_enabled_and_iteration() {
+        assert!(!should_auto_review(false, None, 3), "disabled never triggers");
+        assert!(should_auto_review(true, None, 1), "never-reviewed PR triggers");
+        assert!(should_auto_review(true, Some(2), 3), "newer iteration triggers");
+        assert!(!should_auto_review(true, Some(3), 3), "same iteration does not");
+        assert!(!should_auto_review(true, Some(4), 3), "older current does not");
+    }
+
+    #[test]
+    fn auto_post_selects_only_high_confidence_blocking() {
+        let mk = |tier: Tier, confidence: u8, comment: &str| Finding {
+            file_path: "a.rs".into(),
+            severity: Severity::Critical,
+            confidence,
+            tier,
+            sources: vec![],
+            line_start: Some(1),
+            line_end: Some(1),
+            comment: comment.into(),
+        };
+        let findings = vec![
+            mk(Tier::Blocking, 95, "post me"),
+            mk(Tier::Blocking, 89, "below floor"),
+            mk(Tier::ShouldFix, 99, "not blocking"),
+            mk(Tier::Blocking, 92, "  "), // empty comment
+        ];
+        let selected = select_auto_post_findings(&findings, 90);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].comment, "post me");
+    }
+
+    #[test]
+    fn aggregate_parses_confidence_and_evidence() {
+        let raw = r#"{
+          "summary": "s", "verdict": "needs-work",
+          "findings": [{"severity":"critical","confidence":92,"lineStart":3,"lineEnd":3,"evidence":"line 3","comment":"boom"}]
+        }"#;
+        let parsed = parse_file_aggregate(raw).expect("parse");
+        assert_eq!(parsed.findings[0].confidence, 92);
+        assert_eq!(parsed.findings[0].evidence.as_deref(), Some("line 3"));
+    }
+
+    #[test]
+    fn aggregate_defaults_missing_confidence_and_evidence() {
+        // A pre-confidence aggregate (no confidence / evidence fields) must
+        // still deserialize, defaulting confidence to the reporting threshold
+        // so legacy findings are not silently dropped.
+        let raw = r#"{
+          "summary": "s", "verdict": "approve",
+          "findings": [{"severity":"minor","lineStart":1,"lineEnd":1,"comment":"nit"}]
+        }"#;
+        let parsed = parse_file_aggregate(raw).expect("parse");
+        assert_eq!(parsed.findings[0].confidence, default_confidence());
+        assert!(parsed.findings[0].evidence.is_none());
     }
 }
