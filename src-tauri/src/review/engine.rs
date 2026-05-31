@@ -313,6 +313,7 @@ pub async fn run_review(
     input: ReviewInput,
     db: &std::sync::Mutex<rusqlite::Connection>,
     cancel: Arc<AtomicBool>,
+    diag: crate::review::diagnostics::Diagnostics,
 ) -> Result<ReviewOutput, AppError> {
     // ---- Prepare: sort files by hunk count (largest first) ----
     let mut file_entries: Vec<(FileInput, Vec<crate::diff::engine::DiffHunk>)> = input
@@ -359,6 +360,27 @@ pub async fn run_review(
             .unwrap_or(crate::ai::DEFAULT_BLOCKING_CONFIDENCE),
         Err(_) => crate::ai::DEFAULT_BLOCKING_CONFIDENCE,
     };
+
+    if diag.is_enabled() {
+        diag.event(
+            "run_start",
+            serde_json::json!({
+                "prKey": input.pr_key,
+                "prTitle": input.pr_title,
+                "mode": input.mode,
+                "fileCount": file_entries.len(),
+                "settings": {
+                    "confidenceThreshold": confidence_threshold,
+                    "blockingConfidence": blocking_confidence,
+                    "retryCount": retry_count,
+                    "hunkConcurrency": hunk_concurrency,
+                },
+            }),
+        );
+        if let Some(p) = diag.path() {
+            eprintln!("[diagnostics] writing review trace to {p}");
+        }
+    }
 
     // Resolve specialist system prompts + per-specialist model overrides once for
     // the run (Thorough mode only). Resolved up front so user edits in Settings
@@ -505,6 +527,16 @@ pub async fn run_review(
                 };
 
                 if response.trim() != "No issues found." {
+                    if diag.is_enabled() {
+                        diag.event(
+                            "hunk_candidate",
+                            serde_json::json!({
+                                "filePath": file.path,
+                                "hunk": hunk_idx + 1,
+                                "text": response,
+                            }),
+                        );
+                    }
                     state.current_file_findings.push((hunk_idx + 1, response));
                 }
 
@@ -561,9 +593,22 @@ pub async fn run_review(
                 },
             ];
 
+            let agg_started = std::time::Instant::now();
             let raw = chat_with_retries(&provider, &agg_messages, retry_count)
                 .await
                 .unwrap_or_else(|e| format!("[aggregate failed — {}]", e));
+            if diag.is_enabled() {
+                diag.event(
+                    "llm_call",
+                    serde_json::json!({
+                        "stage": "adjudicate",
+                        "filePath": file.path,
+                        "latencyMs": agg_started.elapsed().as_millis() as u64,
+                        "messages": &agg_messages,
+                        "response": raw,
+                    }),
+                );
+            }
 
             let mut aggregate = parse_file_aggregate(&raw).unwrap_or_else(|err| {
                 // Log to stderr so the user can see what the model produced.
@@ -581,7 +626,43 @@ pub async fn run_review(
             // Deterministic precision guards: drop sub-threshold and
             // hallucinated-line findings before they reach the reviewer.
             normalize_finding_sources(&mut aggregate);
+            // Snapshot the parsed findings so we can log which the deterministic
+            // guards kept vs dropped (and why) — the core deterministic-behavior
+            // signal for tuning the threshold and anchor check.
+            let pre_guard: Vec<FileAggregateFinding> = if diag.is_enabled() {
+                aggregate.findings.clone()
+            } else {
+                Vec::new()
+            };
             apply_finding_guards(&mut aggregate, &file.path, confidence_threshold, hunks);
+            if diag.is_enabled() {
+                for f in &pre_guard {
+                    let kept = aggregate
+                        .findings
+                        .iter()
+                        .any(|s| s.line_start == f.line_start && s.comment == f.comment);
+                    let mut payload = serde_json::json!({
+                        "filePath": file.path,
+                        "severity": f.severity,
+                        "confidence": f.confidence,
+                        "lineStart": f.line_start,
+                        "lineEnd": f.line_end,
+                        "sources": f.sources,
+                        "comment": f.comment,
+                    });
+                    if !kept {
+                        let reason = if f.confidence < confidence_threshold {
+                            "below_threshold"
+                        } else {
+                            "outside_hunk"
+                        };
+                        if let Some(o) = payload.as_object_mut() {
+                            o.insert("reason".into(), serde_json::json!(reason));
+                        }
+                    }
+                    diag.event(if kept { "adjudicated_finding" } else { "guard_drop" }, payload);
+                }
+            }
 
             state.completed_files.push((file.path.clone(), aggregate));
         } else {
@@ -665,9 +746,22 @@ pub async fn run_review(
             },
         ];
 
+        let batch_started = std::time::Instant::now();
         let batch_summary = chat_with_retries(&provider, &batch_messages, retry_count)
             .await
             .unwrap_or_else(|e| format!("[batch aggregate failed — {}]", e));
+        if diag.is_enabled() {
+            diag.event(
+                "llm_call",
+                serde_json::json!({
+                    "stage": "batch",
+                    "batch": state.current_batch,
+                    "latencyMs": batch_started.elapsed().as_millis() as u64,
+                    "messages": &batch_messages,
+                    "response": batch_summary,
+                }),
+            );
+        }
 
         state.batch_summaries.push(batch_summary);
         state.current_batch += 1;
@@ -729,6 +823,24 @@ pub async fn run_review(
     let suppressed = if dismissed.is_empty() {
         0
     } else {
+        // Log suppressions in a borrow-only pass before the retain mutates.
+        if diag.is_enabled() {
+            for f in &findings {
+                let fp = crate::review::feedback::fingerprint(&f.file_path, &f.comment);
+                if dismissed.contains(&fp) {
+                    diag.event(
+                        "suppressed",
+                        serde_json::json!({
+                            "filePath": f.file_path,
+                            "fingerprint": fp,
+                            "lineStart": f.line_start,
+                            "tier": f.tier,
+                            "comment": f.comment,
+                        }),
+                    );
+                }
+            }
+        }
         let before = findings.len();
         findings.retain(|f| {
             let fp = crate::review::feedback::fingerprint(&f.file_path, &f.comment);
@@ -759,14 +871,57 @@ pub async fn run_review(
         },
     ];
 
+    let synth_started = std::time::Instant::now();
     let final_review = chat_with_retries(&provider, &final_messages, retry_count)
         .await
         .unwrap_or_else(|e| format!("[final synthesis failed — {}]", e));
+    if diag.is_enabled() {
+        diag.event(
+            "llm_call",
+            serde_json::json!({
+                "stage": "synthesis",
+                "latencyMs": synth_started.elapsed().as_millis() as u64,
+                "messages": &final_messages,
+                "response": final_review,
+            }),
+        );
+    }
     let final_review = append_exact_statistics(&final_review, file_entries.len(), &findings);
 
     state.phase = "done".into();
     state.final_review = Some(final_review.clone());
     clear_state_from_db(db);
+
+    if diag.is_enabled() {
+        for f in &findings {
+            diag.event(
+                "finding_final",
+                serde_json::json!({
+                    "filePath": f.file_path,
+                    "severity": f.severity,
+                    "confidence": f.confidence,
+                    "tier": f.tier,
+                    "lineStart": f.line_start,
+                    "lineEnd": f.line_end,
+                    "sources": f.sources,
+                    "comment": f.comment,
+                    "fingerprint": crate::review::feedback::fingerprint(&f.file_path, &f.comment),
+                }),
+            );
+        }
+        diag.event(
+            "run_done",
+            serde_json::json!({
+                "totalFiles": file_entries.len(),
+                "findings": findings.len(),
+                "suppressed": suppressed,
+                "blocking": findings.iter().filter(|f| f.tier == Tier::Blocking).count(),
+                "shouldFix": findings.iter().filter(|f| f.tier == Tier::ShouldFix).count(),
+                "nit": findings.iter().filter(|f| f.tier == Tier::Nit).count(),
+                "fyi": findings.iter().filter(|f| f.tier == Tier::Fyi).count(),
+            }),
+        );
+    }
 
     emit_progress(
         &app,

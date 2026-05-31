@@ -186,6 +186,8 @@ pub struct AiSettingsNoKey {
     pub auto_post_blocking: bool,
     /// Confidence floor (0–100) for auto-posting a Blocking finding.
     pub auto_post_confidence: u8,
+    /// Opt-in: write a JSONL diagnostic trace per review run.
+    pub ai_diagnostics: bool,
 }
 
 /// Read the TCP/TLS connect timeout (seconds), defaulting if missing.
@@ -283,6 +285,16 @@ pub const DEFAULT_INCREMENTAL_REVIEW: bool = false;
 pub fn read_incremental_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
     let raw = crate::cache::get_setting(conn, "ai_incremental_review")?;
     Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_INCREMENTAL_REVIEW))
+}
+
+/// Write a JSONL diagnostic trace per review run (prompts, responses, and every
+/// deterministic decision) for evaluation/tuning. Off by default — traces
+/// contain source content and full prompts.
+pub const DEFAULT_AI_DIAGNOSTICS: bool = false;
+
+pub fn read_ai_diagnostics(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_diagnostics")?;
+    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_AI_DIAGNOSTICS))
 }
 
 // ---- Phase 4: automation (earned autonomy) ----

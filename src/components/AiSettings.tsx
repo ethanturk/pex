@@ -10,6 +10,7 @@ import {
   listAiModels,
   getReviewCalibration,
   clearReviewFeedback,
+  getDiagnosticsDir,
   type AiPromptInfo,
   type CalibrationStats,
 } from "@/lib/api";
@@ -51,6 +52,8 @@ export function AiSettings({ open, onClose }: Props) {
   const [autoReview, setAutoReview] = useState(false);
   const [autoPostBlocking, setAutoPostBlocking] = useState(false);
   const [autoPostConfidence, setAutoPostConfidence] = useState(90);
+  const [aiDiagnostics, setAiDiagnostics] = useState(false);
+  const [diagnosticsDir, setDiagnosticsDir] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -142,6 +145,8 @@ export function AiSettings({ open, onClose }: Props) {
       setAutoPostConfidence(
         Number.isFinite(settings.autoPostConfidence) ? settings.autoPostConfidence : 90,
       );
+      setAiDiagnostics(!!settings.aiDiagnostics);
+      getDiagnosticsDir().then(setDiagnosticsDir).catch(() => {});
       setApiKey("");
       setPrompts(ps);
       setPromptDrafts(Object.fromEntries(ps.map((p) => [p.key, p.value])));
@@ -235,7 +240,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence, aiDiagnostics);
       setMessage({ text: "AI settings saved.", ok: true });
     } catch (e: any) {
       setMessage({ text: String(e), ok: false });
@@ -251,7 +256,7 @@ export function AiSettings({ open, onClose }: Props) {
     try {
       const normalizedStandardsMaxChars = normalizeStandardsMaxChars(standardsMaxChars);
       setStandardsMaxChars(String(normalizedStandardsMaxChars));
-      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence);
+      await saveAiSettings(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence, aiDiagnostics);
       const models = await listAiModels(true);
       setAvailableModels(models);
 
@@ -259,7 +264,7 @@ export function AiSettings({ open, onClose }: Props) {
       if (selectedModel !== model) {
         setModel(selectedModel);
         if (selectedModel) {
-          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence);
+          await saveAiSettings(provider, endpoint, selectedModel, "", connectTimeoutSecs, readTimeoutSecs, hunkConcurrency, normalizedStandardsMaxChars, retryCount, confidenceThreshold, blockingConfidence, autoVoteOnBlocking, incrementalReview, autoReview, autoPostBlocking, autoPostConfidence, aiDiagnostics);
           setMessage({
             text: `Connected. Model changed to ${selectedModel} because the previous model is not available from this provider.`,
             ok: true,
@@ -654,6 +659,28 @@ export function AiSettings({ open, onClose }: Props) {
                       </p>
                     </Field>
                   </div>
+
+                  <label class="flex items-start gap-3 mt-3">
+                    <input
+                      type="checkbox"
+                      checked={aiDiagnostics}
+                      onChange={(e) => setAiDiagnostics(e.currentTarget.checked)}
+                      class="mt-1 accent-accent"
+                    />
+                    <span>
+                      <span class="block text-sm font-medium text-gray-900 dark:text-gray-100">
+                        Write diagnostic traces
+                      </span>
+                      <span class="block text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        Record a JSONL trace per review run — the exact prompts and model responses, plus every deterministic decision (confidence/anchor guard drops, tiering, suppression, final findings) — for evaluation and tuning. Findings carry the same fingerprint as recorded verdicts, so traces can be joined to your accept/dismiss history. Off by default; traces contain source content and full prompts.
+                        {diagnosticsDir && (
+                          <>
+                            {" "}Written to <code class="font-mono">{diagnosticsDir}</code>.
+                          </>
+                        )}
+                      </span>
+                    </span>
+                  </label>
                 </div>
               </div>
 

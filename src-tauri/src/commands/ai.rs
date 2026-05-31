@@ -55,6 +55,9 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
     let auto_post_confidence =
         crate::ai::read_auto_post_confidence(&db).map_err(|e: crate::AppError| e.to_string())?;
 
+    let ai_diagnostics =
+        crate::ai::read_ai_diagnostics(&db).map_err(|e: crate::AppError| e.to_string())?;
+
     Ok(AiSettingsNoKey {
         provider,
         endpoint,
@@ -71,6 +74,7 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         auto_review,
         auto_post_blocking,
         auto_post_confidence,
+        ai_diagnostics,
     })
 }
 
@@ -93,6 +97,7 @@ pub async fn save_ai_settings(
     auto_review: bool,
     auto_post_blocking: bool,
     auto_post_confidence: u8,
+    ai_diagnostics: bool,
 ) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
@@ -188,6 +193,12 @@ pub async fn save_ai_settings(
     let auto_post_conf = auto_post_confidence.min(crate::ai::MAX_AUTO_POST_CONFIDENCE);
     crate::cache::set_setting(&db, "ai_auto_post_confidence", &auto_post_conf.to_string())
         .map_err(|e: crate::AppError| e.to_string())?;
+    crate::cache::set_setting(
+        &db,
+        "ai_diagnostics",
+        if ai_diagnostics { "true" } else { "false" },
+    )
+    .map_err(|e: crate::AppError| e.to_string())?;
 
     // Save API key to keyring when the user provided one. The UI intentionally
     // does not echo stored keys back into the password field, so an empty value

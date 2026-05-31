@@ -77,6 +77,37 @@ fn remember_reviewed_iteration(state: &AppState, pr_key: &str, iteration: i32) {
     }
 }
 
+/// Build the diagnostics sink for a run: a JSONL trace when `ai_diagnostics` is
+/// enabled, otherwise a no-op. The run id ties the trace to the PR and a
+/// timestamp so successive runs don't collide.
+fn make_diagnostics(
+    state: &AppState,
+    pr_key: &str,
+) -> crate::review::diagnostics::Diagnostics {
+    use crate::review::diagnostics::Diagnostics;
+    let enabled = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| crate::ai::read_ai_diagnostics(&db).ok())
+        .unwrap_or(false);
+    if !enabled {
+        return Diagnostics::disabled();
+    }
+    let dir = match crate::cache::diagnostics_dir() {
+        Ok(d) => d,
+        Err(_) => return Diagnostics::disabled(),
+    };
+    // pr_key tail (the numeric PR id) + timestamp keeps the filename readable.
+    let pr_tail = pr_key.rsplit('/').next().unwrap_or("pr");
+    let run_id = format!(
+        "{}-pr{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S"),
+        pr_tail
+    );
+    Diagnostics::create(&dir, &run_id)
+}
+
 async fn latest_iteration(
     client: &crate::ado::AdoClient,
     project_id: &str,
@@ -342,7 +373,8 @@ pub async fn start_review(
     let cancel = state.review_cancel.clone();
 
     // Run review — the engine handles all the streaming
-    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel)
+    let diag = make_diagnostics(&state, &pr_key);
+    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel, diag)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -460,7 +492,8 @@ pub async fn start_review_post(
 
     state.review_cancel.store(false, Ordering::SeqCst);
     let cancel = state.review_cancel.clone();
-    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel)
+    let diag = make_diagnostics(&state, &pr_key);
+    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel, diag)
         .await
         .map_err(|e| e.to_string())?;
 

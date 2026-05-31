@@ -322,6 +322,8 @@ export interface AiSettingsNoKey {
   autoPostBlocking: boolean;
   /// Confidence floor (0–100) for auto-posting a blocking finding.
   autoPostConfidence: number;
+  /// Opt-in: write a JSONL diagnostic trace per review run.
+  aiDiagnostics: boolean;
 }
 
 export async function getAiSettings(): Promise<AiSettingsNoKey> {
@@ -345,6 +347,7 @@ export async function saveAiSettings(
   autoReview: boolean,
   autoPostBlocking: boolean,
   autoPostConfidence: number,
+  aiDiagnostics: boolean,
 ): Promise<void> {
   return invoke("save_ai_settings", {
     provider,
@@ -363,7 +366,13 @@ export async function saveAiSettings(
     autoReview,
     autoPostBlocking,
     autoPostConfidence,
+    aiDiagnostics,
   });
+}
+
+/// The directory where opt-in review diagnostic traces (.jsonl) are written.
+export async function getDiagnosticsDir(): Promise<string> {
+  return invoke<string>("get_diagnostics_dir");
 }
 
 // ---- Phase 4: automation ----

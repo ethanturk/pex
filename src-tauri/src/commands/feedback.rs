@@ -72,3 +72,9 @@ pub async fn clear_review_feedback(state: State<'_, AppState>) -> Result<(), Str
     let db = state.db.lock().map_err(|e| e.to_string())?;
     feedback::clear_all(&db).map_err(|e| e.to_string())
 }
+
+/// The directory where opt-in review diagnostic traces are written.
+#[tauri::command]
+pub async fn get_diagnostics_dir() -> Result<String, String> {
+    crate::cache::diagnostics_dir().map_err(|e| e.to_string())
+}

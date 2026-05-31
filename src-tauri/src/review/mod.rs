@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod engine;
 pub mod feedback;
 pub mod prompts;

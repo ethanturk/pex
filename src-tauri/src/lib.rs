@@ -124,6 +124,7 @@ pub fn run() {
             commands::feedback::record_finding_verdict,
             commands::feedback::get_review_calibration,
             commands::feedback::clear_review_feedback,
+            commands::feedback::get_diagnostics_dir,
             commands::auto::auto_review_candidates,
             commands::auto::auto_post_review_findings,
         ])

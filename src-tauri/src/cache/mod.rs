@@ -77,6 +77,15 @@ fn dirs_db_path() -> Result<String, AppError> {
     Ok(format!("{}/pex.db", data_dir))
 }
 
+/// Directory where opt-in review diagnostic traces are written
+/// (`<data_dir>/diagnostics`). Created on demand.
+pub fn diagnostics_dir() -> Result<String, AppError> {
+    let dir = format!("{}/diagnostics", dirs_data_dir()?);
+    std::fs::create_dir_all(&dir)
+        .map_err(|_e| AppError::Cache(rusqlite::Error::InvalidPath(dir.clone().into())))?;
+    Ok(dir)
+}
+
 fn dirs_data_dir() -> Result<String, AppError> {
     // Use XDG_DATA_HOME on Linux, AppData on Windows, Application Support on macOS
     if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
