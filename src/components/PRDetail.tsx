@@ -16,6 +16,7 @@ import {
   type CommentThread,
   type PullRequest,
   type PRCheck,
+  type FileDiff,
 } from "@/lib/api";
 import { getPrCheckRollup } from "@/lib/prChecks";
 import { FileTree } from "@/components/FileTree";
@@ -153,6 +154,7 @@ export function PRDetail({ prId }: Props) {
   useEffect(() => {
     selectedFile.value = null;
     resetTabs();
+    diffCache.current.clear();
     currentIteration.value = 1;
     prFiles.value = [];
     setPullRequest(null);
@@ -240,6 +242,11 @@ export function PRDetail({ prId }: Props) {
   const filesReqId = useRef(0);
   const diffReqId = useRef(0);
   const prefetchKey = useRef("");
+  // Front-end diff cache so re-activating an open tab (or j/k revisits) skips
+  // the IPC refetch + DOM rebuild. Keyed by path|iteration|view since the diff
+  // HTML depends on both. Cleared on PR switch.
+  const diffCache = useRef<Map<string, FileDiff>>(new Map());
+  const diffCacheKey = (path: string) => `${path}|${currentIteration.value}|${diffView.value}`;
 
   const loadFiles = useCallback(async () => {
     if (!projectId || !repoId) return;
@@ -270,20 +277,54 @@ export function PRDetail({ prId }: Props) {
     }
   }, [projectId, repoId, prId]);
 
+  // Warm the front-end diff cache for a file without touching displayed state,
+  // so the next j/k step (or tab activation) renders instantly.
+  const prefetchDiff = useCallback(async (path: string) => {
+    if (!projectId || !repoId || !path) return;
+    const key = diffCacheKey(path);
+    if (diffCache.current.has(key)) return;
+    try {
+      const d = await getFileDiff(projectId, repoId, prId, path, currentIteration.value, diffView.value);
+      diffCache.current.set(key, d);
+    } catch {
+      // Prefetch is best-effort; a real load will surface any error.
+    }
+  }, [projectId, repoId, prId]);
+
+  const applyDiff = (d: FileDiff) => {
+    setDiffHtml(d.html);
+    setDiffPath(d.path);
+    setDiffStatus(d.status);
+    setSourceCommit(d.sourceCommit);
+    setBaseCommit(d.baseCommit);
+    setOldContent(d.oldContent);
+    setNewContent(d.newContent);
+  };
+
   const loadDiff = useCallback(async (path: string) => {
     if (!projectId || !repoId) return;
     const reqId = ++diffReqId.current;
+
+    // Cache hit: render the diff immediately and refresh threads in the
+    // background (don't block the diff on the threads round-trip).
+    const cached = diffCache.current.get(diffCacheKey(path));
+    if (cached) {
+      applyDiff(cached);
+      setLoading(false);
+      getThreads(projectId, repoId, prId)
+        .then((all) => {
+          if (reqId === diffReqId.current) setThreads(all.filter((t: any) => t.filePath === cached.path));
+        })
+        .catch((e) => console.error("Failed to load threads:", e));
+      return;
+    }
+
     setLoading(true);
     try {
       const d = await getFileDiff(projectId, repoId, prId, path, currentIteration.value, diffView.value);
       if (reqId !== diffReqId.current) return;
-      setDiffHtml(d.html);
-      setDiffPath(d.path);
-      setDiffStatus(d.status);
-      setSourceCommit(d.sourceCommit);
-      setBaseCommit(d.baseCommit);
-      setOldContent(d.oldContent);
-      setNewContent(d.newContent);
+      diffCache.current.set(diffCacheKey(path), d);
+      applyDiff(d);
       // Load threads for this file
       const allThreads = await getThreads(projectId, repoId, prId);
       if (reqId !== diffReqId.current) return;
@@ -324,7 +365,16 @@ export function PRDetail({ prId }: Props) {
 
   useEffect(() => {
     const unsub1 = selectedFile.subscribe((path) => {
-      if (path) loadDiff(path);
+      if (!path) return;
+      loadDiff(path);
+      // Warm the neighbors in the order the user actually sees them so the
+      // next/prev j/k step renders from cache instantly.
+      const order = visibleFilePaths.value;
+      const idx = order.indexOf(path);
+      if (idx >= 0) {
+        if (idx + 1 < order.length) prefetchDiff(order[idx + 1]);
+        if (idx - 1 >= 0) prefetchDiff(order[idx - 1]);
+      }
     });
     const unsub2 = currentIteration.subscribe(() => {
       loadFiles();
@@ -345,7 +395,7 @@ export function PRDetail({ prId }: Props) {
         .catch((e) => console.error("Failed to refresh threads:", e));
     });
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
-  }, [loadDiff, loadFiles, projectId, repoId, prId, diffPath]);
+  }, [loadDiff, loadFiles, prefetchDiff, projectId, repoId, prId, diffPath]);
 
   const handleToggleViewed = async (path: string, viewed: boolean) => {
     if (!projectId || !repoId) return;
