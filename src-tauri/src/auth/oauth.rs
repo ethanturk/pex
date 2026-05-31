@@ -151,7 +151,7 @@ async fn validate_token(org_url: &str, token: &str) -> Result<(), AppError> {
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
-        .map_err(|e| AppError::Ado(format!("Token validation failed: {}", e)))?;
+        .map_err(|e| AppError::Provider(format!("Token validation failed: {}", e)))?;
 
     if !resp.status().is_success() {
         return Err(AppError::Auth(

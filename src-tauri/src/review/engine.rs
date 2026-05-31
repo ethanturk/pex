@@ -11,7 +11,7 @@ use tokio::sync::Semaphore;
 
 fn cancelled(flag: &AtomicBool) -> Result<(), AppError> {
     if flag.load(Ordering::SeqCst) {
-        Err(AppError::Ado("Review cancelled".into()))
+        Err(AppError::Provider("Review cancelled".into()))
     } else {
         Ok(())
     }
