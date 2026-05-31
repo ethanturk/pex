@@ -36,59 +36,63 @@ function shortLabel(label: string): string {
 }
 
 interface Props {
-  mode: ReviewMode;
+  initialMode: ReviewMode;
   prId: number;
   prTitle: string;
   /** Whether another review is already running (disables Start). */
   busyElsewhere: boolean;
-  onConfirm: (enabledSpecialists?: string[]) => void;
+  onConfirm: (mode: ReviewMode, enabledSpecialists?: string[]) => void;
   onClose: () => void;
 }
 
 export function ReviewConfirmDialog({
-  mode,
+  initialMode,
   prId,
   prTitle,
   busyElsewhere,
   onConfirm,
   onClose,
 }: Props) {
+  const [mode, setMode] = useState<ReviewMode>(initialMode);
   const [specialists, setSpecialists] = useState<ReviewSpecialistInfo[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [fastModel, setFastModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
+  // Load the AI tab's default model once (shown for Fast, and as the fallback
+  // model for any specialist without an override).
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        if (mode === "thorough") {
-          const list = await getReviewSpecialists();
-          if (cancelled) return;
-          const available = new Set(list.map((s) => s.key));
-          const stored = loadEnabledSpecialists();
-          // Restore the saved selection (intersected with what's available);
-          // default to every specialist enabled.
-          let initial = stored ? stored.filter((k) => available.has(k)) : list.map((s) => s.key);
-          if (initial.length === 0) initial = list.map((s) => s.key);
-          setSpecialists(list);
-          setSelected(new Set(initial));
-        } else {
-          const settings = await getAiSettings();
-          if (cancelled) return;
-          setFastModel(settings.model);
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+    getAiSettings()
+      .then((s) => !cancelled && setFastModel(s.model))
+      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       cancelled = true;
     };
-  }, [mode]);
+  }, []);
+
+  // Lazily load the specialist roster the first time Thorough is selected.
+  useEffect(() => {
+    if (mode !== "thorough" || specialists != null) return;
+    let cancelled = false;
+    setLoading(true);
+    getReviewSpecialists()
+      .then((list) => {
+        if (cancelled) return;
+        const available = new Set(list.map((s) => s.key));
+        const stored = loadEnabledSpecialists();
+        let initial = stored ? stored.filter((k) => available.has(k)) : list.map((s) => s.key);
+        if (initial.length === 0) initial = list.map((s) => s.key);
+        setSpecialists(list);
+        setSelected(new Set(initial));
+      })
+      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, specialists]);
 
   const allSelected = useMemo(
     () => specialists != null && specialists.length > 0 && selected.size === specialists.length,
@@ -109,8 +113,11 @@ export function ReviewConfirmDialog({
     setSelected(allSelected ? new Set() : new Set(specialists.map((s) => s.key)));
   };
 
+  const thoroughReady = mode === "thorough" && specialists != null;
   const canStart =
-    !busyElsewhere && !loading && !error && (mode === "fast" || selected.size > 0);
+    !busyElsewhere &&
+    !error &&
+    (mode === "fast" || (thoroughReady && selected.size > 0));
 
   const start = () => {
     if (!canStart) return;
@@ -119,9 +126,9 @@ export function ReviewConfirmDialog({
       saveEnabledSpecialists(keys);
       // Pass undefined when every specialist is selected so the backend runs its
       // full roster (and stays forward-compatible if the roster grows).
-      onConfirm(keys.length === specialists.length ? undefined : keys);
+      onConfirm("thorough", keys.length === specialists.length ? undefined : keys);
     } else {
-      onConfirm(undefined);
+      onConfirm("fast", undefined);
     }
   };
 
@@ -136,11 +143,31 @@ export function ReviewConfirmDialog({
       >
         {/* Header */}
         <div class="px-5 pt-4 pb-3 border-b border-gray-200 dark:border-gray-700">
-          <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            Start {mode === "thorough" ? "Thorough" : "Fast"} review
-          </div>
+          <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">Start review</div>
           <div class="mt-1 text-xs text-gray-500 dark:text-gray-400 truncate">
             PR #{prId} — {prTitle}
+          </div>
+
+          {/* Fast / Thorough selector */}
+          <div class="mt-3 inline-flex rounded-lg border border-gray-200 dark:border-gray-700 p-0.5 bg-gray-50 dark:bg-gray-800">
+            {(["fast", "thorough"] as ReviewMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                class={`px-3 py-1 text-xs font-medium rounded-md capitalize ${
+                  mode === m
+                    ? "bg-white dark:bg-gray-900 text-accent shadow-sm"
+                    : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <div class="mt-1.5 text-[11px] text-gray-400">
+            {mode === "thorough"
+              ? "Multiple specialist agents per hunk — slower, broader coverage."
+              : "A single generalist pass per hunk — fast."}
           </div>
         </div>
 
@@ -148,36 +175,32 @@ export function ReviewConfirmDialog({
         <div class="px-5 py-4 overflow-y-auto text-sm">
           {error ? (
             <div class="text-red-600 dark:text-red-400 whitespace-pre-wrap text-xs">{error}</div>
-          ) : loading ? (
-            <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400 text-xs">
-              <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
-              Loading…
-            </div>
           ) : mode === "fast" ? (
             <div class="text-gray-600 dark:text-gray-300">
-              A single generalist pass will review each changed hunk.
-              <div class="mt-3 flex items-center gap-2 text-xs">
+              <div class="flex items-center gap-2 text-xs">
                 <span class="text-gray-500 dark:text-gray-400">Model</span>
                 <span class="font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200">
-                  {fastModel ?? "unknown"}
+                  {fastModel ?? "loading…"}
                 </span>
               </div>
+            </div>
+          ) : loading || !specialists ? (
+            <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400 text-xs">
+              <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
+              Loading agents…
             </div>
           ) : (
             <>
               <div class="flex items-center justify-between mb-2">
                 <span class="text-xs text-gray-500 dark:text-gray-400">
-                  Choose which specialist agents to run ({selected.size}/{specialists?.length ?? 0})
+                  Choose which specialist agents to run ({selected.size}/{specialists.length})
                 </span>
-                <button
-                  onClick={toggleAll}
-                  class="text-xs text-accent hover:underline"
-                >
+                <button onClick={toggleAll} class="text-xs text-accent hover:underline">
                   {allSelected ? "Deselect all" : "Select all"}
                 </button>
               </div>
               <div class="flex flex-col gap-1">
-                {specialists?.map((s) => {
+                {specialists.map((s) => {
                   const on = selected.has(s.key);
                   return (
                     <label

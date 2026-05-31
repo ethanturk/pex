@@ -117,6 +117,15 @@ function fileName(path: string): string {
   return i >= 0 ? path.slice(i + 1) : path;
 }
 
+// Compact elapsed-time label: "4.2s" under a minute, "1m 03s" beyond.
+function formatDuration(ms: number): string {
+  const totalSecs = ms / 1000;
+  if (totalSecs < 60) return `${totalSecs.toFixed(1)}s`;
+  const m = Math.floor(totalSecs / 60);
+  const s = Math.round(totalSecs % 60);
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
 function lineSuffix(f: Finding): string {
   if (f.lineStart == null) return "";
   if (f.lineEnd == null || f.lineEnd === f.lineStart) return `:${f.lineStart}`;
@@ -214,11 +223,6 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   }, []);
   const savedTarget = savedReview ? parsePrKey(savedReview.prKey) : null;
 
-  const handleModeChange = (next: ReviewMode) => {
-    setMode(next);
-    saveReviewMode(next);
-  };
-
   const handleResume = () => {
     if (busyElsewhere) return;
     const target = savedTarget;
@@ -246,6 +250,17 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
   const busyElsewhere =
     activeReviewPrId.value !== null && activeReviewPrId.value !== prId;
 
+  // Re-render once a second while a file is under review so its running timer
+  // ticks. Idle (no active file / not running) means no interval.
+  const [now, setNow] = useState(() => Date.now());
+  const activeStartMs = run?.activeFileStartMs;
+  useEffect(() => {
+    if (!running || activeStartMs == null) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running, activeStartMs]);
+
   // Open the pre-review confirmation dialog. The actual run is kicked off from
   // the dialog's Start button (which also carries the chosen specialist set).
   const restart = () => {
@@ -253,10 +268,13 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     setConfirmOpen(true);
   };
 
-  const beginReview = (enabledSpecialists?: string[]) => {
+  const beginReview = (selectedMode: ReviewMode, enabledSpecialists?: string[]) => {
     setConfirmOpen(false);
     setSavedReview(null);
-    startBackgroundReview(projectId, repoId, prId, prTitle, false, mode, enabledSpecialists);
+    // Remember the chosen mode as the new default for next time.
+    setMode(selectedMode);
+    saveReviewMode(selectedMode);
+    startBackgroundReview(projectId, repoId, prId, prTitle, false, selectedMode, enabledSpecialists);
   };
 
   // Selection + posted state lives here so the footer's "Post N to ADO"
@@ -398,8 +416,9 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
     }
   };
 
-  const pickerDisabled = running || posting || busyElsewhere;
   const findingCount = run?.output?.findings.length ?? 0;
+  // Mode shown in the header: the active run's mode, else the saved default.
+  const headerMode = run?.mode ?? mode;
 
   return (
     <div class="bg-gray-50 dark:bg-gray-800/50 h-full flex flex-col min-w-0 overflow-hidden">
@@ -415,16 +434,12 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
             {run.status === "error" && "error"}
           </span>
         )}
-        <select
-          value={mode}
-          disabled={pickerDisabled}
-          onChange={(e) => handleModeChange(e.currentTarget.value as ReviewMode)}
-          title="Review strategy. Thorough runs multiple specialist passes per hunk (slower)."
-          class="ml-auto text-xs px-1.5 py-1 rounded-lg border bg-bg-surface border-border disabled:opacity-50 disabled:cursor-not-allowed"
+        <span
+          title="Review strategy — change it when you start a review."
+          class="ml-auto text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded border border-border text-gray-500 dark:text-gray-400"
         >
-          <option value="fast">Fast</option>
-          <option value="thorough">Thorough</option>
-        </select>
+          {headerMode}
+        </span>
       </div>
 
       {/* Progress / error — always visible (not inside a scroll area) so the
@@ -532,9 +547,14 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
             </div>
           </div>
         ) : !run.output ? (
-          <div class="text-gray-400 text-xs">
-            {running || posting ? "Working — findings will appear here as the review completes." : "Waiting for results…"}
-          </div>
+          run.fileList && run.fileList.length > 0 ? (
+            <ReviewFileChecklist run={run} now={now} />
+          ) : (
+            <div class="flex items-center gap-2 text-gray-400 text-xs">
+              <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
+              {posting ? "Posting findings to ADO…" : "Preparing review…"}
+            </div>
+          )
         ) : subTab === "summary" ? (
           <>
             {run.output.summary ? (
@@ -612,7 +632,7 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
 
       {confirmOpen && (
         <ReviewConfirmDialog
-          mode={mode}
+          initialMode={mode}
           prId={prId}
           prTitle={prTitle}
           busyElsewhere={busyElsewhere}
@@ -620,6 +640,79 @@ export function PRReviewSidebar({ projectId, repoId, prId, prTitle }: Props) {
           onClose={() => setConfirmOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+// Live worklist shown while a review runs: every file to be reviewed, ticked
+// off with its elapsed time as the engine finishes each one, plus a running
+// timer on the file currently under review.
+function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
+  const files = run.fileList ?? [];
+  const durations = run.fileDurations ?? {};
+  const pre = run.preCompletedCount ?? 0;
+  const isDone = (i: number) => durations[i] != null || i < pre;
+  const completed = files.reduce((acc, _f, i) => acc + (isDone(i) ? 1 : 0), 0);
+
+  return (
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">Files</span>
+        <span class="text-xs font-mono text-gray-400">
+          {completed}/{files.length}
+        </span>
+      </div>
+      <ul class="flex flex-col gap-0.5">
+        {files.map((path, i) => {
+          const done = isDone(i);
+          const active = !done && i === run.activeFileIndex;
+          const elapsed =
+            done && durations[i] != null
+              ? formatDuration(durations[i])
+              : active && run.activeFileStartMs != null
+                ? formatDuration(Math.max(0, now - run.activeFileStartMs))
+                : "";
+          return (
+            <li
+              key={`${i}-${path}`}
+              class={`flex items-center gap-2 px-2 py-1 rounded text-xs ${
+                active ? "bg-accent/5" : ""
+              }`}
+              title={path}
+            >
+              <span class="shrink-0 w-3.5 flex items-center justify-center">
+                {done ? (
+                  <span class="text-green-500">✓</span>
+                ) : active ? (
+                  <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
+                ) : (
+                  <span class="text-gray-300 dark:text-gray-600">○</span>
+                )}
+              </span>
+              <span
+                class={`min-w-0 flex-1 truncate ${
+                  done
+                    ? "text-gray-400 dark:text-gray-500"
+                    : active
+                      ? "text-gray-800 dark:text-gray-100 font-medium"
+                      : "text-gray-500 dark:text-gray-400"
+                }`}
+              >
+                {fileName(path)}
+              </span>
+              {elapsed && (
+                <span
+                  class={`shrink-0 font-mono tabular-nums ${
+                    active ? "text-accent" : "text-gray-400"
+                  }`}
+                >
+                  {elapsed}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

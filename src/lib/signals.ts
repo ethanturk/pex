@@ -179,6 +179,12 @@ export interface ReviewProgress {
   batch?: number;
   totalBatches?: number;
   fileCount?: number;
+  // `plan` event: the full ordered worklist + how many were already done (resume).
+  files?: string[];
+  completedCount?: number;
+  // `file-done` event: which file finished, and how long it took.
+  fileIndex?: number;
+  durationMs?: number;
 }
 
 export type PRReviewStatus = "running" | "done" | "posting" | "posted" | "error";
@@ -193,6 +199,18 @@ export interface PRReviewRun {
   /// Review mode the user picked when starting this run.
   mode?: ReviewMode;
   progress: ReviewProgress | null;
+  // Live per-file review tracking, accumulated from progress events (these
+  // persist across events, unlike `progress`, which is replaced each time).
+  /// Ordered list of files being reviewed (from the `plan` event).
+  fileList?: string[];
+  /// Completed-file durations in ms, keyed by file index.
+  fileDurations?: Record<number, number>;
+  /// Files already finished before this session started (resumed runs).
+  preCompletedCount?: number;
+  /// Index of the file currently under review (for the live timer + spinner).
+  activeFileIndex?: number;
+  /// Epoch ms when the active file started — drives the running timer.
+  activeFileStartMs?: number;
   // Output of the latest completed run; preserved across "posting" so the
   // sidebar can keep showing the summary while we post to ADO.
   output: {

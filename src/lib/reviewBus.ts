@@ -3,6 +3,7 @@ import {
   activeReviewPrId,
   reviewRuns,
   updateReviewRun,
+  type PRReviewRun,
   type ReviewProgress,
 } from "@/lib/signals";
 import {
@@ -24,7 +25,36 @@ export async function initReviewBus() {
   await listen<ReviewProgress>("review-progress", (e) => {
     const id = activeReviewPrId.value;
     if (id == null) return;
-    updateReviewRun(id, { progress: e.payload });
+    const p = e.payload;
+    const run = reviewRuns.value.get(id);
+    // Always refresh the headline progress; some phases also update the
+    // persistent per-file checklist tracked alongside it.
+    const patch: Partial<PRReviewRun> = { progress: p };
+
+    if (p.phase === "plan" && Array.isArray(p.files)) {
+      patch.fileList = p.files;
+      patch.fileDurations = {};
+      patch.preCompletedCount = p.completedCount ?? 0;
+      patch.activeFileIndex = undefined;
+      patch.activeFileStartMs = undefined;
+    } else if (p.phase === "hunk-review" && typeof p.fileNum === "number") {
+      // First sighting of a new file → start its running timer.
+      const idx = p.fileNum - 1;
+      if (run?.activeFileIndex !== idx) {
+        patch.activeFileIndex = idx;
+        patch.activeFileStartMs = Date.now();
+      }
+    } else if (p.phase === "file-done" && typeof p.fileIndex === "number") {
+      patch.fileDurations = {
+        ...(run?.fileDurations ?? {}),
+        [p.fileIndex]: p.durationMs ?? 0,
+      };
+      // Clear the active marker; the next hunk-review event sets the next file.
+      patch.activeFileIndex = undefined;
+      patch.activeFileStartMs = undefined;
+    }
+
+    updateReviewRun(id, patch);
   });
 
   // `review-done` is informational — the awaited promise from `startReview`

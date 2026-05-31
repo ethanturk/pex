@@ -444,9 +444,24 @@ pub async fn run_review(
         }
     }
 
+    // Announce the full, ordered worklist up front so the UI can render every
+    // file (and tick them off as they complete). `completedCount` lets a resumed
+    // run mark already-finished files as done without re-emitting each one.
+    emit_progress(
+        &app,
+        "plan",
+        &format!("Reviewing {} file(s)", file_entries.len()),
+        serde_json::json!({
+            "files": file_paths.clone(),
+            "totalFiles": file_entries.len(),
+            "completedCount": state.current_file_idx,
+        }),
+    );
+
     // ---- Phase 1: Hunk Review (per file) ----
     while state.current_file_idx < file_entries.len() {
         cancelled(&cancel)?;
+        let file_started = std::time::Instant::now();
         let (file, hunks) = &file_entries[state.current_file_idx];
         let total_hunks = hunks.len();
         // Shared once per file: each hunk pass windows a bounded slice of this
@@ -696,6 +711,18 @@ pub async fn run_review(
                 },
             ));
         }
+
+        emit_progress(
+            &app,
+            "file-done",
+            &format!("Reviewed {}", file.path),
+            serde_json::json!({
+                "fileIndex": state.current_file_idx,
+                "fileNum": state.current_file_idx + 1,
+                "totalFiles": file_entries.len(),
+                "durationMs": file_started.elapsed().as_millis() as u64,
+            }),
+        );
 
         state.current_file_idx += 1;
         state.current_file_hunks = 0;
