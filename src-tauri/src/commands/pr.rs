@@ -66,11 +66,12 @@ pub async fn get_pull_request(
 pub async fn get_pr_checks(
     state: State<'_, AppState>,
     project_id: String,
+    repo_id: String,
     pr_id: i64,
 ) -> Result<Vec<serde_json::Value>, String> {
     let client = get_client(&state)?;
     let checks = client
-        .list_pr_policy_evaluations(&project_id, pr_id)
+        .list_pr_policy_evaluations(&project_id, &repo_id, pr_id)
         .await
         .map_err(|e| e.to_string())?;
     Ok(checks
@@ -107,15 +108,15 @@ pub async fn get_iterations(
         .collect())
 }
 
-fn get_client(state: &AppState) -> Result<crate::ado::AdoClient, String> {
-    let guard = state.ado_client.lock().unwrap();
+fn get_client(state: &AppState) -> Result<crate::provider::GitClient, String> {
+    let guard = state.client.lock().unwrap();
     guard
         .as_ref()
         .cloned()
         .ok_or_else(|| "Not authenticated".to_string())
 }
 
-fn pull_request_json(pr: crate::ado::PullRequest) -> serde_json::Value {
+fn pull_request_json(pr: crate::provider::PullRequest) -> serde_json::Value {
     serde_json::json!({
         "pullRequestId": pr.pull_request_id,
         "title": pr.title,

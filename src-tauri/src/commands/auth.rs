@@ -4,30 +4,60 @@ use tauri::State;
 #[tauri::command]
 pub async fn login_pat(
     state: State<'_, AppState>,
+    provider: Option<String>,
     org_url: String,
     pat: String,
 ) -> Result<bool, String> {
-    match crate::auth::pat::validate_pat(&org_url, &pat).await {
-        Ok(name) => {
-            let client = crate::ado::AdoClient::new(org_url.clone(), pat.clone());
-            *state.ado_client.lock().unwrap() = Some(client);
-
-            crate::auth::keyring_store::KeyringStore::save_pat(&org_url, &pat)
+    let provider = provider.unwrap_or_else(|| "ado".to_string());
+    match provider.as_str() {
+        "github" => {
+            let api_base = crate::github::api_base_for(&org_url);
+            let canonical = crate::github::canonical_org_url(&org_url);
+            let login = crate::auth::github_pat::validate_github_pat(&api_base, &pat)
+                .await
                 .map_err(|e| e.to_string())?;
 
-            let conn = state.db.lock().unwrap();
-            crate::cache::save_org(&conn, &org_url, &name, "pat").map_err(|e| e.to_string())?;
+            let client = crate::provider::GitClient::Github(crate::github::GithubClient::new(
+                org_url.clone(),
+                pat.clone(),
+            ));
+            *state.client.lock().unwrap() = Some(client);
 
+            // Keyring + saved-org rows are keyed by the canonical URL so
+            // `activate_org` can rebuild the client identically on restart.
+            crate::auth::keyring_store::KeyringStore::save_pat(&canonical, &pat)
+                .map_err(|e| e.to_string())?;
+            let conn = state.db.lock().unwrap();
+            crate::cache::save_org(&conn, &canonical, &login, "pat", "github")
+                .map_err(|e| e.to_string())?;
             Ok(true)
         }
-        Err(e) => Err(e.to_string()),
+        _ => match crate::auth::pat::validate_pat(&org_url, &pat).await {
+            Ok(name) => {
+                let client = crate::provider::GitClient::Ado(crate::ado::AdoClient::new(
+                    org_url.clone(),
+                    pat.clone(),
+                ));
+                *state.client.lock().unwrap() = Some(client);
+
+                crate::auth::keyring_store::KeyringStore::save_pat(&org_url, &pat)
+                    .map_err(|e| e.to_string())?;
+
+                let conn = state.db.lock().unwrap();
+                crate::cache::save_org(&conn, &org_url, &name, "pat", "ado")
+                    .map_err(|e| e.to_string())?;
+
+                Ok(true)
+            }
+            Err(e) => Err(e.to_string()),
+        },
     }
 }
 
 #[tauri::command]
 pub async fn get_current_user_id(state: State<'_, AppState>) -> Result<String, String> {
     let client = {
-        let guard = state.ado_client.lock().unwrap();
+        let guard = state.client.lock().unwrap();
         guard
             .as_ref()
             .ok_or_else(|| "Not authenticated".to_string())?
@@ -39,29 +69,41 @@ pub async fn get_current_user_id(state: State<'_, AppState>) -> Result<String, S
         .map_err(|e| e.to_string())
 }
 
-/// Rehydrate the in-memory ADO client for a saved org by reading credentials
-/// from the keyring. Called on app startup and when switching orgs.
+/// Rehydrate the in-memory provider client for a saved org by reading
+/// credentials from the keyring. Called on app startup and when switching orgs.
 #[tauri::command]
 pub async fn activate_org(state: State<'_, AppState>, org_url: String) -> Result<bool, String> {
-    // Look up the saved org to determine token type.
-    let token_type = {
+    // Look up the saved org to determine provider + token type.
+    let (token_type, provider) = {
         let conn = state.db.lock().unwrap();
         crate::cache::list_orgs(&conn)
             .map_err(|e| e.to_string())?
             .into_iter()
-            .find(|(url, _, _)| url == &org_url)
-            .map(|(_, _, t)| t)
+            .find(|(url, _, _, _)| url == &org_url)
+            .map(|(_, _, t, p)| (t, p))
             .ok_or_else(|| "Org not found in saved list".to_string())?
     };
 
-    let client = match token_type.as_str() {
-        "pat" => {
+    let client = match (provider.as_str(), token_type.as_str()) {
+        ("github", "pat") => {
             let pat = crate::auth::keyring_store::KeyringStore::get_pat(&org_url)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "No saved PAT for this org. Please sign in again.".to_string())?;
-            crate::ado::AdoClient::new(org_url.clone(), pat)
+            crate::provider::GitClient::Github(crate::github::GithubClient::new(
+                org_url.clone(),
+                pat,
+            ))
         }
-        "oauth" => {
+        ("github", other) => {
+            return Err(format!("GitHub {} auth is not yet supported.", other));
+        }
+        (_, "pat") => {
+            let pat = crate::auth::keyring_store::KeyringStore::get_pat(&org_url)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "No saved PAT for this org. Please sign in again.".to_string())?;
+            crate::provider::GitClient::Ado(crate::ado::AdoClient::new(org_url.clone(), pat))
+        }
+        (_, "oauth") => {
             // Refresh the access token using stored refresh token + client secret.
             let (refresh_token, client_secret) =
                 crate::auth::keyring_store::KeyringStore::get_oauth(&org_url)
@@ -82,15 +124,18 @@ pub async fn activate_org(state: State<'_, AppState>, org_url: String) -> Result
                 &client_secret,
             )
             .map_err(|e| e.to_string())?;
-            crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token)
+            crate::provider::GitClient::Ado(crate::ado::AdoClient::with_bearer_token(
+                org_url.clone(),
+                token.access_token,
+            ))
         }
-        other => return Err(format!("Unknown token type: {}", other)),
+        (_, other) => return Err(format!("Unknown token type: {}", other)),
     };
 
-    *state.ado_client.lock().unwrap() = Some(client);
+    *state.client.lock().unwrap() = Some(client);
 
     // Pre-warm the AI manager so the AI API key's keychain prompt fires here, alongside
-    // the ADO PAT prompt above, rather than later when the user first clicks Explain/Review.
+    // the provider PAT prompt above, rather than later when the user first clicks Explain/Review.
     // macOS will still show one OS dialog per keychain item — they just appear back-to-back
     // during the same startup gesture. Errors are non-fatal: AI may simply be unconfigured.
     {
@@ -115,19 +160,22 @@ pub async fn login_oauth(
     client_id: String,
     client_secret: String,
 ) -> Result<serde_json::Value, String> {
+    // OAuth is currently Azure DevOps only.
     let token = crate::auth::oauth::start_oauth_flow(&org_url, &client_id, &client_secret, |url| {
         let _ = tauri_plugin_opener::open_url(url, None::<&str>);
     })
     .await
     .map_err(|e| e.to_string())?;
 
-    let client =
-        crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token.clone());
-    *state.ado_client.lock().unwrap() = Some(client);
+    let client = crate::provider::GitClient::Ado(crate::ado::AdoClient::with_bearer_token(
+        org_url.clone(),
+        token.access_token.clone(),
+    ));
+    *state.client.lock().unwrap() = Some(client);
 
     // Save org to cache
     let conn = state.db.lock().unwrap();
-    crate::cache::save_org(&conn, &org_url, &org_url, "oauth").map_err(|e| e.to_string())?;
+    crate::cache::save_org(&conn, &org_url, &org_url, "oauth", "ado").map_err(|e| e.to_string())?;
 
     // Store refresh token + client secret for later refresh
     crate::auth::keyring_store::KeyringStore::save_oauth(
@@ -162,10 +210,12 @@ pub async fn refresh_oauth_token(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Update the ADO client with new token
-    let client =
-        crate::ado::AdoClient::with_bearer_token(org_url.clone(), token.access_token.clone());
-    *state.ado_client.lock().unwrap() = Some(client);
+    // Update the client with new token
+    let client = crate::provider::GitClient::Ado(crate::ado::AdoClient::with_bearer_token(
+        org_url.clone(),
+        token.access_token.clone(),
+    ));
+    *state.client.lock().unwrap() = Some(client);
 
     // Store updated refresh token
     crate::auth::keyring_store::KeyringStore::save_oauth(
@@ -187,11 +237,12 @@ pub fn get_saved_orgs(state: State<'_, AppState>) -> Result<Vec<serde_json::Valu
     let orgs = crate::cache::list_orgs(&conn).map_err(|e| e.to_string())?;
     Ok(orgs
         .into_iter()
-        .map(|(url, name, token_type)| {
+        .map(|(url, name, token_type, provider)| {
             serde_json::json!({
                 "orgUrl": url,
                 "name": name,
-                "tokenType": token_type
+                "tokenType": token_type,
+                "provider": provider
             })
         })
         .collect())

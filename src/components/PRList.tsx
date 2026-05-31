@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "preact/hooks";
 import { currentView, selectedProject, selectedRepo, showPrChecks, reviewRuns } from "@/lib/signals";
 import { listProjects, listRepositories, listPullRequests, getCurrentUserId, getPrChecks, type Project, type Repository, type PullRequest, type PRCheck } from "@/lib/api";
-import { getPrCheckRollup } from "@/lib/prChecks";
+import { getPrCheckRollup, describeChecksError } from "@/lib/prChecks";
 import { considerAutoReview } from "@/lib/autoReview";
 
 interface PRChecksState {
@@ -187,12 +187,13 @@ export function PRList() {
 
   const loadChecksForPrs = useCallback((list: PullRequest[]) => {
     const reqId = ++checksReqId.current;
-    if (!checksEnabled || !selectedProject.value || list.length === 0) {
+    if (!checksEnabled || !selectedProject.value || !selectedRepo.value || list.length === 0) {
       setPrChecks({});
       return;
     }
 
     const projectId = selectedProject.value;
+    const repoId = selectedRepo.value;
     setPrChecks(
       Object.fromEntries(
         list.map((pr) => [pr.pullRequestId, { loading: true, checks: [], error: "" }]),
@@ -205,7 +206,7 @@ export function PRList() {
       while (nextIndex < list.length) {
         const pr = list[nextIndex++];
         try {
-          const checks = await getPrChecks(projectId, pr.pullRequestId);
+          const checks = await getPrChecks(projectId, repoId, pr.pullRequestId);
           if (reqId !== checksReqId.current) return;
           setPrChecks((prev) => ({
             ...prev,
@@ -218,7 +219,7 @@ export function PRList() {
             [pr.pullRequestId]: {
               loading: false,
               checks: [],
-              error: typeof e === "string" ? e : e instanceof Error ? e.message : String(e),
+              error: describeChecksError(e),
             },
           }));
         }
@@ -226,7 +227,7 @@ export function PRList() {
     };
 
     void Promise.all(Array.from({ length: workerCount }, runWorker));
-  }, [checksEnabled, selectedProject.value]);
+  }, [checksEnabled, selectedProject.value, selectedRepo.value]);
 
   useEffect(() => {
     loadChecksForPrs(prs);

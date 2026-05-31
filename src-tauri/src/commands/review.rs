@@ -26,7 +26,7 @@ fn read_diff_fetch_concurrency(db: &std::sync::Mutex<rusqlite::Connection>) -> u
 /// intersect the current file list) so we never silently skip everything.
 async fn incremental_paths(
     state: &AppState,
-    client: &crate::ado::AdoClient,
+    client: &crate::provider::GitClient,
     pr_key: &str,
     project_id: &str,
     repo_id: &str,
@@ -109,7 +109,7 @@ fn make_diagnostics(
 }
 
 async fn latest_iteration(
-    client: &crate::ado::AdoClient,
+    client: &crate::provider::GitClient,
     project_id: &str,
     repo_id: &str,
     pr_id: i64,
@@ -125,7 +125,7 @@ async fn latest_iteration(
 
 async fn fetch_file_inputs(
     app: &tauri::AppHandle,
-    client: &crate::ado::AdoClient,
+    client: &crate::provider::GitClient,
     diff_cache: &DiffCache,
     org_url: &str,
     project_id: &str,
@@ -282,12 +282,12 @@ pub async fn start_review(
     let mode = mode.unwrap_or_default();
     // Gather the ADO client and context
     let (client, org_url) = {
-        let ado = state.ado_client.lock().map_err(|e| e.to_string())?;
+        let ado = state.client.lock().map_err(|e| e.to_string())?;
         let client = ado
             .as_ref()
             .ok_or_else(|| "Not logged in. Connect to an ADO org first.".to_string())?
             .clone();
-        let org_url = client.org_url.clone();
+        let org_url = client.org_url().to_string();
         (client, org_url)
     };
 
@@ -410,12 +410,12 @@ pub async fn start_review_post(
     let mode = mode.unwrap_or_default();
     // Run the review first (reuses start_review logic inline)
     let (client, org_url) = {
-        let ado = state.ado_client.lock().map_err(|e| e.to_string())?;
+        let ado = state.client.lock().map_err(|e| e.to_string())?;
         let client = ado
             .as_ref()
             .ok_or_else(|| "Not logged in.".to_string())?
             .clone();
-        let org_url = client.org_url.clone();
+        let org_url = client.org_url().to_string();
         (client, org_url)
     };
 

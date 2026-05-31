@@ -19,10 +19,10 @@ pub async fn validate_pat(org_url: &str, pat: &str) -> Result<String, AppError> 
         .header("Authorization", auth_header)
         .send()
         .await
-        .map_err(|e| AppError::Ado(format!("Connection failed: {}", e)))?;
+        .map_err(|e| AppError::Provider(format!("Connection failed: {}", e)))?;
 
     if !resp.status().is_success() {
-        return Err(AppError::Ado(format!(
+        return Err(AppError::Provider(format!(
             "Invalid credentials (HTTP {})",
             resp.status()
         )));
@@ -31,7 +31,7 @@ pub async fn validate_pat(org_url: &str, pat: &str) -> Result<String, AppError> 
     let data: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| AppError::Ado(e.to_string()))?;
+        .map_err(|e| AppError::Provider(e.to_string()))?;
     let name = data["authenticatedUser"]["providerDisplayName"]
         .as_str()
         .unwrap_or("Unknown")

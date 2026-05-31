@@ -25,6 +25,7 @@ pub fn init_db() -> Result<Connection, AppError> {
             org_url TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             token_type TEXT NOT NULL DEFAULT 'pat',
+            provider TEXT NOT NULL DEFAULT 'ado',
             added_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
@@ -64,6 +65,13 @@ pub fn init_db() -> Result<Connection, AppError> {
     // already present (fresh DBs get it from the CREATE above).
     let _ = conn.execute(
         "ALTER TABLE finding_verdicts ADD COLUMN sources TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+
+    // Lightweight migration: add `provider` to saved_orgs tables created before
+    // multi-provider support. Pre-existing rows are Azure DevOps connections.
+    let _ = conn.execute(
+        "ALTER TABLE saved_orgs ADD COLUMN provider TEXT NOT NULL DEFAULT 'ado'",
         [],
     );
 
@@ -153,19 +161,24 @@ pub fn save_org(
     org_url: &str,
     name: &str,
     token_type: &str,
+    provider: &str,
 ) -> Result<(), AppError> {
     conn.execute(
-        "INSERT OR REPLACE INTO saved_orgs (org_url, name, token_type) VALUES (?1, ?2, ?3)",
-        rusqlite::params![org_url, name, token_type],
+        "INSERT OR REPLACE INTO saved_orgs (org_url, name, token_type, provider) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![org_url, name, token_type, provider],
     )?;
     Ok(())
 }
 
-pub fn list_orgs(conn: &Connection) -> Result<Vec<(String, String, String)>, AppError> {
-    let mut stmt =
-        conn.prepare("SELECT org_url, name, token_type FROM saved_orgs ORDER BY added_at DESC")?;
+/// Returns `(org_url, name, token_type, provider)` for each saved connection.
+pub fn list_orgs(conn: &Connection) -> Result<Vec<(String, String, String, String)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT org_url, name, token_type, provider FROM saved_orgs ORDER BY added_at DESC",
+    )?;
     let orgs = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(orgs)
 }

@@ -18,7 +18,7 @@ import {
   type PRCheck,
   type FileDiff,
 } from "@/lib/api";
-import { getPrCheckRollup } from "@/lib/prChecks";
+import { getPrCheckRollup, describeChecksError } from "@/lib/prChecks";
 import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
 import { HunkReview } from "@/components/HunkReview";
@@ -110,6 +110,7 @@ export function PRDetail({ prId }: Props) {
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [copied, setCopied] = useState(false);
+  const [voteError, setVoteError] = useState<string>("");
   const [checksState, setChecksState] = useState<PRChecksState>({
     loading: false,
     checks: [],
@@ -130,13 +131,13 @@ export function PRDetail({ prId }: Props) {
   const targetBranch = pullRequest ? branchName(pullRequest.targetRefName) : "";
 
   const loadChecks = useCallback(async () => {
-    if (!checksEnabled || !projectId) {
+    if (!checksEnabled || !projectId || !repoId) {
       setChecksState({ loading: false, checks: [], error: "" });
       return;
     }
     setChecksState({ loading: true, checks: [], error: "" });
     try {
-      const checks = await getPrChecks(projectId, prId);
+      const checks = await getPrChecks(projectId, repoId, prId);
       setChecksState({ loading: false, checks, error: "" });
     } catch (e) {
       setChecksState({
@@ -145,7 +146,7 @@ export function PRDetail({ prId }: Props) {
         error: typeof e === "string" ? e : e instanceof Error ? e.message : String(e),
       });
     }
-  }, [checksEnabled, projectId, prId]);
+  }, [checksEnabled, projectId, repoId, prId]);
 
   // Clear cross-PR state on PR switch so a stale `selectedFile` from the
   // previous PR doesn't kick off a diff load against this PR's commits —
@@ -194,11 +195,11 @@ export function PRDetail({ prId }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!checksEnabled || !projectId) {
+    if (!checksEnabled || !projectId || !repoId) {
       setChecksState({ loading: false, checks: [], error: "" });
     } else {
       setChecksState({ loading: true, checks: [], error: "" });
-      getPrChecks(projectId, prId)
+      getPrChecks(projectId, repoId, prId)
         .then((checks) => {
           if (!cancelled) setChecksState({ loading: false, checks, error: "" });
         })
@@ -207,7 +208,7 @@ export function PRDetail({ prId }: Props) {
             setChecksState({
               loading: false,
               checks: [],
-              error: typeof e === "string" ? e : e instanceof Error ? e.message : String(e),
+              error: describeChecksError(e),
             });
           }
         });
@@ -215,7 +216,7 @@ export function PRDetail({ prId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [checksEnabled, projectId, prId]);
+  }, [checksEnabled, projectId, repoId, prId]);
 
   // Fetch iterations on mount. Default to the LATEST iteration so the file
   // tree shows the full cumulative changeset — ADO's iterations/{N}/changes
@@ -404,13 +405,20 @@ export function PRDetail({ prId }: Props) {
   };
 
   const handleApprove = async (vote: number) => {
+    setVoteError("");
     try {
       await updateReviewerStatus(projectId, repoId, prId, vote);
       currentView.value = { kind: "pr-list" };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error("Vote failed:", msg);
-      alert(`Vote failed: ${msg}`);
+      const raw = e instanceof Error ? e.message : String(e);
+      // GitHub forbids reviewing a PR you authored; surface a plain-language
+      // reason instead of the raw 422 body. (alert() is a no-op in the Tauri
+      // webview, so render the error inline instead.)
+      const msg = /can ?not approve your own|review your own/i.test(raw)
+        ? "GitHub doesn't let you review your own pull request. Ask another collaborator to review it."
+        : raw;
+      console.error("Vote failed:", raw);
+      setVoteError(msg);
     }
   };
 
@@ -546,6 +554,18 @@ export function PRDetail({ prId }: Props) {
           <ApprovalBar onVote={handleApprove} />
         </div>
       </div>
+      {voteError && (
+        <div class="px-4 py-2 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
+          <span class="flex-1 break-words">{voteError}</span>
+          <button
+            onClick={() => setVoteError("")}
+            class="shrink-0 text-red-400 hover:text-red-600 dark:hover:text-red-200"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Body: File Tree + Diff */}
       <div class="flex flex-1 overflow-hidden">

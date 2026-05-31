@@ -65,8 +65,12 @@ export interface Comment {
 
 // ============= Auth =============
 
-export async function loginPat(orgUrl: string, pat: string): Promise<boolean> {
-  return invoke<boolean>("login_pat", { orgUrl, pat });
+export async function loginPat(
+  provider: "ado" | "github",
+  orgUrl: string,
+  pat: string,
+): Promise<boolean> {
+  return invoke<boolean>("login_pat", { provider, orgUrl, pat });
 }
 
 export async function loginOAuth(
@@ -145,9 +149,10 @@ export async function getPullRequest(
 
 export async function getPrChecks(
   projectId: string,
+  repoId: string,
   prId: number,
 ): Promise<PRCheck[]> {
-  return invoke<PRCheck[]>("get_pr_checks", { projectId, prId });
+  return invoke<PRCheck[]>("get_pr_checks", { projectId, repoId, prId });
 }
 
 // ============= Iterations =============

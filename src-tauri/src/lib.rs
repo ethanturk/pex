@@ -4,6 +4,8 @@ pub mod auth;
 pub mod cache;
 pub mod commands;
 pub mod diff;
+pub mod github;
+pub mod provider;
 pub mod review;
 pub mod window_state;
 
@@ -13,8 +15,8 @@ use tauri::Manager;
 
 #[derive(Error, Debug)]
 pub enum AppError {
-    #[error("ADO API error: {0}")]
-    Ado(String),
+    #[error("Provider API error: {0}")]
+    Provider(String),
     #[error("AI error: {0}")]
     Ai(String),
     #[error("Auth error: {0}")]
@@ -38,7 +40,7 @@ impl serde::Serialize for AppError {
 
 pub struct AppState {
     pub db: std::sync::Mutex<rusqlite::Connection>,
-    pub ado_client: std::sync::Mutex<Option<ado::AdoClient>>,
+    pub client: std::sync::Mutex<Option<provider::GitClient>>,
     pub ai_manager: std::sync::Mutex<Option<ai::AiManager>>,
     pub diff_cache: cache::diff_cache::DiffCache,
     pub standards_cache: cache::standards_cache::StandardsCache,
@@ -74,7 +76,7 @@ pub fn run() {
         })
         .manage(AppState {
             db: std::sync::Mutex::new(db),
-            ado_client: std::sync::Mutex::new(None),
+            client: std::sync::Mutex::new(None),
             ai_manager: std::sync::Mutex::new(None),
             diff_cache: cache::diff_cache::DiffCache::new(),
             standards_cache: cache::standards_cache::StandardsCache::new(),
