@@ -44,33 +44,22 @@ pub async fn list_pull_requests(
         .list_pull_requests(&project_id, &repo_id)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(prs
-        .into_iter()
-        .map(|pr| {
-            serde_json::json!({
-                "pullRequestId": pr.pull_request_id,
-                "title": pr.title,
-                "description": pr.description,
-                "status": pr.status,
-                "isDraft": pr.is_draft,
-                "createdBy": {
-                    "displayName": pr.created_by.display_name,
-                    "id": pr.created_by.id
-                },
-                "sourceRefName": pr.source_ref_name,
-                "targetRefName": pr.target_ref_name,
-                "creationDate": pr.creation_date,
-                "mergeStatus": pr.merge_status.unwrap_or_default(),
-                "reviewers": pr.reviewers.iter().map(|r| serde_json::json!({
-                    "id": r.id,
-                    "displayName": r.display_name,
-                    "vote": r.vote,
-                    "isRequired": r.is_required
-                })).collect::<Vec<_>>(),
-                "iterationCount": 1
-            })
-        })
-        .collect())
+    Ok(prs.into_iter().map(pull_request_json).collect())
+}
+
+#[tauri::command]
+pub async fn get_pull_request(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+) -> Result<serde_json::Value, String> {
+    let client = get_client(&state)?;
+    let pr = client
+        .get_pull_request(&project_id, &repo_id, pr_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(pull_request_json(pr))
 }
 
 #[tauri::command]
@@ -124,4 +113,29 @@ fn get_client(state: &AppState) -> Result<crate::ado::AdoClient, String> {
         .as_ref()
         .cloned()
         .ok_or_else(|| "Not authenticated".to_string())
+}
+
+fn pull_request_json(pr: crate::ado::PullRequest) -> serde_json::Value {
+    serde_json::json!({
+        "pullRequestId": pr.pull_request_id,
+        "title": pr.title,
+        "description": pr.description,
+        "status": pr.status,
+        "isDraft": pr.is_draft,
+        "createdBy": {
+            "displayName": pr.created_by.display_name,
+            "id": pr.created_by.id
+        },
+        "sourceRefName": pr.source_ref_name,
+        "targetRefName": pr.target_ref_name,
+        "creationDate": pr.creation_date,
+        "mergeStatus": pr.merge_status.unwrap_or_default(),
+        "reviewers": pr.reviewers.iter().map(|r| serde_json::json!({
+            "id": r.id,
+            "displayName": r.display_name,
+            "vote": r.vote,
+            "isRequired": r.is_required
+        })).collect::<Vec<_>>(),
+        "iterationCount": 1
+    })
 }

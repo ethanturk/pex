@@ -135,6 +135,14 @@ export async function listPullRequests(
   return invoke<PullRequest[]>("list_pull_requests", { projectId, repoId });
 }
 
+export async function getPullRequest(
+  projectId: string,
+  repoId: string,
+  prId: number,
+): Promise<PullRequest> {
+  return invoke<PullRequest>("get_pull_request", { projectId, repoId, prId });
+}
+
 export async function getPrChecks(
   projectId: string,
   prId: number,

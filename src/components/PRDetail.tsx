@@ -3,6 +3,7 @@ import { useResizableWidth } from "@/lib/useResizableWidth";
 import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick, showPrChecks } from "@/lib/signals";
 import {
   getPrChecks,
+  getPullRequest,
   getPrFiles,
   getViewedFiles,
   markFileViewed,
@@ -13,6 +14,7 @@ import {
   postComment,
   getIterations,
   type CommentThread,
+  type PullRequest,
   type PRCheck,
 } from "@/lib/api";
 import { getPrCheckRollup } from "@/lib/prChecks";
@@ -24,6 +26,10 @@ import { ReviewPR } from "@/components/ReviewPR";
 import { ApprovalBar } from "@/components/ApprovalBar";
 
 interface Props { prId: number; }
+
+function branchName(refName: string): string {
+  return refName.replace(/^refs\/heads\//, "");
+}
 
 interface PRChecksState {
   loading: boolean;
@@ -98,6 +104,7 @@ export function PRDetail({ prId }: Props) {
   const [baseCommit, setBaseCommit] = useState<string | null>(null);
   const [oldContent, setOldContent] = useState<string>("");
   const [newContent, setNewContent] = useState<string>("");
+  const [pullRequest, setPullRequest] = useState<PullRequest | null>(null);
   const [loading, setLoading] = useState(false);
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
@@ -118,6 +125,8 @@ export function PRDetail({ prId }: Props) {
   const projectId = selectedProject.value;
   const repoId = selectedRepo.value;
   const checksEnabled = showPrChecks.value;
+  const sourceBranch = pullRequest ? branchName(pullRequest.sourceRefName) : "";
+  const targetBranch = pullRequest ? branchName(pullRequest.targetRefName) : "";
 
   const loadChecks = useCallback(async () => {
     if (!checksEnabled || !projectId) {
@@ -145,6 +154,7 @@ export function PRDetail({ prId }: Props) {
     selectedFile.value = null;
     currentIteration.value = 1;
     prFiles.value = [];
+    setPullRequest(null);
     setDiffHtml("");
     setDiffPath("");
     setDiffStatus("");
@@ -155,6 +165,29 @@ export function PRDetail({ prId }: Props) {
     setThreads([]);
     setChecksState({ loading: false, checks: [], error: "" });
   }, [prId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId || !repoId) {
+      setPullRequest(null);
+      return;
+    }
+
+    getPullRequest(projectId, repoId, prId)
+      .then((pr) => {
+        if (!cancelled) setPullRequest(pr);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setPullRequest(null);
+          console.error("Failed to load PR details:", e);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, repoId, prId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -374,15 +407,25 @@ export function PRDetail({ prId }: Props) {
   return (
     <div class="flex flex-col h-full">
       {/* PR Header */}
-      <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0">
-        <div class="flex items-center gap-3">
+      <div class="flex items-center justify-between gap-3 px-4 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0">
+        <div class="flex items-center gap-3 min-w-0">
           <button
             class="text-sm text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
             onClick={() => (currentView.value = { kind: "pr-list" })}
           >
             ← Back
           </button>
-          <span class="font-semibold text-sm">PR #{prId}</span>
+          <span class="font-semibold text-sm shrink-0">PR #{prId}</span>
+          {pullRequest && (
+            <div
+              class="hidden md:flex items-center gap-1.5 min-w-0 text-xs text-gray-500 dark:text-gray-400"
+              title={`${sourceBranch} -> ${targetBranch}`}
+            >
+              <span class="font-mono truncate max-w-[20rem]">{sourceBranch}</span>
+              <span class="shrink-0">→</span>
+              <span class="font-mono truncate max-w-[20rem]">{targetBranch}</span>
+            </div>
+          )}
           <button
             class="text-xs px-1.5 py-0.5 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
             title={copied ? "Copied!" : "Copy PR URL"}
@@ -411,9 +454,9 @@ export function PRDetail({ prId }: Props) {
               ))}
             </select>
           )}
-          <span class="text-xs text-gray-400 ml-2">j/k files · v toggle viewed · a approve</span>
+          <span class="text-xs text-gray-400 ml-2 hidden xl:inline">j/k files · v toggle viewed · a approve</span>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 shrink-0">
           <button
             onClick={() =>
               (sidebarMode.value = sidebarMode.value === "hunks" ? null : "hunks")
@@ -440,7 +483,7 @@ export function PRDetail({ prId }: Props) {
               projectId={projectId}
               repoId={repoId}
               prId={prId}
-              prTitle={`PR #${prId}`}
+              prTitle={pullRequest?.title ?? `PR #${prId}`}
             />
           )}
           <ApprovalBar onVote={handleApprove} />
