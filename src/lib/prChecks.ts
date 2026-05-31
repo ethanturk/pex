@@ -72,3 +72,14 @@ export function getPrCheckRollup(checks: PRCheck[]): PRCheckRollup {
     optionalText,
   };
 }
+
+/// Turn a raw PR-checks error into a user-facing message. Azure DevOps' branch
+/// policy evaluations endpoint isn't reachable with a Personal Access Token, so
+/// an auth failure here usually means "sign in with OAuth instead".
+export function describeChecksError(e: unknown): string {
+  const msg = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+  if (/\b401\b|\b403\b|unauthorized|forbidden|TF400813|sign[\s-]?in/i.test(msg)) {
+    return `${msg} — Azure DevOps PR checks (branch-policy evaluations) aren't accessible with a Personal Access Token; sign in with OAuth to see them.`;
+  }
+  return msg;
+}
