@@ -23,62 +23,62 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		04918200EB3907FEFB8E639A /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		04918200EB3907FEFB8E639A /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
 		071586BEE0BFBA06E599A0EE /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
-		0849AE2FAE4410ACDCFA354D /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
-		08FCC1E35026339B3164EA10 /* auto.rs */ = {isa = PBXFileReference; path = auto.rs; sourceTree = "<group>"; };
-		0C6E2DC725A14FCEA6DDE0BF /* standards_cache.rs */ = {isa = PBXFileReference; path = standards_cache.rs; sourceTree = "<group>"; };
+		0849AE2FAE4410ACDCFA354D /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		08FCC1E35026339B3164EA10 /* auto.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = auto.rs; sourceTree = "<group>"; };
+		0C6E2DC725A14FCEA6DDE0BF /* standards_cache.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = standards_cache.rs; sourceTree = "<group>"; };
 		115EDAF21026B2E2D7FE5DD6 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
-		11B5A47478DF2CC4BAB20EFB /* model.rs */ = {isa = PBXFileReference; path = model.rs; sourceTree = "<group>"; };
-		189D798232C288BD0476DF08 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
-		1A99A2DFAC3AD61289D329D6 /* review.rs */ = {isa = PBXFileReference; path = review.rs; sourceTree = "<group>"; };
+		11B5A47478DF2CC4BAB20EFB /* model.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = model.rs; sourceTree = "<group>"; };
+		189D798232C288BD0476DF08 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		1A99A2DFAC3AD61289D329D6 /* review.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = review.rs; sourceTree = "<group>"; };
 		1E21B47E404D7D015795E4ED /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
-		292C654ABCE90063627F5FDC /* engine.rs */ = {isa = PBXFileReference; path = engine.rs; sourceTree = "<group>"; };
-		2A45B90F305BB23888F333B0 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		292C654ABCE90063627F5FDC /* engine.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = engine.rs; sourceTree = "<group>"; };
+		2A45B90F305BB23888F333B0 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
 		2E5A1329523D78A772027741 /* pex_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = pex_iOS.entitlements; sourceTree = "<group>"; };
-		2E84640CF754ACEC36CF6452 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
-		2EBCCDE18059CAB2023ABF23 /* feedback.rs */ = {isa = PBXFileReference; path = feedback.rs; sourceTree = "<group>"; };
+		2E84640CF754ACEC36CF6452 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		2EBCCDE18059CAB2023ABF23 /* feedback.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = feedback.rs; sourceTree = "<group>"; };
 		304B43302C8570CDF7240EE0 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
-		357805D52B33C35975BE4FDE /* ai.rs */ = {isa = PBXFileReference; path = ai.rs; sourceTree = "<group>"; };
+		357805D52B33C35975BE4FDE /* ai.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = ai.rs; sourceTree = "<group>"; };
 		361F8F9C18E918FB315EAD3F /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
-		387FB1A643C4794F216E0397 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
-		394E3A211E907FF9A00801B4 /* state.rs */ = {isa = PBXFileReference; path = state.rs; sourceTree = "<group>"; };
+		387FB1A643C4794F216E0397 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		394E3A211E907FF9A00801B4 /* state.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = state.rs; sourceTree = "<group>"; };
 		3AB084A13259AC7AB61CEF71 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
-		3D483370E9196F2C508B75B4 /* diagnostics.rs */ = {isa = PBXFileReference; path = diagnostics.rs; sourceTree = "<group>"; };
-		4255E58BCFBD065A8D0F071D /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
-		45C72A17D4D9BE4882E5725A /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
-		49479C870FB5A357E151A631 /* files.rs */ = {isa = PBXFileReference; path = files.rs; sourceTree = "<group>"; };
-		4BF6C0AAFF96B2C96293FA1A /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
-		4C4B3FBC320FEC2243F76BD6 /* pr.rs */ = {isa = PBXFileReference; path = pr.rs; sourceTree = "<group>"; };
-		5C3D0C4E665AB32B07BFA351 /* anthropic.rs */ = {isa = PBXFileReference; path = anthropic.rs; sourceTree = "<group>"; };
-		61376845F85F813BB8CB6287 /* oauth.rs */ = {isa = PBXFileReference; path = oauth.rs; sourceTree = "<group>"; };
+		3D483370E9196F2C508B75B4 /* diagnostics.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = diagnostics.rs; sourceTree = "<group>"; };
+		4255E58BCFBD065A8D0F071D /* main.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = main.rs; sourceTree = "<group>"; };
+		45C72A17D4D9BE4882E5725A /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		49479C870FB5A357E151A631 /* files.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = files.rs; sourceTree = "<group>"; };
+		4BF6C0AAFF96B2C96293FA1A /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		4C4B3FBC320FEC2243F76BD6 /* pr.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = pr.rs; sourceTree = "<group>"; };
+		5C3D0C4E665AB32B07BFA351 /* anthropic.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = anthropic.rs; sourceTree = "<group>"; };
+		61376845F85F813BB8CB6287 /* oauth.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = oauth.rs; sourceTree = "<group>"; };
 		61957C68FC2849F695D520A9 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
-		6319C1BA3C59824FDC19BD7C /* keyring_store.rs */ = {isa = PBXFileReference; path = keyring_store.rs; sourceTree = "<group>"; };
-		6E8A8057034A55B8129F8C7C /* pex_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = pex_iOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		70002E00D17D15E79A882678 /* openai.rs */ = {isa = PBXFileReference; path = openai.rs; sourceTree = "<group>"; };
-		706220E06CB447436EEF4688 /* auth.rs */ = {isa = PBXFileReference; path = auth.rs; sourceTree = "<group>"; };
-		751D77B061BE0CEF451B5A26 /* pat.rs */ = {isa = PBXFileReference; path = pat.rs; sourceTree = "<group>"; };
-		7AB641509805C4C83AD7A27F /* github_pat.rs */ = {isa = PBXFileReference; path = github_pat.rs; sourceTree = "<group>"; };
+		6319C1BA3C59824FDC19BD7C /* keyring_store.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = keyring_store.rs; sourceTree = "<group>"; };
+		6E8A8057034A55B8129F8C7C /* Pex.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Pex.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		70002E00D17D15E79A882678 /* openai.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = openai.rs; sourceTree = "<group>"; };
+		706220E06CB447436EEF4688 /* auth.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = auth.rs; sourceTree = "<group>"; };
+		751D77B061BE0CEF451B5A26 /* pat.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = pat.rs; sourceTree = "<group>"; };
+		7AB641509805C4C83AD7A27F /* github_pat.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = github_pat.rs; sourceTree = "<group>"; };
 		7C460C6FA0D4ACA2EFC6FB92 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		934C2C84BD460AE657514CCA /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
-		95A706D28B304CC7DB355D39 /* feedback.rs */ = {isa = PBXFileReference; path = feedback.rs; sourceTree = "<group>"; };
-		A0540D13C0581B916E4A8F9D /* models.rs */ = {isa = PBXFileReference; path = models.rs; sourceTree = "<group>"; };
-		A7B156E773A92F0B18BC8584 /* prompts.rs */ = {isa = PBXFileReference; path = prompts.rs; sourceTree = "<group>"; };
+		95A706D28B304CC7DB355D39 /* feedback.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = feedback.rs; sourceTree = "<group>"; };
+		A0540D13C0581B916E4A8F9D /* models.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = models.rs; sourceTree = "<group>"; };
+		A7B156E773A92F0B18BC8584 /* prompts.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = prompts.rs; sourceTree = "<group>"; };
 		AE4532EFA91A19FFEF397653 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 		AF0AE5B03E6CB6E0A4B51D1E /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		B130ECA6EE1F34121C89D3D8 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
-		BCAF6DA8D04D09F3DE8C8698 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
-		BD508AD9B2A0738139F4F1C7 /* window_state.rs */ = {isa = PBXFileReference; path = window_state.rs; sourceTree = "<group>"; };
-		BE1EAA95AA7561B040FCFAA0 /* comments.rs */ = {isa = PBXFileReference; path = comments.rs; sourceTree = "<group>"; };
-		BF12171C133A17C0A38256FC /* diff_cache.rs */ = {isa = PBXFileReference; path = diff_cache.rs; sourceTree = "<group>"; };
+		BCAF6DA8D04D09F3DE8C8698 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		BD508AD9B2A0738139F4F1C7 /* window_state.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = window_state.rs; sourceTree = "<group>"; };
+		BE1EAA95AA7561B040FCFAA0 /* comments.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = comments.rs; sourceTree = "<group>"; };
+		BF12171C133A17C0A38256FC /* diff_cache.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = diff_cache.rs; sourceTree = "<group>"; };
 		C0E0A89A3B4FC6929A367921 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C489FC27988B3D86898E116A /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
-		C525C0430825D64D2136E694 /* engine.rs */ = {isa = PBXFileReference; path = engine.rs; sourceTree = "<group>"; };
+		C525C0430825D64D2136E694 /* engine.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = engine.rs; sourceTree = "<group>"; };
 		D2F93AF7BFDC4C13829F661F /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
-		EA676BA1FC3BC77D63471553 /* standards.rs */ = {isa = PBXFileReference; path = standards.rs; sourceTree = "<group>"; };
-		F469E83867B51464A5817D2B /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
-		F7C5B5625D9704DF9815E596 /* prompts.rs */ = {isa = PBXFileReference; path = prompts.rs; sourceTree = "<group>"; };
-		FA7ACC8AB7CD7664CAD3E0E3 /* highlight.rs */ = {isa = PBXFileReference; path = highlight.rs; sourceTree = "<group>"; };
+		EA676BA1FC3BC77D63471553 /* standards.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = standards.rs; sourceTree = "<group>"; };
+		F469E83867B51464A5817D2B /* lib.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = lib.rs; sourceTree = "<group>"; };
+		F7C5B5625D9704DF9815E596 /* prompts.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = prompts.rs; sourceTree = "<group>"; };
+		FA7ACC8AB7CD7664CAD3E0E3 /* highlight.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = highlight.rs; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -126,7 +126,7 @@
 		22F45F513EFA9FE2FA0FE383 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				6E8A8057034A55B8129F8C7C /* pex_iOS.app */,
+				6E8A8057034A55B8129F8C7C /* Pex.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -315,13 +315,6 @@
 			path = debug;
 			sourceTree = "<group>";
 		};
-		"TEMP_8620E5F9-1586-4A2E-8D6E-DA74410DA4F1" /* x86_64 */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = x86_64;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -342,7 +335,7 @@
 			packageProductDependencies = (
 			);
 			productName = pex_iOS;
-			productReference = 6E8A8057034A55B8129F8C7C /* pex_iOS.app */;
+			productReference = 6E8A8057034A55B8129F8C7C /* Pex.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -353,8 +346,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = C19FA61F8C1421488A45CB57 /* Build configuration list for PBXProject "pex" */;
 			developmentRegion = en;
@@ -409,7 +400,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "npm run -- tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
+			shellScript = "export PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nnpm run -- tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -485,12 +476,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = (
-					arm64,
-				);
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = pex_iOS/pex_iOS.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = W84XP3H4LJ;
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -498,12 +488,25 @@
 					"\".\"",
 				);
 				INFOPLIST_FILE = pex_iOS/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
+					"$(SDKROOT)/usr/lib/swift",
+					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
+					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
+					"$(SDKROOT)/usr/lib/swift",
+					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
+					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.pex.pr-reviewer;
 				PRODUCT_NAME = "Pex";
 				SDKROOT = iphoneos;
@@ -579,12 +582,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = (
-					arm64,
-				);
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = pex_iOS/pex_iOS.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = W84XP3H4LJ;
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -592,12 +594,25 @@
 					"\".\"",
 				);
 				INFOPLIST_FILE = pex_iOS/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
+					"$(SDKROOT)/usr/lib/swift",
+					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
+					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
+					"$(SDKROOT)/usr/lib/swift",
+					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
+					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.pex.pr-reviewer;
 				PRODUCT_NAME = "Pex";
 				SDKROOT = iphoneos;
