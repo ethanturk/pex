@@ -35,11 +35,14 @@ html[data-diff-size="xl"]     { --diff-font-size: 18px; --diff-line-height: 28px
      which makes the container ignore its children's intrinsic size and
      collapse to 0×0 when no explicit width/height is set, rendering blank. */
   contain: layout style paint;
+  display: inline-block;
+  min-width: 100%;
 }
 .diff-line {
   @apply font-mono whitespace-pre;
   font-size: var(--diff-font-size);
   line-height: var(--diff-line-height);
+  min-width: 100%;
   content-visibility: auto;
   contain-intrinsic-size: 0 20px; /* estimate ~20px per line */
 }
@@ -117,6 +120,7 @@ html[data-diff-size="xl"]     { --diff-font-size: 18px; --diff-line-height: 28px
 .diff-split .diff-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  min-width: 100%;
 }
 .diff-split .diff-cell {
   @apply whitespace-pre overflow-x-hidden border-r border-gray-200 dark:border-gray-800;

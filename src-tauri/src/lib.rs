@@ -11,6 +11,7 @@ pub mod window_state;
 
 use thiserror::Error;
 
+#[cfg(not(any(target_os = "linux", mobile)))]
 use tauri::Manager;
 
 #[derive(Error, Debug)]
@@ -52,6 +53,8 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let db = cache::init_db().expect("Failed to initialize database");
 
     tauri::Builder::default()
@@ -59,9 +62,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            let window = app.get_webview_window("main").expect("no main window");
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", mobile)))]
             {
+                let window = app.get_webview_window("main").expect("no main window");
                 let win = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { .. } = event {
@@ -70,8 +73,8 @@ pub fn run() {
                 });
                 window_state::restore(&window);
             }
-            #[cfg(target_os = "linux")]
-            let _ = &window;
+            #[cfg(any(target_os = "linux", mobile))]
+            let _ = app;
             Ok(())
         })
         .manage(AppState {

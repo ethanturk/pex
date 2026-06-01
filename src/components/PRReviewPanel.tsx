@@ -544,9 +544,9 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
         class="flex-1 overflow-y-auto p-4 text-sm min-h-0"
       >
         {!run ? (
-          <div class="text-gray-400">
-            No review yet for this PR.
-            <div class="mt-3 flex items-center gap-3 flex-wrap">
+          <div class="min-h-full flex flex-col items-center justify-center text-center text-gray-400">
+            <div>No review yet for this PR.</div>
+            <div class="mt-3 flex items-center justify-center gap-3 flex-wrap">
               <button
                 onClick={restart}
                 disabled={busyElsewhere}

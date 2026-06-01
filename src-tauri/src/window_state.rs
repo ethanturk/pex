@@ -1,7 +1,7 @@
 /// Window state persistence — macOS and Windows only.
 /// GTK on Linux has a Send-bound incompatibility with Tauri's window state API;
 /// the window is not `Send` so it can't be used across async boundaries.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", mobile)))]
 mod imp {
     use serde::{Deserialize, Serialize};
     use std::fs;
@@ -81,7 +81,7 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", mobile))]
 mod imp {
     use tauri::{Runtime, WebviewWindow};
 

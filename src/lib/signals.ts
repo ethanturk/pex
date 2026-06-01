@@ -290,6 +290,13 @@ export const activeReviewPrId = signal<number | null>(null);
 export type SidebarMode = "hunks" | null;
 export const sidebarMode = signal<SidebarMode>(null);
 
+// Bumped when the main Explain button should explain every hunk in the current
+// file. HunkReview consumes the latest value after it opens and loads hunks.
+export const explainAllHunksRequest = signal<{ id: number; filePath: string | null }>({
+  id: 0,
+  filePath: null,
+});
+
 export function updateReviewRun(prId: number, patch: Partial<PRReviewRun> | ((prev: PRReviewRun | undefined) => PRReviewRun)) {
   const next = new Map(reviewRuns.value);
   const prev = next.get(prId);

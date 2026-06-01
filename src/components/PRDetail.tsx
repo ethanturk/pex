@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { useResizableWidth } from "@/lib/useResizableWidth";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick, showPrChecks, openTabs, previewPath, activeTab, PR_REVIEW_TAB, resetTabs } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, explainAllHunksRequest, threadsRefreshTick, showPrChecks, openTabs, previewPath, activeTab, PR_REVIEW_TAB, resetTabs } from "@/lib/signals";
 import {
   getPrChecks,
   getPullRequest,
@@ -123,8 +123,9 @@ export function PRDetail({ prId }: Props) {
     max: 600,
     side: "right",
   });
-  /** On mobile, file tree is a toggleable overlay. On desktop/iPad, it's a permanent sidebar. */
+  /** On mobile, file tree is a toggleable overlay. On desktop/iPad, it can be collapsed. */
   const [showFileTree, setShowFileTree] = useState(false);
+  const [fileTreeCollapsed, setFileTreeCollapsed] = useState(false);
 
   const projectId = selectedProject.value;
   const repoId = selectedRepo.value;
@@ -424,6 +425,15 @@ export function PRDetail({ prId }: Props) {
     }
   };
 
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const vote = (e as CustomEvent<{ vote: number }>).detail?.vote;
+      if (typeof vote === "number") handleApprove(vote);
+    };
+    window.addEventListener("pex:review-vote", handler);
+    return () => window.removeEventListener("pex:review-vote", handler);
+  }, [projectId, repoId, prId]);
+
   const handlePostComment = async (
     filePath: string,
     lineStart: number,
@@ -535,7 +545,7 @@ export function PRDetail({ prId }: Props) {
           <span class="text-xs text-gray-400 ml-2 hidden xl:inline">j/k files · v toggle viewed · a approve</span>
         </div>
         <div class="flex items-center gap-2 shrink-0">
-          {/* Files button — visible on mobile to toggle file tree sheet */}
+          {/* Files button — mobile opens a sheet; larger screens collapse the sidebar. */}
           <button
             class="sm:hidden text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
             onClick={() => setShowFileTree((v) => !v)}
@@ -543,27 +553,41 @@ export function PRDetail({ prId }: Props) {
             {showFileTree ? "Hide files" : `Files (${prFiles.value.length})`}
           </button>
           <button
-            onClick={() =>
-              (sidebarMode.value = sidebarMode.value === "hunks" ? null : "hunks")
-            }
+            class="hidden sm:inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
+            onClick={() => setFileTreeCollapsed((v) => !v)}
+            aria-pressed={!fileTreeCollapsed}
+            title={fileTreeCollapsed ? "Show file tree" : "Hide file tree"}
+          >
+            <span aria-hidden="true">{fileTreeCollapsed ? "☰" : "◀"}</span>
+            <span>{fileTreeCollapsed ? `Files (${prFiles.value.length})` : "Hide files"}</span>
+          </button>
+          <button
+            onClick={() => {
+              sidebarMode.value = "hunks";
+              explainAllHunksRequest.value = {
+                id: explainAllHunksRequest.value.id + 1,
+                filePath: diffPath,
+              };
+            }}
             disabled={!diffHtml}
             aria-pressed={sidebarMode.value === "hunks"}
             title={
               !diffHtml
                 ? "Select a file to explain its changes"
-                : sidebarMode.value === "hunks"
-                  ? "Close explain sidebar"
-                  : "Explain the changes in this file hunk by hunk"
+                : "Explain all hunks in this file"
             }
-            class={`text-xs px-3 py-1 rounded border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+            class={`inline-flex items-center justify-center text-xs px-2 sm:px-3 py-1 rounded border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
               sidebarMode.value === "hunks"
                 ? "border-accent text-accent bg-accent/10"
                 : "border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
             }`}
           >
-            ✨ Explain
+            <span class="sm:hidden" aria-hidden="true">✨</span>
+            <span class="hidden sm:inline">✨ Explain</span>
           </button>
-          <ApprovalBar onVote={handleApprove} />
+          <div class="hidden sm:block">
+            <ApprovalBar onVote={handleApprove} />
+          </div>
         </div>
       </div>
       {voteError && (
@@ -581,23 +605,25 @@ export function PRDetail({ prId }: Props) {
 
       {/* Body: File Tree + Diff */}
       <div class="flex flex-1 overflow-hidden relative">
-        {/* Desktop/iPad: permanent resizable sidebar */}
-        <aside
-          class="hidden sm:block border-r border-gray-200 dark:border-gray-800 shrink-0 relative"
-          style={{ width: `${fileTreeResize.width}px` }}
-        >
-          <div class="h-full overflow-y-auto">
-            <FileTree files={prFiles.value} onToggleViewed={handleToggleViewed} />
-          </div>
-          <div
-            onMouseDown={fileTreeResize.onMouseDown}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize file tree"
-            title="Drag to resize"
-            class="absolute top-0 right-0 bottom-0 w-1.5 -mr-0.5 cursor-col-resize hover:bg-accent/40 active:bg-accent/70 z-10"
-          />
-        </aside>
+        {/* Desktop/iPad: collapsible, resizable sidebar */}
+        {!fileTreeCollapsed && (
+          <aside
+            class="hidden sm:block border-r border-gray-200 dark:border-gray-800 shrink-0 relative"
+            style={{ width: `${fileTreeResize.width}px` }}
+          >
+            <div class="h-full overflow-y-auto">
+              <FileTree files={prFiles.value} onToggleViewed={handleToggleViewed} />
+            </div>
+            <div
+              onMouseDown={fileTreeResize.onMouseDown}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize file tree"
+              title="Drag to resize"
+              class="absolute top-0 right-0 bottom-0 w-1.5 -mr-0.5 cursor-col-resize hover:bg-accent/40 active:bg-accent/70 z-10"
+            />
+          </aside>
+        )}
 
         {/* Mobile: file tree overlay sheet */}
         {showFileTree && (
@@ -612,11 +638,11 @@ export function PRDetail({ prId }: Props) {
               </button>
             </div>
             <div class="flex-1 overflow-y-auto scroll-ios">
-              <FileTree files={prFiles.value} onToggleViewed={(path, viewed) => {
-                handleToggleViewed(path, viewed);
-                // Auto-close sheet on file select for quicker navigation
-                setShowFileTree(false);
-              }} />
+              <FileTree
+                files={prFiles.value}
+                onToggleViewed={handleToggleViewed}
+                onSelect={() => setShowFileTree(false)}
+              />
             </div>
           </div>
         )}
@@ -675,6 +701,7 @@ export function PRDetail({ prId }: Props) {
             filePath={diffPath}
             oldContent={oldContent}
             newContent={newContent}
+            explainAllRequest={explainAllHunksRequest.value}
             onClose={() => (sidebarMode.value = null)}
           />
         )}

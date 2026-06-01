@@ -7,6 +7,7 @@ import { PRDetail } from "@/components/PRDetail";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { AiSettings } from "@/components/AiSettings";
 import { DiffViewToggle } from "@/components/DiffViewToggle";
+import { MobileReviewActions } from "@/components/ApprovalBar";
 import { useEffectOnce } from "@/lib/hooks";
 import { getSavedOrgs, activateOrg } from "@/lib/api";
 import { activeOrg, savedOrgs } from "@/lib/signals";
@@ -137,6 +138,7 @@ function MobileShell({ tab, onTab }: { tab: MobileTab; onTab: (t: MobileTab) => 
             </>
           )}
           <ThemeToggle />
+          {tab === "prs" && currentView.value.kind === "pr-detail" && <MobileReviewActions />}
         </div>
       </header>
 

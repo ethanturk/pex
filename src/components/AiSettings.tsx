@@ -396,27 +396,28 @@ export function AiSettings({ open, onClose, standalone }: Props) {
   // On desktop: render as a centered modal with backdrop (see final return).
   const card = (
     <div
-      class={`bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-full max-w-2xl flex flex-col overflow-hidden ${
-        standalone ? "h-full" : "mx-4 h-[85vh] max-h-[720px]"
+      class={`bg-white dark:bg-gray-900 w-full flex flex-col overflow-hidden ${
+        standalone
+          ? "h-full max-w-none rounded-none shadow-none border-0"
+          : "max-w-2xl mx-4 h-[85vh] max-h-[720px] rounded-xl shadow-xl border border-gray-200 dark:border-gray-700"
       }`}
     >
-      {/* Header */}
-      <div class="shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-        <h2 class="text-base font-semibold">Settings</h2>
-        {!standalone && (
+      {!standalone && (
+        <div class="shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+          <h2 class="text-base font-semibold">Settings</h2>
           <button
             class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none"
             onClick={onClose}
           >
             ×
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
         {/* Tabs */}
-        <div class="shrink-0 flex border-b border-gray-200 dark:border-gray-700 px-5">
+        <div class="shrink-0 flex overflow-x-auto border-b border-gray-200 dark:border-gray-700 px-5">
           <TabButton label="General" active={tab === "general"} onClick={() => setTab("general")} />
-          <TabButton label="AI Defaults" active={tab === "ai-defaults"} onClick={() => setTab("ai-defaults")} />
+          <TabButton label="AI" active={tab === "ai-defaults"} onClick={() => setTab("ai-defaults")} />
           <TabButton label="Review" active={tab === "review"} onClick={() => setTab("review")} />
           <TabButton label="Prompts" active={tab === "prompts"} onClick={() => setTab("prompts")} />
           <TabButton label="Calibration" active={tab === "calibration"} onClick={() => setTab("calibration")} />
@@ -1057,7 +1058,7 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      class={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+      class={`px-3 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
         active
           ? "border-accent text-accent"
           : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
