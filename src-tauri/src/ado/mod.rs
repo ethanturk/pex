@@ -125,6 +125,33 @@ impl AdoClient {
         serde_json::from_str(&text).map_err(|e| AppError::Provider(format!("Parse error: {}", e)))
     }
 
+    async fn patch<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<T, AppError> {
+        let url = format!("{}/{}", self.org_url, path);
+        let resp = self
+            .http
+            .patch(&url)
+            .headers(self.auth_headers())
+            .json(body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Provider(e.to_string()))?;
+
+        if !status.is_success() {
+            return Err(AppError::Provider(format!("ADO API {}: {}", status, text)));
+        }
+
+        serde_json::from_str(&text).map_err(|e| AppError::Provider(format!("Parse error: {}", e)))
+    }
+
     // ---- Projects & Repos ----
 
     pub async fn list_projects(&self) -> Result<Vec<ProjectSummary>, AppError> {
@@ -739,6 +766,29 @@ impl AdoClient {
         .await
     }
 
+    pub async fn update_comment(
+        &self,
+        project: &str,
+        repo_id: &str,
+        pr_id: i64,
+        thread_id: i64,
+        comment_id: i64,
+        content: &str,
+    ) -> Result<serde_json::Value, AppError> {
+        let body = serde_json::json!({
+            "content": content,
+            "commentType": 1
+        });
+        self.patch(
+            &format!(
+                "{}/_apis/git/repositories/{}/pullRequests/{}/threads/{}/comments/{}?api-version={}",
+                project, repo_id, pr_id, thread_id, comment_id, self.api_version
+            ),
+            &body,
+        )
+        .await
+    }
+
     // ---- Reviewer Status ----
 
     pub async fn get_authenticated_user_id(&self) -> Result<String, AppError> {
@@ -983,4 +1033,3 @@ fn first_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
         })
     })
 }
-

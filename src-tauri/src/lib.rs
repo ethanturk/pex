@@ -109,6 +109,7 @@ pub fn run() {
             commands::comments::post_comment,
             commands::comments::post_review_finding,
             commands::comments::post_reply,
+            commands::comments::update_comment,
             commands::comments::update_reviewer_status,
             commands::ai::get_ai_settings,
             commands::ai::save_ai_defaults,

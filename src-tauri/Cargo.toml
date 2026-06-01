@@ -1,12 +1,15 @@
 [package]
 name = "pex"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 description = "Azure DevOps PR Reviewer"
 
 [lib]
 name = "pex_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

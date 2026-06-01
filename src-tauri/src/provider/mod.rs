@@ -229,6 +229,28 @@ impl GitClient {
         }
     }
 
+    pub async fn update_comment(
+        &self,
+        project: &str,
+        repo_id: &str,
+        pr_id: i64,
+        thread_id: i64,
+        comment_id: i64,
+        content: &str,
+        is_pr_level: bool,
+    ) -> Result<serde_json::Value, AppError> {
+        match self {
+            GitClient::Ado(c) => {
+                c.update_comment(project, repo_id, pr_id, thread_id, comment_id, content)
+                    .await
+            }
+            GitClient::Github(c) => {
+                c.update_comment(project, repo_id, pr_id, comment_id, content, is_pr_level)
+                    .await
+            }
+        }
+    }
+
     pub async fn update_reviewer_status(
         &self,
         project: &str,

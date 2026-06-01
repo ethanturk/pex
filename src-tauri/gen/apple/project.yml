@@ -30,7 +30,6 @@ targets:
     sources:
       - path: Sources
       - path: Assets.xcassets
-      - path: Externals
       - path: pex_iOS
       - path: assets
         buildPhase: resources
@@ -53,6 +52,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.5.2
         CFBundleVersion: "0.5.2"
+        ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: pex_iOS/pex_iOS.entitlements
       properties:
@@ -83,7 +83,8 @@ targets:
       - sdk: UIKit.framework
       - sdk: WebKit.framework
     preBuildScripts:
-      - script: npm run -- tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+      - script: |
+          ./scripts/build-rust-code.sh
         name: Build Rust Code
         basedOnDependencyAnalysis: false
         outputFiles:

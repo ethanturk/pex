@@ -139,6 +139,25 @@ impl GithubClient {
         serde_json::from_str(&text).map_err(|e| AppError::Provider(format!("Parse error: {}", e)))
     }
 
+    async fn patch_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<T, AppError> {
+        let url = self.url(path);
+        let resp = self.send(Method::PATCH, &url, JSON_ACCEPT, Some(body)).await?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(|e| AppError::Provider(e.to_string()))?;
+        if !status.is_success() {
+            return Err(AppError::Provider(format!(
+                "GitHub API {}: {}",
+                status,
+                truncate(&text)
+            )));
+        }
+        serde_json::from_str(&text).map_err(|e| AppError::Provider(format!("Parse error: {}", e)))
+    }
+
     /// GET every page of a paginated list endpoint, following `Link: rel="next"`.
     /// `path` must begin with `/` and include any query string (e.g. per_page).
     async fn get_paginated(&self, path: &str) -> Result<Vec<serde_json::Value>, AppError> {
@@ -639,8 +658,34 @@ impl GithubClient {
         Ok(serde_json::json!({
             "id": resp.get("id").cloned().unwrap_or(serde_json::Value::Null),
             "author": { "displayName": resp.pointer("/user/login").and_then(|v| v.as_str()).unwrap_or("") },
+            "authorId": resp.pointer("/user/login").and_then(|v| v.as_str()).unwrap_or(""),
             "content": resp.get("body").and_then(|v| v.as_str()).unwrap_or(""),
             "publishedDate": resp.get("created_at").and_then(|v| v.as_str()).unwrap_or(""),
+        }))
+    }
+
+    pub async fn update_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        _number: i64,
+        comment_id: i64,
+        content: &str,
+        is_pr_level: bool,
+    ) -> Result<serde_json::Value, AppError> {
+        let body = serde_json::json!({ "body": content });
+        let path = if is_pr_level {
+            format!("/repos/{}/{}/issues/comments/{}", owner, repo, comment_id)
+        } else {
+            format!("/repos/{}/{}/pulls/comments/{}", owner, repo, comment_id)
+        };
+        let resp: serde_json::Value = self.patch_json(&path, &body).await?;
+        Ok(serde_json::json!({
+            "id": resp.get("id").cloned().unwrap_or(serde_json::Value::Null),
+            "author": { "displayName": resp.pointer("/user/login").and_then(|v| v.as_str()).unwrap_or("") },
+            "authorId": resp.pointer("/user/login").and_then(|v| v.as_str()).unwrap_or(""),
+            "content": resp.get("body").and_then(|v| v.as_str()).unwrap_or(""),
+            "publishedDate": resp.get("updated_at").and_then(|v| v.as_str()).unwrap_or(""),
         }))
     }
 
