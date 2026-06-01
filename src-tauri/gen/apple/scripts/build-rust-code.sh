@@ -22,6 +22,12 @@ REPO_ROOT="$(cd "${SRCROOT:?}/../../.." && pwd)"
 TAURI_DIR="$REPO_ROOT/src-tauri"
 mkdir -p "${SRCROOT:?}/assets"
 
+if [ -n "${CI_BUILD_NUMBER:-}" ]; then
+  echo "==> Xcode Cloud: setting CFBundleVersion to ${CI_BUILD_NUMBER}"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${CI_BUILD_NUMBER}" \
+    "${SRCROOT:?}/pex_iOS/Info.plist"
+fi
+
 case "${PLATFORM_DISPLAY_NAME:?}:${ARCHS:?}" in
   "iOS:"*"arm64"*)
     RUST_TARGET="aarch64-apple-ios"
