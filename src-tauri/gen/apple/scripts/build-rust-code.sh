@@ -20,6 +20,7 @@ echo "==> Xcode Cloud: building Rust static library directly"
 
 REPO_ROOT="$(cd "${SRCROOT:?}/../../.." && pwd)"
 TAURI_DIR="$REPO_ROOT/src-tauri"
+mkdir -p "${SRCROOT:?}/assets"
 
 case "${PLATFORM_DISPLAY_NAME:?}:${ARCHS:?}" in
   "iOS:"*"arm64"*)
