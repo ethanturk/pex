@@ -52,6 +52,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.5.2
         CFBundleVersion: "0.5.2"
+        ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: pex_iOS/pex_iOS.entitlements
       properties:
