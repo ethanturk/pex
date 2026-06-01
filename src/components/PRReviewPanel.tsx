@@ -219,6 +219,57 @@ type SubTab = "summary" | "findings";
 const reviewSubTab = signal<SubTab>("summary");
 let savedFindingsScrollTop = 0;
 
+interface FindingUiState {
+  outputKey: string;
+  selected: Set<number>;
+  posted: Set<number>;
+  dismissed: Set<number>;
+}
+
+const findingUiByPr = new Map<number, FindingUiState>();
+
+function cloneFindingUiState(state: FindingUiState): FindingUiState {
+  return {
+    outputKey: state.outputKey,
+    selected: new Set(state.selected),
+    posted: new Set(state.posted),
+    dismissed: new Set(state.dismissed),
+  };
+}
+
+function findingsOutputKey(findings: Finding[]): string {
+  return JSON.stringify(
+    findings.map((f) => [
+      f.filePath,
+      f.severity,
+      f.confidence,
+      f.tier,
+      f.lineStart,
+      f.lineEnd,
+      f.comment,
+    ]),
+  );
+}
+
+function defaultFindingUiState(outputKey: string, findings: Finding[]): FindingUiState {
+  const selected = new Set<number>();
+  findings.forEach((f, i) => {
+    if (tierIsActionable(f.tier)) selected.add(i);
+  });
+  return {
+    outputKey,
+    selected,
+    posted: new Set(),
+    dismissed: new Set(),
+  };
+}
+
+function initialFindingUiState(prId: number, outputKey: string, findings: Finding[]): FindingUiState {
+  const saved = findingUiByPr.get(prId);
+  if (saved?.outputKey === outputKey) return cloneFindingUiState(saved);
+  return defaultFindingUiState(outputKey, findings);
+}
+
 export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
   const run: PRReviewRun | undefined = reviewRuns.value.get(prId);
 
@@ -298,48 +349,63 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
   const beginReview = (selectedMode: ReviewMode, enabledSpecialists?: string[]) => {
     setConfirmOpen(false);
     setSavedReview(null);
+    findingUiByPr.delete(prId);
     // Remember the chosen mode as the new default for next time.
     setMode(selectedMode);
     saveReviewMode(selectedMode);
     startBackgroundReview(projectId, repoId, prId, prTitle, false, selectedMode, enabledSpecialists);
   };
 
-  // Selection + posted state lives here so the footer's "Post N to ADO"
-  // button can drive a per-finding post loop over the user's selection.
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [posted, setPosted] = useState<Set<number>>(new Set());
-  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
+  const findings = run?.output?.findings ?? [];
+  const outputKey = run?.output ? findingsOutputKey(findings) : "";
+
+  // Selection + posted state is cached outside the component because this panel
+  // unmounts when the user jumps from PR Review to a file diff and back.
+  const [findingUi, setFindingUi] = useState<FindingUiState>(() =>
+    initialFindingUiState(prId, outputKey, findings),
+  );
   const [bulkPosting, setBulkPosting] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
 
-  const findings = run?.output?.findings ?? [];
+  const selected = findingUi.selected;
+  const posted = findingUi.posted;
+  const dismissed = findingUi.dismissed;
 
-  // When a run's output is (re)set, pre-select the actionable findings
-  // (blocking + should-fix) so the default "Post" action pulls them forward;
-  // nits and FYIs start unselected and pushed back.
+  // When a genuinely new output arrives, pre-select actionable findings. When
+  // the same output remounts, restore the user's checkbox changes from cache.
   useEffect(() => {
-    const fs = run?.output?.findings ?? [];
-    const preselect = new Set<number>();
-    fs.forEach((f, i) => {
-      if (tierIsActionable(f.tier)) preselect.add(i);
+    setFindingUi((prev) => {
+      if (prev.outputKey === outputKey) return prev;
+      const next = initialFindingUiState(prId, outputKey, findings);
+      if (outputKey) findingUiByPr.set(prId, cloneFindingUiState(next));
+      return next;
     });
-    setSelected(preselect);
-    setPosted(new Set());
-    setDismissed(new Set());
     setBulkError(null);
-  }, [run?.output]);
+  }, [prId, outputKey]);
+
+  const updateFindingUi = (update: (prev: FindingUiState) => FindingUiState) => {
+    setFindingUi((prev) => {
+      const base =
+        prev.outputKey === outputKey
+          ? prev
+          : initialFindingUiState(prId, outputKey, findings);
+      const next = update(base);
+      if (next.outputKey) findingUiByPr.set(prId, cloneFindingUiState(next));
+      return next;
+    });
+  };
 
   // Record a dismissal so this finding is suppressed on the next review run,
   // and drop it from the posting selection.
   const dismissFinding = async (i: number) => {
     const f = findings[i];
     if (!f) return;
-    setDismissed((prev) => new Set(prev).add(i));
-    setSelected((prev) => {
-      if (!prev.has(i)) return prev;
-      const next = new Set(prev);
-      next.delete(i);
-      return next;
+    updateFindingUi((prev) => {
+      const dismissed = new Set(prev.dismissed);
+      dismissed.add(i);
+      const selected = new Set(prev.selected);
+      selected.delete(i);
+      return { ...prev, dismissed, selected };
     });
     try {
       await recordFindingVerdict(projectId, repoId, prId, "dismissed", f);
@@ -350,11 +416,11 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
   };
 
   const toggleSelected = (i: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(i)) next.delete(i);
-      else next.add(i);
-      return next;
+    updateFindingUi((prev) => {
+      const selected = new Set(prev.selected);
+      if (selected.has(i)) selected.delete(i);
+      else selected.add(i);
+      return { ...prev, selected };
     });
   };
 
@@ -367,29 +433,25 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
     selectableIndices.length > 0 && selectableIndices.every((i) => selected.has(i));
 
   const toggleSelectAll = () => {
-    setSelected((prev) => {
-      const next = new Set(prev);
+    updateFindingUi((prev) => {
+      const selected = new Set(prev.selected);
       if (allSelected) {
-        selectableIndices.forEach((i) => next.delete(i));
+        selectableIndices.forEach((i) => selected.delete(i));
       } else {
-        selectableIndices.forEach((i) => next.add(i));
+        selectableIndices.forEach((i) => selected.add(i));
       }
-      return next;
+      return { ...prev, selected };
     });
   };
 
   const markPosted = (i: number) => {
-    setPosted((prev) => {
-      if (prev.has(i)) return prev;
-      const next = new Set(prev);
-      next.add(i);
-      return next;
-    });
-    setSelected((prev) => {
-      if (!prev.has(i)) return prev;
-      const next = new Set(prev);
-      next.delete(i);
-      return next;
+    updateFindingUi((prev) => {
+      if (prev.posted.has(i) && !prev.selected.has(i)) return prev;
+      const posted = new Set(prev.posted);
+      posted.add(i);
+      const selected = new Set(prev.selected);
+      selected.delete(i);
+      return { ...prev, posted, selected };
     });
   };
 
