@@ -14,7 +14,6 @@
 		564DBC13B8A217D1E3C17EF8 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 115EDAF21026B2E2D7FE5DD6 /* Security.framework */; };
 		61DA356F236A4B57AA0239CD /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1E21B47E404D7D015795E4ED /* MetalKit.framework */; };
 		7BDB943540CB1BE4FB3D900D /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 934C2C84BD460AE657514CCA /* WebKit.framework */; };
-		9DD7EC4154F935DEC11C72E4 /* libapp.a in Resources */ = {isa = PBXBuildFile; fileRef = C489FC27988B3D86898E116A /* libapp.a */; };
 		C76311FD2880A6E86F17025E /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = B130ECA6EE1F34121C89D3D8 /* main.mm */; };
 		CC776AAE9DC52B66A9C7BF48 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 361F8F9C18E918FB315EAD3F /* LaunchScreen.storyboard */; };
 		E75A76FF8312CDB76AAB601F /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2F93AF7BFDC4C13829F661F /* QuartzCore.framework */; };
@@ -72,7 +71,6 @@
 		BE1EAA95AA7561B040FCFAA0 /* comments.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = comments.rs; sourceTree = "<group>"; };
 		BF12171C133A17C0A38256FC /* diff_cache.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = diff_cache.rs; sourceTree = "<group>"; };
 		C0E0A89A3B4FC6929A367921 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		C489FC27988B3D86898E116A /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		C525C0430825D64D2136E694 /* engine.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = engine.rs; sourceTree = "<group>"; };
 		D2F93AF7BFDC4C13829F661F /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		EA676BA1FC3BC77D63471553 /* standards.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = standards.rs; sourceTree = "<group>"; };
@@ -139,21 +137,12 @@
 			path = ado;
 			sourceTree = "<group>";
 		};
-		340B3306DDFF413DAFDAC4A1 /* Externals */ = {
-			isa = PBXGroup;
-			children = (
-				88900EB194EFF26AD004306A /* arm64 */,
-			);
-			path = Externals;
-			sourceTree = "<group>";
-		};
 		39C880D591BD9A08E3932CA9 = {
 			isa = PBXGroup;
 			children = (
 				AF0AE5B03E6CB6E0A4B51D1E /* assets */,
 				7C460C6FA0D4ACA2EFC6FB92 /* Assets.xcassets */,
 				361F8F9C18E918FB315EAD3F /* LaunchScreen.storyboard */,
-				340B3306DDFF413DAFDAC4A1 /* Externals */,
 				7A925D44D1E08031B7616428 /* pex_iOS */,
 				02BA0C64F3DA6399AF0F9D6D /* Sources */,
 				50066D158B46F3928C5EE6D0 /* src */,
@@ -211,14 +200,6 @@
 				751D77B061BE0CEF451B5A26 /* pat.rs */,
 			);
 			path = auth;
-			sourceTree = "<group>";
-		};
-		88900EB194EFF26AD004306A /* arm64 */ = {
-			isa = PBXGroup;
-			children = (
-				FFFB1EBECA8CDC175F687F64 /* debug */,
-			);
-			path = arm64;
 			sourceTree = "<group>";
 		};
 		AB6C9FAEFB9659D89A46A8F3 /* commands */ = {
@@ -307,14 +288,6 @@
 			path = provider;
 			sourceTree = "<group>";
 		};
-		FFFB1EBECA8CDC175F687F64 /* debug */ = {
-			isa = PBXGroup;
-			children = (
-				C489FC27988B3D86898E116A /* libapp.a */,
-			);
-			path = debug;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -374,7 +347,6 @@
 				0E613CB3FA00A8044C03AA69 /* Assets.xcassets in Resources */,
 				CC776AAE9DC52B66A9C7BF48 /* LaunchScreen.storyboard in Resources */,
 				17DB33FD58056FA61D14CE06 /* assets in Resources */,
-				9DD7EC4154F935DEC11C72E4 /* libapp.a in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -400,7 +372,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nnpm run -- tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
+			shellScript = "./scripts/build-rust-code.sh";
 		};
 /* End PBXShellScriptBuildPhase section */
 
