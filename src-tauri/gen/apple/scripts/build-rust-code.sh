@@ -18,6 +18,25 @@ fi
 
 echo "==> Xcode Cloud: building Rust static library directly"
 
+retry() {
+  attempts=1
+  max_attempts=5
+  delay_seconds=10
+
+  until "$@"; do
+    status=$?
+    if [ "$attempts" -ge "$max_attempts" ]; then
+      echo "Command failed after $attempts attempts: $*" >&2
+      return "$status"
+    fi
+
+    echo "Command failed, retrying in ${delay_seconds}s: $*" >&2
+    sleep "$delay_seconds"
+    attempts=$((attempts + 1))
+    delay_seconds=$((delay_seconds * 2))
+  done
+}
+
 REPO_ROOT="$(cd "${SRCROOT:?}/../../.." && pwd)"
 TAURI_DIR="$REPO_ROOT/src-tauri"
 mkdir -p "${SRCROOT:?}/assets"
@@ -60,8 +79,12 @@ cd "$REPO_ROOT"
 npm run build
 
 cd "$TAURI_DIR"
-rustup target add "$RUST_TARGET"
-cargo build --lib --target "$RUST_TARGET" $CARGO_FEATURE_FLAG $CARGO_PROFILE_FLAG
+export CARGO_NET_RETRY="${CARGO_NET_RETRY:-10}"
+export CARGO_HTTP_TIMEOUT="${CARGO_HTTP_TIMEOUT:-120}"
+
+retry rustup target add "$RUST_TARGET"
+retry cargo fetch --locked --target "$RUST_TARGET"
+retry cargo build --locked --lib --target "$RUST_TARGET" $CARGO_FEATURE_FLAG $CARGO_PROFILE_FLAG
 
 LIB_SOURCE="$TAURI_DIR/target/$RUST_TARGET/$CARGO_PROFILE_DIR/libpex_lib.a"
 LIB_DEST_DIR="${SRCROOT:?}/Externals/$EXTERNALS_ARCH/${CONFIGURATION:?}"
