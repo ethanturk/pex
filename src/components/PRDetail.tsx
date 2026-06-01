@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { useResizableWidth } from "@/lib/useResizableWidth";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, threadsRefreshTick, showPrChecks, openTabs, previewPath, activeTab, PR_REVIEW_TAB, resetTabs } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, explainAllHunksRequest, threadsRefreshTick, showPrChecks, openTabs, previewPath, activeTab, PR_REVIEW_TAB, resetTabs } from "@/lib/signals";
 import {
   getPrChecks,
   getPullRequest,
@@ -123,6 +123,9 @@ export function PRDetail({ prId }: Props) {
     max: 600,
     side: "right",
   });
+  /** On mobile, file tree is a toggleable overlay. On desktop/iPad, it can be collapsed. */
+  const [showFileTree, setShowFileTree] = useState(false);
+  const [fileTreeCollapsed, setFileTreeCollapsed] = useState(false);
 
   const projectId = selectedProject.value;
   const repoId = selectedRepo.value;
@@ -233,7 +236,7 @@ export function PRDetail({ prId }: Props) {
             }
           }
         })
-        .catch(() => {}); // Silently fall back to 1
+        .catch(() => {});
     }
   }, [projectId, repoId, prId]);
 
@@ -422,6 +425,15 @@ export function PRDetail({ prId }: Props) {
     }
   };
 
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const vote = (e as CustomEvent<{ vote: number }>).detail?.vote;
+      if (typeof vote === "number") handleApprove(vote);
+    };
+    window.addEventListener("pex:review-vote", handler);
+    return () => window.removeEventListener("pex:review-vote", handler);
+  }, [projectId, repoId, prId]);
+
   const handlePostComment = async (
     filePath: string,
     lineStart: number,
@@ -477,16 +489,19 @@ export function PRDetail({ prId }: Props) {
     return () => window.removeEventListener("keydown", handler);
   }, [prId, projectId, repoId]);
 
+  const goBack = () => (currentView.value = { kind: "pr-list" });
+
   return (
     <div class="flex flex-col h-full">
       {/* PR Header */}
-      <div class="flex items-center justify-between gap-3 px-4 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0">
-        <div class="flex items-center gap-3 min-w-0">
+      <div class="flex items-center justify-between px-3 sm:px-4 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0 gap-2">
+        <div class="flex items-center gap-2 sm:gap-3 min-w-0">
           <button
-            class="text-sm text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-            onClick={() => (currentView.value = { kind: "pr-list" })}
+            class="text-sm text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 shrink-0 sm:mr-0 touch-target"
+            onClick={goBack}
+            aria-label="Back to PR list"
           >
-            ← Back
+            ← <span class="hidden sm:inline">Back</span>
           </button>
           <span class="font-semibold text-sm shrink-0">PR #{prId}</span>
           {pullRequest && (
@@ -520,38 +535,59 @@ export function PRDetail({ prId }: Props) {
             <select
               value={currentIteration.value}
               onChange={(e) => (currentIteration.value = Number(e.currentTarget.value))}
-              class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+              class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 shrink-0"
             >
               {Array.from({ length: iterationCount }, (_, i) => i + 1).map((n) => (
-                <option key={n} value={n}>Iteration {n}</option>
+                <option key={n} value={n}>Iter {n}</option>
               ))}
             </select>
           )}
           <span class="text-xs text-gray-400 ml-2 hidden xl:inline">j/k files · v toggle viewed · a approve</span>
         </div>
         <div class="flex items-center gap-2 shrink-0">
+          {/* Files button — mobile opens a sheet; larger screens collapse the sidebar. */}
           <button
-            onClick={() =>
-              (sidebarMode.value = sidebarMode.value === "hunks" ? null : "hunks")
-            }
+            class="sm:hidden text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
+            onClick={() => setShowFileTree((v) => !v)}
+          >
+            {showFileTree ? "Hide files" : `Files (${prFiles.value.length})`}
+          </button>
+          <button
+            class="hidden sm:inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
+            onClick={() => setFileTreeCollapsed((v) => !v)}
+            aria-pressed={!fileTreeCollapsed}
+            title={fileTreeCollapsed ? "Show file tree" : "Hide file tree"}
+          >
+            <span aria-hidden="true">{fileTreeCollapsed ? "☰" : "◀"}</span>
+            <span>{fileTreeCollapsed ? `Files (${prFiles.value.length})` : "Hide files"}</span>
+          </button>
+          <button
+            onClick={() => {
+              sidebarMode.value = "hunks";
+              explainAllHunksRequest.value = {
+                id: explainAllHunksRequest.value.id + 1,
+                filePath: diffPath,
+              };
+            }}
             disabled={!diffHtml}
             aria-pressed={sidebarMode.value === "hunks"}
             title={
               !diffHtml
                 ? "Select a file to explain its changes"
-                : sidebarMode.value === "hunks"
-                  ? "Close explain sidebar"
-                  : "Explain the changes in this file hunk by hunk"
+                : "Explain all hunks in this file"
             }
-            class={`text-xs px-3 py-1 rounded border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+            class={`inline-flex items-center justify-center text-xs px-2 sm:px-3 py-1 rounded border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
               sidebarMode.value === "hunks"
                 ? "border-accent text-accent bg-accent/10"
                 : "border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
             }`}
           >
-            ✨ Explain
+            <span class="sm:hidden" aria-hidden="true">✨</span>
+            <span class="hidden sm:inline">✨ Explain</span>
           </button>
-          <ApprovalBar onVote={handleApprove} />
+          <div class="hidden sm:block">
+            <ApprovalBar onVote={handleApprove} />
+          </div>
         </div>
       </div>
       {voteError && (
@@ -568,23 +604,48 @@ export function PRDetail({ prId }: Props) {
       )}
 
       {/* Body: File Tree + Diff */}
-      <div class="flex flex-1 overflow-hidden">
-        <aside
-          class="border-r border-gray-200 dark:border-gray-800 shrink-0 relative"
-          style={{ width: `${fileTreeResize.width}px` }}
-        >
-          <div class="h-full overflow-y-auto">
-            <FileTree files={prFiles.value} onToggleViewed={handleToggleViewed} />
+      <div class="flex flex-1 overflow-hidden relative">
+        {/* Desktop/iPad: collapsible, resizable sidebar */}
+        {!fileTreeCollapsed && (
+          <aside
+            class="hidden sm:block border-r border-gray-200 dark:border-gray-800 shrink-0 relative"
+            style={{ width: `${fileTreeResize.width}px` }}
+          >
+            <div class="h-full overflow-y-auto">
+              <FileTree files={prFiles.value} onToggleViewed={handleToggleViewed} />
+            </div>
+            <div
+              onMouseDown={fileTreeResize.onMouseDown}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize file tree"
+              title="Drag to resize"
+              class="absolute top-0 right-0 bottom-0 w-1.5 -mr-0.5 cursor-col-resize hover:bg-accent/40 active:bg-accent/70 z-10"
+            />
+          </aside>
+        )}
+
+        {/* Mobile: file tree overlay sheet */}
+        {showFileTree && (
+          <div class="sm:hidden absolute inset-0 z-20 flex flex-col bg-white dark:bg-gray-950">
+            <div class="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0 bg-gray-50 dark:bg-gray-900">
+              <span class="text-sm font-medium">Files ({prFiles.value.length})</span>
+              <button
+                class="text-sm px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+                onClick={() => setShowFileTree(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div class="flex-1 overflow-y-auto scroll-ios">
+              <FileTree
+                files={prFiles.value}
+                onToggleViewed={handleToggleViewed}
+                onSelect={() => setShowFileTree(false)}
+              />
+            </div>
           </div>
-          <div
-            onMouseDown={fileTreeResize.onMouseDown}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize file tree"
-            title="Drag to resize"
-            class="absolute top-0 right-0 bottom-0 w-1.5 -mr-0.5 cursor-col-resize hover:bg-accent/40 active:bg-accent/70 z-10"
-          />
-        </aside>
+        )}
 
         <div class="flex-1 overflow-hidden min-w-0 flex flex-col">
           <TabBar prId={prId} />
@@ -620,8 +681,15 @@ export function PRDetail({ prId }: Props) {
                 newContent={newContent}
               />
             ) : (
-              <div class="flex items-center justify-center h-full text-gray-400 text-sm">
-                Select a file to view its diff
+              <div class="flex flex-col items-center justify-center h-full text-gray-400 text-sm gap-2 px-4 text-center">
+                <span>Select a file to view its diff</span>
+                {/* Quick access to files on mobile when nothing is selected */}
+                <button
+                  class="sm:hidden text-xs px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
+                  onClick={() => setShowFileTree(true)}
+                >
+                  Browse files
+                </button>
               </div>
             )}
           </div>
@@ -633,6 +701,7 @@ export function PRDetail({ prId }: Props) {
             filePath={diffPath}
             oldContent={oldContent}
             newContent={newContent}
+            explainAllRequest={explainAllHunksRequest.value}
             onClose={() => (sidebarMode.value = null)}
           />
         )}

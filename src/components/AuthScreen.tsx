@@ -98,7 +98,7 @@ export function AuthScreen() {
   const existingOrgs = savedOrgs.value;
   if (existingOrgs.length > 0 && !forceForm) {
     return (
-      <div class="flex items-center justify-center h-full">
+      <div class="flex items-center justify-center h-full p-4 safe-bottom">
         <div class="w-full max-w-sm space-y-4">
           <h2 class="text-xl font-semibold">Connect a repository host</h2>
           <p class="text-sm text-gray-500 dark:text-gray-400">Select an account or add a new one.</p>
@@ -164,7 +164,7 @@ export function AuthScreen() {
   }
 
   return (
-    <div class="flex items-center justify-center h-full">
+    <div class="flex items-center justify-center h-full p-4 safe-bottom">
       <div class="w-full max-w-sm space-y-4">
         <h2 class="text-xl font-semibold">
           {provider === "github" ? "Connect to GitHub" : "Connect to Azure DevOps"}
@@ -269,6 +269,8 @@ export function AuthScreen() {
         ) : (
           <input
             type="text"
+            inputmode="url"
+            autocomplete="url"
             placeholder="https://dev.azure.com/your-org"
             value={orgUrl}
             onInput={(e) => setOrgUrl(e.currentTarget.value)}
@@ -277,6 +279,7 @@ export function AuthScreen() {
         )}
         <input
           type="password"
+          autocomplete="current-password"
           placeholder={
             provider === "github"
               ? "GitHub Personal Access Token (repo scope)"

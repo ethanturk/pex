@@ -25,6 +25,7 @@ interface Props {
 }
 
 const EXPAND_CHUNK = 10;
+const TOUCH_SCROLL_CANCEL_PX = 8;
 
 interface Range {
   start: number;
@@ -102,6 +103,11 @@ export function DiffViewer({
   const diffRef = useRef<HTMLDivElement>(null);
   const dragAnchorRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const touchSelectionRef = useRef<{
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
 
   // The committed selection (set on mouseup) — popup is anchored to its end line.
   const [range, setRange] = useState<Range | null>(null);
@@ -473,7 +479,92 @@ export function DiffViewer({
     }
   };
 
-  // ---- submit comment
+  // ---- touch handlers (mobile) mirroring mouse handlers
+  const onTouchStart = (e: TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const target = touch?.target as HTMLElement;
+    if (target?.closest(".diff-expander-btn")) return;
+    if (target?.closest(".comment-popup")) return;
+    if (!target?.closest(".diff-lineno")) return;
+    const ln = lineFromTarget(target);
+    if (ln === null) return;
+    touchSelectionRef.current = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+      moved: false,
+    };
+    dragAnchorRef.current = ln;
+    setRange({ start: ln, end: ln });
+    setPopupPos(null);
+    setCommentText("");
+    setPostError("");
+    setHighlight(ln, ln);
+  };
+
+  const onTouchMove = (e: TouchEvent) => {
+    if (dragAnchorRef.current === null) return;
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const state = touchSelectionRef.current;
+    if (!touch || !state) return;
+
+    const dx = Math.abs(touch.clientX - state.startX);
+    const dy = Math.abs(touch.clientY - state.startY);
+    if (dx > TOUCH_SCROLL_CANCEL_PX || dy > TOUCH_SCROLL_CANCEL_PX) {
+      touchSelectionRef.current = { ...state, moved: true };
+      dragAnchorRef.current = null;
+      setRange(null);
+      setPopupPos(null);
+      clearHighlight();
+      return;
+    }
+
+    const currentTarget = document.elementFromPoint(touch.clientX, touch.clientY);
+    const ln = lineFromTarget(currentTarget);
+    if (ln === null) return;
+    const anchor = dragAnchorRef.current;
+    const r = normalize({ start: anchor, end: ln });
+    setHighlight(r.start, r.end);
+    setRange(r);
+  };
+
+  const onTouchEnd = () => {
+    const state = touchSelectionRef.current;
+    touchSelectionRef.current = null;
+    if (state?.moved) return;
+    if (dragAnchorRef.current === null) return;
+    dragAnchorRef.current = null;
+    setRange((r) => (r ? { ...r } : r));
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  };
+
+  const onTouchCancel = () => {
+    touchSelectionRef.current = null;
+    dragAnchorRef.current = null;
+    setRange(null);
+    setPopupPos(null);
+    clearHighlight();
+  };
+
+  // ---- keyboard avoidance (mobile)
+  useEffect(() => {
+    if (!("visualViewport" in window)) return;
+    const vv = window.visualViewport!;
+    const handler = () => {
+      // When the keyboard opens, scroll textarea into view after a short delay
+      // for the browser to settle.
+      if (textareaRef.current && document.activeElement === textareaRef.current) {
+        setTimeout(() => {
+          textareaRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+        }, 150);
+      }
+    };
+    vv.addEventListener("resize", handler);
+    return () => vv.removeEventListener("resize", handler);
+  }, []);
   const handlePost = async () => {
     if (!commentText.trim() || !range) return;
     setPosting(true);
@@ -577,12 +668,16 @@ export function DiffViewer({
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onClick={onClickContainer}
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
+            onTouchCancel={onTouchCancel}
           />
         )}
 
         {!showMarkdownPreview && range && popupPos && (
           <div
-            class="comment-popup absolute z-20 w-[min(520px,calc(100%-2rem))] shadow-lg rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 p-3"
+            class="comment-popup absolute z-20 w-[min(520px,calc(100%-1rem))] shadow-lg rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 p-3 sm:w-[min(520px,calc(100%-2rem))]"
             style={{ top: `${popupPos.top + 4}px`, left: `${popupPos.left}px` }}
             // Keep mouse interactions inside the popup from triggering selection.
             onMouseDown={(e) => e.stopPropagation()}
@@ -607,7 +702,7 @@ export function DiffViewer({
               }}
               class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent resize-none"
               rows={3}
-              placeholder="Leave a comment (Markdown supported)  •  ⌘/Ctrl+Enter to post, Esc to cancel"
+              placeholder="Leave a comment (Markdown) · ⌘Enter to post"
             />
             {postError && (
               <div class="mt-2 text-xs text-red-600 dark:text-red-400 break-words">

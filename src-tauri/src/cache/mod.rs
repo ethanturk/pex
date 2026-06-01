@@ -95,12 +95,12 @@ pub fn diagnostics_dir() -> Result<String, AppError> {
 }
 
 fn dirs_data_dir() -> Result<String, AppError> {
-    // Use XDG_DATA_HOME on Linux, AppData on Windows, Application Support on macOS
+    // Use XDG_DATA_HOME on Linux, AppData on Windows, Application Support on Apple platforms.
     if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
         return Ok(format!("{}/pex", dir));
     }
     if let Ok(home) = std::env::var("HOME") {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         return Ok(format!(
             "{}/Library/Application Support/com.pex.pr-reviewer",
             home

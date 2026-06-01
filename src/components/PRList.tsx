@@ -25,7 +25,7 @@ const STATUS_CLASS: Record<string, string> = {
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  all: "All statuses",
+  all: "All",
   active: "Active",
   draft: "Draft",
   completed: "Completed",
@@ -141,10 +141,6 @@ export function PRList() {
     getCurrentUserId().then(setUserId).catch(() => setUserId(""));
   }, []);
 
-  // Load the repo list whenever the selected project changes (or on remount, so
-  // returning from a PR detail still has the dropdown populated).
-  // Do NOT clear selectedRepo here — that only belongs in the project dropdown's
-  // onChange, otherwise navigating back from a PR wipes the user's selection.
   useEffect(() => {
     if (selectedProject.value) {
       listRepositories(selectedProject.value).then(setRepos);
@@ -262,44 +258,47 @@ export function PRList() {
 
   return (
     <div class="flex flex-col h-full">
-      {/* Filters */}
-      <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
-        <select
-          value={selectedProject.value}
-          onChange={(e) => {
-            const next = e.currentTarget.value;
-            if (next !== selectedProject.value) {
-              selectedRepo.value = "";
-              setPrs([]);
-            }
-            selectedProject.value = next;
-          }}
-          class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none"
-        >
-          <option value="">Select project...</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-        <select
-          value={selectedRepo.value}
-          onChange={(e) => (selectedRepo.value = e.currentTarget.value)}
-          disabled={!selectedProject.value}
-          class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none disabled:opacity-50"
-        >
-          <option value="">Select repository...</option>
-          {repos.map((r) => (
-            <option key={r.id} value={r.id}>{r.name}</option>
-          ))}
-        </select>
+      {/* Filters — responsive: stack on mobile, row on desktop */}
+      <div class="flex flex-col sm:flex-row gap-2 sm:gap-3 px-3 sm:px-4 py-2 sm:py-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
+        {/* Project + Repo row */}
+        <div class="flex gap-2 w-full sm:w-auto">
+          <select
+            value={selectedProject.value}
+            onChange={(e) => {
+              const next = e.currentTarget.value;
+              if (next !== selectedProject.value) {
+                selectedRepo.value = "";
+                setPrs([]);
+              }
+              selectedProject.value = next;
+            }}
+            class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none truncate min-w-0"
+          >
+            <option value="">Project...</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          <select
+            value={selectedRepo.value}
+            onChange={(e) => (selectedRepo.value = e.currentTarget.value)}
+            disabled={!selectedProject.value}
+            class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none disabled:opacity-50 truncate min-w-0"
+          >
+            <option value="">Repo...</option>
+            {repos.map((r) => (
+              <option key={r.id} value={r.id}>{r.name}</option>
+            ))}
+          </select>
+        </div>
 
-        {/* PR-level filters */}
+        {/* Status + Search + Refresh row — shown when PRs are loaded */}
         {prs.length > 0 && (
-          <>
+          <div class="flex gap-2 w-full sm:w-auto sm:flex-1">
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.currentTarget.value)}
-              class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none"
+              class="sm:flex-none px-3 py-2 sm:py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none"
             >
               {Object.entries(STATUS_LABEL).map(([value, label]) => (
                 <option key={value} value={value}>{label}</option>
@@ -319,47 +318,58 @@ export function PRList() {
               value={searchQuery}
               onInput={(e) => setSearchQuery(e.currentTarget.value)}
               placeholder="Search title, author, branch..."
-              class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none placeholder-gray-400 flex-1 min-w-0"
+              class="flex-1 min-w-0 px-3 py-2 sm:py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none placeholder-gray-400"
             />
-          </>
+          </div>
         )}
       </div>
 
       {/* PR list */}
-      <div class="flex-1 overflow-y-auto">
-        {loading && (
+      <div class="flex-1 overflow-y-auto scroll-ios">
+        {/* Empty states */}
+        {!selectedProject.value && !selectedRepo.value && (
+          <div class="flex items-center justify-center py-12 text-gray-400 text-sm px-4 text-center">
+            Select a project and repository to view pull requests.
+          </div>
+        )}
+        {selectedProject.value && selectedRepo.value && loading && (
           <div class="flex items-center justify-center py-12 text-gray-400 text-sm">
             Loading pull requests...
           </div>
         )}
         {!loading && error && (
-          <div class="mx-4 my-3 px-3 py-2 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 break-words">
-            Failed to load pull requests: {error}
+          <div class="mx-3 sm:mx-4 my-3 px-3 py-2 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300 break-words">
+            {error}
           </div>
         )}
         {!loading && !error && filteredPrs.length === 0 && selectedProject.value && selectedRepo.value && (
-          <div class="flex items-center justify-center py-12 text-gray-400 text-sm">
-            {prs.length === 0
-              ? "No open pull requests found."
-              : "No PRs match the current filters."}
+          <div class="flex flex-col items-center justify-center py-12 text-gray-400 text-sm gap-2">
+            <span>{prs.length === 0 ? "No open pull requests found." : "No PRs match the current filters."}</span>
+            <button
+              onClick={refreshPullRequests}
+              class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-xs hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              Refresh
+            </button>
           </div>
         )}
+
         {filteredPrs.map((pr) => (
           <button
             key={pr.pullRequestId}
-            class="w-full text-left px-4 py-3 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 flex items-start gap-3"
+            class="w-full text-left px-3 sm:px-4 py-3 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 flex items-start gap-3 tappable"
             onClick={() => openPR(pr.pullRequestId)}
           >
             <div class="flex-1 min-w-0">
               <div class="font-medium text-sm truncate">{pr.title}</div>
-              <div class="flex items-center gap-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-xs text-gray-500 dark:text-gray-400">
                 <span class="font-mono">#{pr.pullRequestId}</span>
-                <span>·</span>
-                <span>{pr.createdBy.displayName}</span>
-                <span>·</span>
-                <span class="font-mono">{pr.sourceRefName.replace("refs/heads/", "")}</span>
-                <span>→</span>
-                <span class="font-mono">{pr.targetRefName.replace("refs/heads/", "")}</span>
+                <span class="hidden sm:inline">·</span>
+                <span class="truncate max-w-[120px]">{pr.createdBy.displayName}</span>
+                <span class="hidden sm:inline">·</span>
+                <span class="font-mono truncate max-w-[140px]">{pr.sourceRefName.replace("refs/heads/", "")}</span>
+                <span class="hidden sm:inline">→</span>
+                <span class="font-mono truncate max-w-[140px] hidden sm:inline">{pr.targetRefName.replace("refs/heads/", "")}</span>
               </div>
               {checksEnabled && (
                 <PRCheckSummary state={prChecks[pr.pullRequestId]} />

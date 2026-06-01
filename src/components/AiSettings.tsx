@@ -26,6 +26,9 @@ import {
 interface Props {
   open: boolean;
   onClose: () => void;
+  /** Render as static content without modal backdrop.
+   *  Used in the mobile Settings tab where the tab shell provides containment. */
+  standalone?: boolean;
 }
 
 type Tab = "general" | "ai-defaults" | "review" | "prompts" | "calibration" | "pr-list";
@@ -70,7 +73,7 @@ function normalizeStandardsMaxChars(value: string | number): number {
 const INPUT_CLASS =
   "w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent";
 
-export function AiSettings({ open, onClose }: Props) {
+export function AiSettings({ open, onClose, standalone }: Props) {
   const [tab, setTab] = useState<Tab>("ai-defaults");
 
   // ---- AI Defaults tab (provider creds — save-button gated) ----
@@ -389,21 +392,17 @@ export function AiSettings({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  return (
+  // On mobile (standalone): render just the card content without backdrop.
+  // On desktop: render as a centered modal with backdrop (see final return).
+  const card = (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onMouseDown={(e) => setBackdropMouseDown(e.target === e.currentTarget)}
-      onMouseUp={(e) => {
-        if (backdropMouseDown && e.target === e.currentTarget) {
-          onClose();
-        }
-        setBackdropMouseDown(false);
-      }}
+      class={`bg-white dark:bg-gray-900 w-full flex flex-col overflow-hidden ${
+        standalone
+          ? "h-full max-w-none rounded-none shadow-none border-0"
+          : "max-w-2xl mx-4 h-[85vh] max-h-[720px] rounded-xl shadow-xl border border-gray-200 dark:border-gray-700"
+      }`}
     >
-      <div
-        class="bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-full max-w-2xl mx-4 h-[85vh] max-h-[720px] flex flex-col overflow-hidden"
-      >
-        {/* Header */}
+      {!standalone && (
         <div class="shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
           <h2 class="text-base font-semibold">Settings</h2>
           <button
@@ -413,11 +412,12 @@ export function AiSettings({ open, onClose }: Props) {
             ×
           </button>
         </div>
+      )}
 
         {/* Tabs */}
-        <div class="shrink-0 flex border-b border-gray-200 dark:border-gray-700 px-5">
+        <div class="shrink-0 flex overflow-x-auto border-b border-gray-200 dark:border-gray-700 px-5">
           <TabButton label="General" active={tab === "general"} onClick={() => setTab("general")} />
-          <TabButton label="AI Defaults" active={tab === "ai-defaults"} onClick={() => setTab("ai-defaults")} />
+          <TabButton label="AI" active={tab === "ai-defaults"} onClick={() => setTab("ai-defaults")} />
           <TabButton label="Review" active={tab === "review"} onClick={() => setTab("review")} />
           <TabButton label="Prompts" active={tab === "prompts"} onClick={() => setTab("prompts")} />
           <TabButton label="Calibration" active={tab === "calibration"} onClick={() => setTab("calibration")} />
@@ -1028,6 +1028,20 @@ export function AiSettings({ open, onClose }: Props) {
           )}
         </div>
       </div>
+    );
+
+  return standalone ? card : (
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onMouseDown={(e) => setBackdropMouseDown(e.target === e.currentTarget)}
+      onMouseUp={(e) => {
+        if (backdropMouseDown && e.target === e.currentTarget) {
+          onClose();
+        }
+        setBackdropMouseDown(false);
+      }}
+    >
+      {card}
     </div>
   );
 }
@@ -1044,7 +1058,7 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      class={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+      class={`px-3 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
         active
           ? "border-accent text-accent"
           : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"

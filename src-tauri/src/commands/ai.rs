@@ -353,13 +353,26 @@ pub async fn explain_hunk(
 
     let provider = {
         let ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
-        ai_mgr_lock
-            .as_ref()
-            .and_then(|mgr| mgr.provider_clone())
-            .ok_or_else(|| "AI not configured. Set up AI settings in Preferences.".to_string())?
+        match ai_mgr_lock.as_ref().and_then(|mgr| mgr.provider_clone()) {
+            Some(provider) => provider,
+            None => {
+                let message = "AI not configured. Set up AI settings in Preferences.".to_string();
+                eprintln!(
+                    "explain_hunk failed for {} hunk {}: {}",
+                    file_path, hunk_index, message
+                );
+                return Err(message);
+            }
+        }
     };
 
-    let response = provider.chat(&messages).await.map_err(|e| e.to_string())?;
+    let response = provider.chat(&messages).await.map_err(|e| {
+        eprintln!(
+            "explain_hunk failed for {} hunk {}: {}",
+            file_path, hunk_index, e
+        );
+        e.to_string()
+    })?;
     Ok(response)
 }
 

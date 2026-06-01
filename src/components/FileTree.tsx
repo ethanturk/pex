@@ -6,6 +6,7 @@ import { STATUS_ICON, STATUS_COLOR } from "@/lib/fileStatus";
 interface Props {
   files: FileEntry[];
   onToggleViewed: (path: string, viewed: boolean) => void;
+  onSelect?: (path: string) => void;
 }
 
 interface FolderNode {
@@ -57,11 +58,13 @@ function FileRow({
   depth,
   showFullPath,
   onToggleViewed,
+  onSelect,
 }: {
   file: FileEntry;
   depth: number;
   showFullPath: boolean;
   onToggleViewed: Props["onToggleViewed"];
+  onSelect?: Props["onSelect"];
 }) {
   const activeFile = selectedFile.value;
   const isActive = activeFile === file.path;
@@ -77,7 +80,10 @@ function FileRow({
       ref={rowRef}
       class={`file-tree-item ${file.viewed ? "file-tree-item--viewed" : ""} ${isActive ? "file-tree-item--active" : ""}`}
       style={{ paddingLeft: `${depth * 12 + 8}px` }}
-      onClick={() => openPreviewTab(file.path)}
+      onClick={() => {
+        openPreviewTab(file.path);
+        onSelect?.(file.path);
+      }}
       onDblClick={() => pinTab(file.path)}
       title={file.path}
     >
@@ -110,12 +116,14 @@ function TreeNodes({
   collapsed,
   toggleFolder,
   onToggleViewed,
+  onSelect,
 }: {
   nodes: TreeNode[];
   depth: number;
   collapsed: Set<string>;
   toggleFolder: (path: string) => void;
   onToggleViewed: Props["onToggleViewed"];
+  onSelect?: Props["onSelect"];
 }) {
   return (
     <>
@@ -128,6 +136,7 @@ function TreeNodes({
             collapsed={collapsed}
             toggleFolder={toggleFolder}
             onToggleViewed={onToggleViewed}
+            onSelect={onSelect}
           />
         ) : (
           <FileRow
@@ -136,6 +145,7 @@ function TreeNodes({
             depth={depth}
             showFullPath={false}
             onToggleViewed={onToggleViewed}
+            onSelect={onSelect}
           />
         ),
       )}
@@ -149,12 +159,14 @@ function FolderRow({
   collapsed,
   toggleFolder,
   onToggleViewed,
+  onSelect,
 }: {
   node: FolderNode;
   depth: number;
   collapsed: Set<string>;
   toggleFolder: (path: string) => void;
   onToggleViewed: Props["onToggleViewed"];
+  onSelect?: Props["onSelect"];
 }) {
   const isCollapsed = collapsed.has(node.path);
   return (
@@ -178,6 +190,7 @@ function FolderRow({
           collapsed={collapsed}
           toggleFolder={toggleFolder}
           onToggleViewed={onToggleViewed}
+          onSelect={onSelect}
         />
       )}
     </>
@@ -196,7 +209,7 @@ function flattenTree(nodes: TreeNode[], collapsed: Set<string>, out: string[]) {
   }
 }
 
-export function FileTree({ files, onToggleViewed }: Props) {
+export function FileTree({ files, onToggleViewed, onSelect }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
   const trimmedFilter = filter.trim().toLowerCase();
@@ -306,6 +319,7 @@ export function FileTree({ files, onToggleViewed }: Props) {
               depth={0}
               showFullPath={true}
               onToggleViewed={onToggleViewed}
+              onSelect={onSelect}
             />
           ))}
         </div>
@@ -317,6 +331,7 @@ export function FileTree({ files, onToggleViewed }: Props) {
             collapsed={collapsed}
             toggleFolder={toggleFolder}
             onToggleViewed={onToggleViewed}
+            onSelect={onSelect}
           />
         </div>
       )}
