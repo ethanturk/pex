@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "preact/hooks";
 import { marked } from "marked";
 import type { CommentThread } from "@/lib/api";
-import { getFileLines } from "@/lib/api";
-import { pendingScrollLine, type DiffView } from "@/lib/signals";
+import { getFileLines, updateComment } from "@/lib/api";
+import { pendingScrollLine, threadsRefreshTick, type DiffView } from "@/lib/signals";
+import { getPlatform, onPlatformChange } from "@/lib/platform";
 
 interface Props {
   html: string;
@@ -17,6 +18,7 @@ interface Props {
   ) => Promise<void>;
   projectId: string;
   repoId: string;
+  prId: number;
   sourceCommit: string;
   baseCommit: string | null;
   view: DiffView;
@@ -94,6 +96,7 @@ export function DiffViewer({
   onComment,
   projectId,
   repoId,
+  prId,
   sourceCommit,
   baseCommit: _baseCommit,
   view,
@@ -116,6 +119,17 @@ export function DiffViewer({
   const [posting, setPosting] = useState(false);
   const [postError, setPostError] = useState("");
   const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
+  const [platform, setPlatform] = useState(() => getPlatform());
+  const compactLayout = platform !== "desktop";
+  const [commentsExpanded, setCommentsExpanded] = useState(() => getPlatform() === "desktop");
+  const [editingComment, setEditingComment] = useState<{
+    threadId: number;
+    commentId: number;
+    text: string;
+    isPrLevel: boolean;
+  } | null>(null);
+  const [editingError, setEditingError] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpInput, setJumpInput] = useState("");
@@ -140,6 +154,19 @@ export function DiffViewer({
   useEffect(() => {
     setShowMarkdownPreview(isMarkdown);
   }, [isMarkdown, path]);
+
+  useEffect(() => (
+    onPlatformChange((next) => {
+      setPlatform(next);
+      setCommentsExpanded(next === "desktop");
+    })
+  ), []);
+
+  useEffect(() => {
+    setCommentsExpanded(!compactLayout);
+    setEditingComment(null);
+    setEditingError("");
+  }, [path, compactLayout]);
 
   // ---- selection highlight on the DOM (cheap; avoids re-rendering injected HTML)
   const setHighlight = useCallback((lo: number, hi: number) => {
@@ -579,6 +606,30 @@ export function DiffViewer({
     }
   };
 
+  const handleSaveEdit = async () => {
+    if (!editingComment || !editingComment.text.trim()) return;
+    setSavingEdit(true);
+    setEditingError("");
+    try {
+      await updateComment(
+        projectId,
+        repoId,
+        prId,
+        editingComment.threadId,
+        editingComment.commentId,
+        editingComment.text,
+        editingComment.isPrLevel,
+      );
+    } catch (e: any) {
+      setEditingError(typeof e === "string" ? e : e?.message ?? String(e));
+      setSavingEdit(false);
+      return;
+    }
+    setSavingEdit(false);
+    setEditingComment(null);
+    threadsRefreshTick.value += 1;
+  };
+
   const rangeLabel = range
     ? range.start === range.end
       ? `line ${range.start}`
@@ -790,31 +841,109 @@ export function DiffViewer({
       {/* Comments bar — sits below the scrolling diff so it's always visible
           when there are comments. Hidden entirely when empty. */}
       {threads.length > 0 && (
-        <div class="shrink-0 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 max-h-[40vh] overflow-y-auto">
-          <div class="text-xs font-medium text-gray-500 dark:text-gray-400 px-3 py-1.5 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60">
-            Comments ({threads.length})
-          </div>
-          {threads.map((t) => (
+        <div class={`shrink-0 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 ${commentsExpanded ? "max-h-[40vh] overflow-y-auto" : ""}`}>
+          {compactLayout ? (
+            <button
+              type="button"
+              class="w-full flex items-center justify-between text-xs font-medium text-gray-500 dark:text-gray-400 px-3 py-2 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60"
+              onClick={() => setCommentsExpanded((v) => !v)}
+              aria-expanded={commentsExpanded}
+            >
+              <span>Comments ({threads.length})</span>
+              <span aria-hidden="true">{commentsExpanded ? "▼" : "▲"}</span>
+            </button>
+          ) : (
+            <div class="text-xs font-medium text-gray-500 dark:text-gray-400 px-3 py-1.5 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60">
+              Comments ({threads.length})
+            </div>
+          )}
+          {commentsExpanded && threads.map((t) => (
             <div key={t.id} class="border-t border-gray-100 dark:border-gray-800 p-3">
               <div class="text-xs text-gray-400 mb-1">
                 {t.lineStart > 0
                   ? `Thread on line ${t.lineStart === t.lineEnd ? t.lineStart : `${t.lineStart}-${t.lineEnd}`}`
                   : "File-level thread"}
               </div>
-              {t.comments.map((c) => (
-                <div
-                  key={c.id}
-                  class="text-sm mb-2 pl-3 border-l-2 border-gray-200 dark:border-gray-700"
-                >
-                  <span class="font-medium text-xs">{c.author}</span>
-                  {c.publishedDate && (
-                    <span class="text-xs text-gray-400 ml-2">{c.publishedDate}</span>
-                  )}
-                  <div class="mt-1 text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
-                    {c.content || <span class="italic text-gray-400">(no content)</span>}
+              {t.comments.map((c) => {
+                const isEditing =
+                  editingComment?.threadId === t.id &&
+                  editingComment.commentId === c.id;
+                return (
+                  <div
+                    key={c.id}
+                    class="text-sm mb-2 pl-3 border-l-2 border-gray-200 dark:border-gray-700"
+                  >
+                    <div class="flex items-center gap-2 min-w-0">
+                      <span class="font-medium text-xs truncate">{c.author}</span>
+                      {c.publishedDate && (
+                        <span class="text-xs text-gray-400 truncate">{c.publishedDate}</span>
+                      )}
+                      {c.canEdit && !isEditing && (
+                        <button
+                          type="button"
+                          class="ml-auto text-xs text-accent hover:text-accent-hover"
+                          onClick={() => {
+                            setEditingError("");
+                            setEditingComment({
+                              threadId: t.id,
+                              commentId: c.id,
+                              text: c.content || "",
+                              isPrLevel: t.lineStart <= 0,
+                            });
+                            if (compactLayout) setCommentsExpanded(true);
+                          }}
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </div>
+                    {isEditing ? (
+                      <div class="mt-2">
+                        <textarea
+                          value={editingComment.text}
+                          onInput={(e) => {
+                            setEditingComment((current) =>
+                              current ? { ...current, text: e.currentTarget.value } : current,
+                            );
+                            if (editingError) setEditingError("");
+                          }}
+                          class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent resize-none"
+                          rows={3}
+                        />
+                        {editingError && (
+                          <div class="mt-2 text-xs text-red-600 dark:text-red-400 break-words">
+                            {editingError}
+                          </div>
+                        )}
+                        <div class="flex items-center gap-2 mt-2">
+                          <button
+                            type="button"
+                            onClick={handleSaveEdit}
+                            disabled={!editingComment.text.trim() || savingEdit}
+                            class="px-3 py-1 bg-accent hover:bg-accent-hover text-white rounded text-xs font-medium disabled:opacity-50"
+                          >
+                            {savingEdit ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingComment(null);
+                              setEditingError("");
+                            }}
+                            class="px-3 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div class="mt-1 text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
+                        {c.content || <span class="italic text-gray-400">(no content)</span>}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ))}
         </div>

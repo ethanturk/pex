@@ -59,8 +59,10 @@ export interface CommentThread {
 export interface Comment {
   id: number;
   author: string;
+  authorId: string;
   content: string;
   publishedDate: string;
+  canEdit: boolean;
 }
 
 // ============= Auth =============
@@ -288,6 +290,26 @@ export async function postReply(
   content: string,
 ): Promise<Comment> {
   return invoke<Comment>("post_reply", { projectId, repoId, prId, threadId, content });
+}
+
+export async function updateComment(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  threadId: number,
+  commentId: number,
+  content: string,
+  isPrLevel: boolean,
+): Promise<Comment> {
+  return invoke<Comment>("update_comment", {
+    projectId,
+    repoId,
+    prId,
+    threadId,
+    commentId,
+    content,
+    isPrLevel,
+  });
 }
 
 // ============= PR Actions =============

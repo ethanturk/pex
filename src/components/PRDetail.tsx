@@ -25,6 +25,7 @@ import { HunkReview } from "@/components/HunkReview";
 import { PRReviewPanel } from "@/components/PRReviewPanel";
 import { TabBar } from "@/components/TabBar";
 import { ApprovalBar } from "@/components/ApprovalBar";
+import { getPlatform, onPlatformChange } from "@/lib/platform";
 
 interface Props { prId: number; }
 
@@ -123,9 +124,11 @@ export function PRDetail({ prId }: Props) {
     max: 600,
     side: "right",
   });
-  /** On mobile, file tree is a toggleable overlay. On desktop/iPad, it can be collapsed. */
+  /** On compact layouts, file tree is a toggleable overlay. On desktop, it can be collapsed. */
   const [showFileTree, setShowFileTree] = useState(false);
   const [fileTreeCollapsed, setFileTreeCollapsed] = useState(false);
+  const [platform, setPlatform] = useState(() => getPlatform());
+  const compactLayout = platform !== "desktop";
 
   const projectId = selectedProject.value;
   const repoId = selectedRepo.value;
@@ -353,6 +356,8 @@ export function PRDetail({ prId }: Props) {
 
   useEffect(() => { loadFiles(); }, [loadFiles]);
 
+  useEffect(() => onPlatformChange(setPlatform), []);
+
   // Reconcile `selectedFile` into the tab model: any caller that sets
   // `selectedFile` (file tree click, j/k nav, jump-to-finding from the review
   // panel) opens the file as a preview tab (if not already open) and focuses it.
@@ -545,22 +550,24 @@ export function PRDetail({ prId }: Props) {
           <span class="text-xs text-gray-400 ml-2 hidden xl:inline">j/k files · v toggle viewed · a approve</span>
         </div>
         <div class="flex items-center gap-2 shrink-0">
-          {/* Files button — mobile opens a sheet; larger screens collapse the sidebar. */}
-          <button
-            class="sm:hidden text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
-            onClick={() => setShowFileTree((v) => !v)}
-          >
-            {showFileTree ? "Hide files" : `Files (${prFiles.value.length})`}
-          </button>
-          <button
-            class="hidden sm:inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
-            onClick={() => setFileTreeCollapsed((v) => !v)}
-            aria-pressed={!fileTreeCollapsed}
-            title={fileTreeCollapsed ? "Show file tree" : "Hide file tree"}
-          >
-            <span aria-hidden="true">{fileTreeCollapsed ? "☰" : "◀"}</span>
-            <span>{fileTreeCollapsed ? `Files (${prFiles.value.length})` : "Hide files"}</span>
-          </button>
+          {compactLayout ? (
+            <button
+              class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
+              onClick={() => setShowFileTree((v) => !v)}
+            >
+              {showFileTree ? "Hide files" : `Files (${prFiles.value.length})`}
+            </button>
+          ) : (
+            <button
+              class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
+              onClick={() => setFileTreeCollapsed((v) => !v)}
+              aria-pressed={!fileTreeCollapsed}
+              title={fileTreeCollapsed ? "Show file tree" : "Hide file tree"}
+            >
+              <span aria-hidden="true">{fileTreeCollapsed ? "☰" : "◀"}</span>
+              <span>{fileTreeCollapsed ? `Files (${prFiles.value.length})` : "Hide files"}</span>
+            </button>
+          )}
           <button
             onClick={() => {
               sidebarMode.value = "hunks";
@@ -576,18 +583,19 @@ export function PRDetail({ prId }: Props) {
                 ? "Select a file to explain its changes"
                 : "Explain all hunks in this file"
             }
-            class={`inline-flex items-center justify-center text-xs px-2 sm:px-3 py-1 rounded border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+            class={`inline-flex items-center justify-center text-xs px-2 ${compactLayout ? "" : "sm:px-3"} py-1 rounded border font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
               sidebarMode.value === "hunks"
                 ? "border-accent text-accent bg-accent/10"
                 : "border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
             }`}
           >
-            <span class="sm:hidden" aria-hidden="true">✨</span>
-            <span class="hidden sm:inline">✨ Explain</span>
+            {compactLayout ? (
+              <span aria-hidden="true">✨</span>
+            ) : (
+              <span>✨ Explain</span>
+            )}
           </button>
-          <div class="hidden sm:block">
-            <ApprovalBar onVote={handleApprove} />
-          </div>
+          {!compactLayout && <ApprovalBar onVote={handleApprove} />}
         </div>
       </div>
       {voteError && (
@@ -605,10 +613,10 @@ export function PRDetail({ prId }: Props) {
 
       {/* Body: File Tree + Diff */}
       <div class="flex flex-1 overflow-hidden relative">
-        {/* Desktop/iPad: collapsible, resizable sidebar */}
-        {!fileTreeCollapsed && (
+        {/* Desktop: collapsible, resizable sidebar */}
+        {!compactLayout && !fileTreeCollapsed && (
           <aside
-            class="hidden sm:block border-r border-gray-200 dark:border-gray-800 shrink-0 relative"
+            class="border-r border-gray-200 dark:border-gray-800 shrink-0 relative"
             style={{ width: `${fileTreeResize.width}px` }}
           >
             <div class="h-full overflow-y-auto">
@@ -625,9 +633,9 @@ export function PRDetail({ prId }: Props) {
           </aside>
         )}
 
-        {/* Mobile: file tree overlay sheet */}
-        {showFileTree && (
-          <div class="sm:hidden absolute inset-0 z-20 flex flex-col bg-white dark:bg-gray-950">
+        {/* Compact layouts: file tree overlay sheet */}
+        {compactLayout && showFileTree && (
+          <div class="absolute inset-0 z-20 flex flex-col bg-white dark:bg-gray-950">
             <div class="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0 bg-gray-50 dark:bg-gray-900">
               <span class="text-sm font-medium">Files ({prFiles.value.length})</span>
               <button
@@ -674,6 +682,7 @@ export function PRDetail({ prId }: Props) {
                 onComment={handlePostComment}
                 projectId={projectId!}
                 repoId={repoId!}
+                prId={prId}
                 sourceCommit={sourceCommit}
                 baseCommit={baseCommit}
                 view={diffView.value}
@@ -684,12 +693,14 @@ export function PRDetail({ prId }: Props) {
               <div class="flex flex-col items-center justify-center h-full text-gray-400 text-sm gap-2 px-4 text-center">
                 <span>Select a file to view its diff</span>
                 {/* Quick access to files on mobile when nothing is selected */}
-                <button
-                  class="sm:hidden text-xs px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
-                  onClick={() => setShowFileTree(true)}
-                >
-                  Browse files
-                </button>
+                {compactLayout && (
+                  <button
+                    class="text-xs px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700"
+                    onClick={() => setShowFileTree(true)}
+                  >
+                    Browse files
+                  </button>
+                )}
               </div>
             )}
           </div>

@@ -21,7 +21,28 @@ fn visible_comments(t: &CommentThread) -> Vec<&crate::provider::Comment> {
     t.comments.iter().filter(|c| !c.is_deleted).collect()
 }
 
-fn thread_to_json(t: &CommentThread) -> serde_json::Value {
+fn comment_author_id(c: &crate::provider::Comment) -> String {
+    c.author.as_ref().map(|a| a.id.clone()).unwrap_or_default()
+}
+
+fn comment_to_json(
+    c: &crate::provider::Comment,
+    current_user_id: Option<&str>,
+) -> serde_json::Value {
+    let author_id = comment_author_id(c);
+    serde_json::json!({
+        "id": c.id,
+        "author": c.author.as_ref().map(|a| a.display_name.clone()).unwrap_or_default(),
+        "authorId": author_id,
+        "content": c.content,
+        "publishedDate": c.published_date,
+        "canEdit": current_user_id
+            .map(|me| !author_id.is_empty() && author_id.eq_ignore_ascii_case(me))
+            .unwrap_or(false)
+    })
+}
+
+fn thread_to_json(t: &CommentThread, current_user_id: Option<&str>) -> serde_json::Value {
     // ADO returns thread filePath with a leading "/" (and post_comment normalizes
     // to that shape), but the frontend works in slashless paths because
     // get_pr_files strips the prefix. Strip here so `t.filePath === d.path`
@@ -42,12 +63,10 @@ fn thread_to_json(t: &CommentThread) -> serde_json::Value {
             .and_then(|ctx| ctx.right_file_end.as_ref().map(|p| p.line))
             .unwrap_or(0),
         "status": t.status,
-        "comments": visible_comments(t).iter().map(|c| serde_json::json!({
-            "id": c.id,
-            "author": c.author.as_ref().map(|a| a.display_name.clone()).unwrap_or_default(),
-            "content": c.content,
-            "publishedDate": c.published_date
-        })).collect::<Vec<_>>()
+        "comments": visible_comments(t)
+            .iter()
+            .map(|c| comment_to_json(c, current_user_id))
+            .collect::<Vec<_>>()
     })
 }
 
@@ -59,6 +78,7 @@ pub async fn get_threads(
     pr_id: i64,
 ) -> Result<Vec<serde_json::Value>, String> {
     let client = get_client(&state)?;
+    let current_user_id = client.get_authenticated_user_id().await.ok();
     let threads = client
         .get_threads(&project_id, &repo_id, pr_id)
         .await
@@ -66,7 +86,7 @@ pub async fn get_threads(
     Ok(threads
         .iter()
         .filter(|t| !t.is_deleted && !visible_comments(t).is_empty())
-        .map(thread_to_json)
+        .map(|t| thread_to_json(t, current_user_id.as_deref()))
         .collect())
 }
 
@@ -82,6 +102,7 @@ pub async fn post_comment(
     content: String,
 ) -> Result<serde_json::Value, String> {
     let client = get_client(&state)?;
+    let current_user_id = client.get_authenticated_user_id().await.ok();
     let lo = line_start.min(line_end);
     let hi = line_start.max(line_end);
 
@@ -106,7 +127,7 @@ pub async fn post_comment(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(thread_to_json(&thread))
+    Ok(thread_to_json(&thread, current_user_id.as_deref()))
 }
 
 /// Post a review finding to ADO. Supports three anchoring modes:
@@ -129,6 +150,7 @@ pub async fn post_review_finding(
     content: String,
 ) -> Result<serde_json::Value, String> {
     let client = get_client(&state)?;
+    let current_user_id = client.get_authenticated_user_id().await.ok();
 
     // Build the anchored payload (if we can).
     let anchored = match (&file_path, line_start, line_end) {
@@ -189,7 +211,7 @@ pub async fn post_review_finding(
         }
     };
 
-    Ok(thread_to_json(&thread))
+    Ok(thread_to_json(&thread, current_user_id.as_deref()))
 }
 
 #[tauri::command]
@@ -202,6 +224,7 @@ pub async fn post_reply(
     content: String,
 ) -> Result<serde_json::Value, String> {
     let client = get_client(&state)?;
+    let current_user_id = client.get_authenticated_user_id().await.ok();
 
     let body = serde_json::json!({
         "content": content,
@@ -217,8 +240,78 @@ pub async fn post_reply(
     Ok(serde_json::json!({
         "id": comment["id"],
         "author": comment.get("author").and_then(|a| a.get("displayName")).and_then(|v| v.as_str()).unwrap_or(""),
+        "authorId": comment.get("authorId")
+            .and_then(|v| v.as_str())
+            .or_else(|| comment.get("author").and_then(|a| a.get("id")).and_then(|v| v.as_str()))
+            .unwrap_or(""),
         "content": comment.get("content").and_then(|v| v.as_str()).unwrap_or(""),
-        "publishedDate": comment.get("publishedDate").and_then(|v| v.as_str()).unwrap_or("")
+        "publishedDate": comment.get("publishedDate").and_then(|v| v.as_str()).unwrap_or(""),
+        "canEdit": current_user_id
+            .as_deref()
+            .map(|me| {
+                comment.get("authorId")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| comment.get("author").and_then(|a| a.get("id")).and_then(|v| v.as_str()))
+                    .map(|id| id.eq_ignore_ascii_case(me))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }))
+}
+
+#[tauri::command]
+pub async fn update_comment(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+    thread_id: i64,
+    comment_id: i64,
+    content: String,
+    is_pr_level: bool,
+) -> Result<serde_json::Value, String> {
+    let client = get_client(&state)?;
+    let current_user_id = client
+        .get_authenticated_user_id()
+        .await
+        .map_err(|e| e.to_string())?;
+    let threads = client
+        .get_threads(&project_id, &repo_id, pr_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let comment = threads
+        .iter()
+        .flat_map(|t| visible_comments(t))
+        .find(|c| c.id == comment_id)
+        .ok_or_else(|| "Comment not found.".to_string())?;
+    let author_id = comment_author_id(comment);
+    if author_id.is_empty() || !author_id.eq_ignore_ascii_case(&current_user_id) {
+        return Err("You can only edit your own comments.".to_string());
+    }
+
+    let updated = client
+        .update_comment(
+            &project_id,
+            &repo_id,
+            pr_id,
+            thread_id,
+            comment_id,
+            &content,
+            is_pr_level,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "id": updated["id"],
+        "author": updated.get("author").and_then(|a| a.get("displayName")).and_then(|v| v.as_str()).unwrap_or(""),
+        "authorId": updated.get("authorId")
+            .and_then(|v| v.as_str())
+            .or_else(|| updated.get("author").and_then(|a| a.get("id")).and_then(|v| v.as_str()))
+            .unwrap_or(author_id.as_str()),
+        "content": updated.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+        "publishedDate": updated.get("publishedDate").and_then(|v| v.as_str()).unwrap_or(""),
+        "canEdit": true
     }))
 }
 
