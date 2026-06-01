@@ -54,13 +54,14 @@ else
   CARGO_PROFILE_FLAG=""
   CARGO_PROFILE_DIR="debug"
 fi
+CARGO_FEATURE_FLAG="--features custom-protocol"
 
 cd "$REPO_ROOT"
 npm run build
 
 cd "$TAURI_DIR"
 rustup target add "$RUST_TARGET"
-cargo build --lib --target "$RUST_TARGET" $CARGO_PROFILE_FLAG
+cargo build --lib --target "$RUST_TARGET" $CARGO_FEATURE_FLAG $CARGO_PROFILE_FLAG
 
 LIB_SOURCE="$TAURI_DIR/target/$RUST_TARGET/$CARGO_PROFILE_DIR/libpex_lib.a"
 LIB_DEST_DIR="${SRCROOT:?}/Externals/$EXTERNALS_ARCH/${CONFIGURATION:?}"
