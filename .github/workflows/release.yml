@@ -322,6 +322,25 @@ jobs:
             { print }
           ' src-tauri/Cargo.toml > src-tauri/Cargo.toml.tmp
           mv src-tauri/Cargo.toml.tmp src-tauri/Cargo.toml
+          if [ -f src-tauri/gen/apple/project.yml ]; then
+            awk -v v="$VERSION" '
+              /^        CFBundleShortVersionString:/ { print "        CFBundleShortVersionString: " v; next }
+              { print }
+            ' src-tauri/gen/apple/project.yml > src-tauri/gen/apple/project.yml.tmp
+            mv src-tauri/gen/apple/project.yml.tmp src-tauri/gen/apple/project.yml
+          fi
+          if [ -f src-tauri/gen/apple/pex_iOS/Info.plist ]; then
+            awk -v v="$VERSION" '
+              /<key>CFBundleShortVersionString<\/key>/ {
+                print
+                getline
+                print "\t<string>" v "</string>"
+                next
+              }
+              { print }
+            ' src-tauri/gen/apple/pex_iOS/Info.plist > src-tauri/gen/apple/pex_iOS/Info.plist.tmp
+            mv src-tauri/gen/apple/pex_iOS/Info.plist.tmp src-tauri/gen/apple/pex_iOS/Info.plist
+          fi
 
       - name: Commit and push if changed
         shell: bash
@@ -329,11 +348,11 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- package.json package-lock.json src-tauri/Cargo.toml; then
+          if git diff --quiet -- package.json package-lock.json src-tauri/Cargo.toml src-tauri/gen/apple/project.yml src-tauri/gen/apple/pex_iOS/Info.plist; then
             echo "Master is already at ${GITHUB_REF_NAME#v}; nothing to commit."
             exit 0
           fi
-          git add package.json package-lock.json src-tauri/Cargo.toml
+          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/gen/apple/project.yml src-tauri/gen/apple/pex_iOS/Info.plist
           # [skip ci] prevents re-triggering workflows on the bump commit.
           git commit -m "chore: sync version to ${GITHUB_REF_NAME#v} [skip ci]"
           git push origin master

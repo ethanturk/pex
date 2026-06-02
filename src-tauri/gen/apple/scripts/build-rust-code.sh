@@ -41,6 +41,15 @@ REPO_ROOT="$(cd "${SRCROOT:?}/../../.." && pwd)"
 TAURI_DIR="$REPO_ROOT/src-tauri"
 mkdir -p "${SRCROOT:?}/assets"
 
+if [ -n "${CI_TAG:-}" ]; then
+  APP_VERSION="${CI_TAG#v}"
+else
+  APP_VERSION="$(node -e 'const fs = require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).version)' "$REPO_ROOT/package.json")"
+fi
+echo "==> Xcode Cloud: setting CFBundleShortVersionString to ${APP_VERSION}"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${APP_VERSION}" \
+  "${SRCROOT:?}/pex_iOS/Info.plist"
+
 if [ -n "${CI_BUILD_NUMBER:-}" ]; then
   echo "==> Xcode Cloud: setting CFBundleVersion to ${CI_BUILD_NUMBER}"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${CI_BUILD_NUMBER}" \
