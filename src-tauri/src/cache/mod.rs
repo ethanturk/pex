@@ -94,6 +94,19 @@ pub fn diagnostics_dir() -> Result<String, AppError> {
     Ok(dir)
 }
 
+#[cfg(target_os = "android")]
+fn dirs_data_dir() -> Result<String, AppError> {
+    // Android has no $HOME. Use the app-private files directory, which is
+    // sandboxed to this app and created by the OS at install time. We resolve
+    // it from the fixed package id rather than `Context.getFilesDir()` over JNI
+    // because `init_db` runs before tao/wry initializes the `ndk_context`
+    // Android context — calling into JNI here would panic. This is the same
+    // path `getFilesDir()` returns (`/data/data/<pkg>` symlinks to the
+    // per-user dir for user 0).
+    Ok("/data/data/com.pex.pr_reviewer/files/pex".to_string())
+}
+
+#[cfg(not(target_os = "android"))]
 fn dirs_data_dir() -> Result<String, AppError> {
     // Use XDG_DATA_HOME on Linux, AppData on Windows, Application Support on Apple platforms.
     if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
