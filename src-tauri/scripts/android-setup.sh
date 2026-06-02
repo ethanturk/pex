@@ -2,7 +2,7 @@
 #
 # Reproducibly apply Pex's Android customizations to the generated Gradle
 # project (`src-tauri/gen/android`), which is .gitignored and recreated by
-# `tauri android init`. Run this after a fresh init (or any time the generated
+# `npx tauri android init`. Run this after a fresh init (or any time the generated
 # project is regenerated):
 #
 #     source .android-env.sh        # ANDROID_HOME / NDK_HOME / JDK 17 on PATH
@@ -11,7 +11,7 @@
 # It is idempotent — safe to run repeatedly.
 #
 # What it does:
-#   1. Generates the Gradle project with `tauri android init` if it's missing.
+#   1. Generates the Gradle project with `npx tauri android init` if it's missing.
 #   2. Installs the branded launcher icons. The committed source of truth is
 #      `src-tauri/icons/android/` (a full adaptive-icon set: per-density PNGs,
 #      the `mipmap-anydpi-v26` adaptive XML, and the background color). To
@@ -25,6 +25,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_TAURI="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SRC_TAURI/.." && pwd)"
 GEN="$SRC_TAURI/gen/android"
 RES="$GEN/app/src/main/res"
 ICONS="$SRC_TAURI/icons/android"
@@ -32,8 +33,8 @@ MANIFEST="$GEN/app/src/main/AndroidManifest.xml"
 
 # 1. Generate the project if it doesn't exist yet.
 if [ ! -d "$GEN" ]; then
-  echo "==> gen/android missing — running 'tauri android init'"
-  ( cd "$SRC_TAURI" && cargo tauri android init )
+  echo "==> gen/android missing — running 'npx tauri android init'"
+  ( cd "$REPO_ROOT" && npx --no-install tauri android init )
 fi
 
 # 2. Branded launcher icons.
