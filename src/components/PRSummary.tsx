@@ -37,7 +37,7 @@ function formatDate(value: string): string {
 }
 
 function sameIdentity(a: string, b: string): boolean {
-  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+  return !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
 function historyForReviewer(
@@ -46,7 +46,7 @@ function historyForReviewer(
 ): VoteHistoryEntry[] {
   return history.filter((event) => {
     if (sameIdentity(event.reviewerId, reviewer.id)) return true;
-    if (!event.reviewerId && event.reviewerName === reviewer.displayName) return true;
+    if (sameIdentity(event.reviewerName, reviewer.displayName)) return true;
     return false;
   });
 }
@@ -123,6 +123,16 @@ function votePriority(vote: number): number {
   }
 }
 
+function voteDotClass(vote: number): string {
+  switch (vote) {
+    case 10: return "bg-green-500";
+    case 5: return "bg-emerald-500";
+    case -5: return "bg-yellow-500";
+    case -10: return "bg-red-500";
+    default: return "bg-gray-400";
+  }
+}
+
 function ReviewerRow({
   reviewer,
   provider,
@@ -160,7 +170,34 @@ function VoteHistoryPanel({
   history: VoteHistoryEntry[];
   provider: Provider;
 }) {
-  const recent = [...history].reverse().slice(0, 8);
+  const timelines = Object.values(
+    history.reduce<Record<string, { key: string; name: string; events: VoteHistoryEntry[] }>>(
+      (acc, event) => {
+        const reviewerName = event.reviewerName.trim();
+        const reviewerId = event.reviewerId.trim();
+        const key = reviewerName
+          ? `name:${reviewerName.toLowerCase()}`
+          : reviewerId
+            ? `id:${reviewerId.toLowerCase()}`
+            : `thread-${event.threadId}`;
+        const name = reviewerName || reviewerId || "Unknown reviewer";
+        if (!acc[key]) acc[key] = { key, name, events: [] };
+        acc[key].events.push(event);
+        if (reviewerName) acc[key].name = reviewerName;
+        return acc;
+      },
+      {},
+    ),
+  )
+    .map((timeline) => ({
+      ...timeline,
+      events: [...timeline.events].sort((a, b) => a.publishedDate.localeCompare(b.publishedDate)),
+    }))
+    .sort((a, b) => {
+      const aLast = a.events[a.events.length - 1]?.publishedDate ?? "";
+      const bLast = b.events[b.events.length - 1]?.publishedDate ?? "";
+      return bLast.localeCompare(aLast);
+    });
 
   return (
     <div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
@@ -170,30 +207,59 @@ function VoteHistoryPanel({
           {history.length} event{history.length === 1 ? "" : "s"}
         </span>
       </div>
-      {recent.length > 0 ? (
-        <ol class="rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
-          {recent.map((event) => {
-            const vote = voteInfo(event.vote, provider);
-            return (
-              <li
-                key={`${event.threadId}-${event.publishedDate}-${event.vote}`}
-                class="flex items-center justify-between gap-3 px-3 py-2 border-b border-gray-100 dark:border-gray-800 last:border-0"
-              >
-                <div class="min-w-0">
-                  <div class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                    {event.reviewerName || event.reviewerId || "Unknown reviewer"}
-                  </div>
-                  <div class="text-xs text-gray-500 dark:text-gray-400">
-                    {formatDate(event.publishedDate)}
-                  </div>
+      {timelines.length > 0 ? (
+        <div class="space-y-4">
+          {timelines.map((timeline) => (
+            <div key={timeline.key} class="rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <div class="px-3 py-2 bg-gray-50 dark:bg-gray-800/70 border-b border-gray-200 dark:border-gray-700">
+                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
+                  {timeline.name}
                 </div>
-                <span class={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium ${vote.className}`}>
-                  {event.vote === 0 ? "Vote reset" : vote.label}
-                </span>
-              </li>
-            );
-          })}
-        </ol>
+                <div class="text-xs text-gray-500 dark:text-gray-400">
+                  {timeline.events.length} vote event{timeline.events.length === 1 ? "" : "s"}
+                </div>
+              </div>
+              <ol class="relative py-2">
+                {timeline.events.map((event, index) => {
+                  const vote = voteInfo(event.vote, provider);
+                  const previous = index > 0 ? timeline.events[index - 1] : null;
+                  const previousVote = previous ? voteInfo(previous.vote, provider) : null;
+                  const label = event.vote === 0 ? "Vote reset" : vote.label;
+                  const previousLabel = previous && previousVote
+                    ? previous.vote === 0 ? "No vote" : previousVote.label
+                    : "";
+                  const transition = previousLabel
+                    ? `${previousLabel} -> ${label}`
+                    : label;
+                  return (
+                    <li
+                      key={`${event.threadId}-${event.publishedDate}-${event.vote}`}
+                      class="grid grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-2 px-3 py-2 items-start"
+                    >
+                      <div class="relative flex justify-center h-full">
+                        {index < timeline.events.length - 1 && (
+                          <span class="absolute top-3 bottom-[-0.5rem] w-px bg-gray-200 dark:bg-gray-700" />
+                        )}
+                        <span class={`relative mt-1 w-2 h-2 rounded-full ${voteDotClass(event.vote)}`} />
+                      </div>
+                      <div class="min-w-0">
+                        <div class="text-sm text-gray-900 dark:text-gray-100">
+                          {transition}
+                        </div>
+                        <div class="text-xs text-gray-500 dark:text-gray-400">
+                          {formatDate(event.publishedDate)}
+                        </div>
+                      </div>
+                      <span class={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium ${vote.className}`}>
+                        {event.vote === 0 ? "No vote" : vote.shortLabel}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          ))}
+        </div>
       ) : (
         <div class="text-sm text-gray-500 dark:text-gray-400">
           No historical vote events were found for this PR.
@@ -336,9 +402,11 @@ export function PRSummary({
   const sourceBranch = branchName(pullRequest.sourceRefName);
   const targetBranch = branchName(pullRequest.targetRefName);
   const currentReviewer = reviewers.find((r) => sameIdentity(r.id, currentUserId));
-  const myHistory = currentUserId
-    ? voteHistory.filter((event) => sameIdentity(event.reviewerId, currentUserId))
-    : [];
+  const myHistory = currentReviewer
+    ? historyForReviewer(currentReviewer, voteHistory)
+    : currentUserId
+      ? voteHistory.filter((event) => sameIdentity(event.reviewerId, currentUserId))
+      : [];
   const latestMyHistory = myHistory[myHistory.length - 1];
   const myApprovalWasReset =
     currentReviewer?.vote === 0 &&

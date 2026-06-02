@@ -1,4 +1,4 @@
-use crate::provider::CommentThread;
+use crate::provider::{CommentThread, Reviewer};
 use crate::AppState;
 use tauri::State;
 
@@ -67,7 +67,42 @@ fn property_i32(properties: &Option<serde_json::Value>, key: &str) -> Option<i32
     })
 }
 
-fn vote_history_event(t: &CommentThread) -> Option<serde_json::Value> {
+fn reviewer_display_name<'a>(reviewers: &'a [Reviewer], reviewer_id: &str) -> Option<&'a str> {
+    reviewers
+        .iter()
+        .find(|reviewer| !reviewer_id.is_empty() && reviewer.id.eq_ignore_ascii_case(reviewer_id))
+        .map(|reviewer| reviewer.display_name.as_str())
+}
+
+fn vote_comment_content(t: &CommentThread) -> Option<String> {
+    visible_comments(t)
+        .into_iter()
+        .find_map(|c| c.content.clone().filter(|content| !content.is_empty()))
+}
+
+fn vote_name_from_comment(content: &str) -> Option<String> {
+    let (name, _) = content.split_once(" voted ")?;
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn useful_reviewer_name(name: &str, reviewer_id: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty()
+        || (!reviewer_id.is_empty() && name.eq_ignore_ascii_case(reviewer_id))
+        || name.chars().all(|c| c.is_ascii_digit())
+    {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn vote_history_event(t: &CommentThread, reviewers: &[Reviewer]) -> Option<serde_json::Value> {
     let thread_type = property_string(&t.properties, "CodeReviewThreadType")?;
     if !thread_type.eq_ignore_ascii_case("VoteUpdate") {
         return None;
@@ -76,9 +111,16 @@ fn vote_history_event(t: &CommentThread) -> Option<serde_json::Value> {
     let reviewer_id = property_string(&t.properties, "CodeReviewVotedByTfId")
         .or_else(|| property_string(&t.properties, "CodeReviewVotedByIdentity"))
         .unwrap_or_default();
-    let reviewer_name =
-        property_string(&t.properties, "CodeReviewVotedByDisplayName").unwrap_or_default();
+    let property_reviewer_name = property_string(&t.properties, "CodeReviewVotedByDisplayName");
+    let reviewer_name = property_reviewer_name
+        .as_deref()
+        .and_then(|name| useful_reviewer_name(name, &reviewer_id))
+        .or_else(|| reviewer_display_name(reviewers, &reviewer_id).map(str::to_string))
+        .or_else(|| vote_comment_content(t).and_then(|content| vote_name_from_comment(&content)))
+        .or_else(|| property_reviewer_name.filter(|name| !name.trim().is_empty()))
+        .unwrap_or_default();
     let vote = property_i32(&t.properties, "CodeReviewVoteResult")?;
+    let content = vote_comment_content(t).unwrap_or_default();
     let published_date = visible_comments(t)
         .into_iter()
         .filter_map(|c| c.published_date.clone())
@@ -91,6 +133,7 @@ fn vote_history_event(t: &CommentThread) -> Option<serde_json::Value> {
         "reviewerName": reviewer_name,
         "vote": vote,
         "publishedDate": published_date,
+        "content": content,
     }))
 }
 
@@ -130,14 +173,16 @@ pub async fn get_vote_history(
     pr_id: i64,
 ) -> Result<Vec<serde_json::Value>, String> {
     let client = get_client(&state)?;
-    let threads = client
-        .get_threads(&project_id, &repo_id, pr_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (threads, reviewers) = tokio::try_join!(
+        client.get_threads(&project_id, &repo_id, pr_id),
+        client.get_pull_request(&project_id, &repo_id, pr_id),
+    )
+    .map_err(|e| e.to_string())
+    .map(|(threads, pr)| (threads, pr.reviewers))?;
     let mut events = threads
         .iter()
         .filter(|t| !t.is_deleted)
-        .filter_map(vote_history_event)
+        .filter_map(|t| vote_history_event(t, &reviewers))
         .collect::<Vec<_>>();
     events.sort_by(|a, b| {
         a.get("publishedDate")
@@ -458,7 +503,7 @@ mod tests {
             }],
         };
 
-        let event = vote_history_event(&thread).expect("vote event");
+        let event = vote_history_event(&thread, &[]).expect("vote event");
         assert_eq!(event["threadId"], 42);
         assert_eq!(event["reviewerId"], "user-1");
         assert_eq!(event["reviewerName"], "Ethan Turk");
@@ -482,7 +527,7 @@ mod tests {
             comments: vec![],
         };
 
-        let event = vote_history_event(&thread).expect("vote event");
+        let event = vote_history_event(&thread, &[]).expect("vote event");
         assert_eq!(event["vote"], 0);
         assert_eq!(event["publishedDate"], "");
     }
@@ -500,6 +545,83 @@ mod tests {
             })),
         };
 
-        assert!(vote_history_event(&thread).is_none());
+        assert!(vote_history_event(&thread, &[]).is_none());
+    }
+
+    #[test]
+    fn vote_history_event_uses_reviewer_name_when_thread_has_only_id() {
+        let thread = CommentThread {
+            id: 45,
+            thread_context: None,
+            status: None,
+            is_deleted: false,
+            properties: Some(serde_json::json!({
+                "CodeReviewThreadType": prop("VoteUpdate"),
+                "CodeReviewVotedByTfId": prop("user-1"),
+                "CodeReviewVoteResult": prop(10),
+            })),
+            comments: vec![],
+        };
+        let reviewers = vec![Reviewer {
+            id: "user-1".to_string(),
+            display_name: "Ethan Turk".to_string(),
+            vote: 10,
+            is_required: false,
+        }];
+
+        let event = vote_history_event(&thread, &reviewers).expect("vote event");
+        assert_eq!(event["reviewerName"], "Ethan Turk");
+    }
+
+    #[test]
+    fn vote_history_event_uses_system_comment_when_properties_lack_name() {
+        let thread = CommentThread {
+            id: 46,
+            thread_context: None,
+            status: None,
+            is_deleted: false,
+            properties: Some(serde_json::json!({
+                "CodeReviewThreadType": prop("VoteUpdate"),
+                "CodeReviewVotedByTfId": prop("1"),
+                "CodeReviewVoteResult": prop(-5),
+            })),
+            comments: vec![crate::provider::Comment {
+                id: 1,
+                author: None,
+                content: Some("Ethan Turk voted -5".to_string()),
+                published_date: Some("2026-06-02T18:00:00Z".to_string()),
+                is_deleted: false,
+            }],
+        };
+
+        let event = vote_history_event(&thread, &[]).expect("vote event");
+        assert_eq!(event["reviewerName"], "Ethan Turk");
+        assert_eq!(event["content"], "Ethan Turk voted -5");
+    }
+
+    #[test]
+    fn vote_history_event_prefers_system_comment_over_numeric_display_name() {
+        let thread = CommentThread {
+            id: 47,
+            thread_context: None,
+            status: None,
+            is_deleted: false,
+            properties: Some(serde_json::json!({
+                "CodeReviewThreadType": prop("VoteUpdate"),
+                "CodeReviewVotedByTfId": prop("1"),
+                "CodeReviewVotedByDisplayName": prop("1"),
+                "CodeReviewVoteResult": prop(10),
+            })),
+            comments: vec![crate::provider::Comment {
+                id: 1,
+                author: None,
+                content: Some("Ethan Turk voted 10".to_string()),
+                published_date: Some("2026-06-02T18:00:00Z".to_string()),
+                is_deleted: false,
+            }],
+        };
+
+        let event = vote_history_event(&thread, &[]).expect("vote event");
+        assert_eq!(event["reviewerName"], "Ethan Turk");
     }
 }

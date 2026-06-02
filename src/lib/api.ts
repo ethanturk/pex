@@ -71,6 +71,7 @@ export interface VoteHistoryEntry {
   reviewerName: string;
   vote: number;
   publishedDate: string;
+  content: string;
 }
 
 // ============= Auth =============
