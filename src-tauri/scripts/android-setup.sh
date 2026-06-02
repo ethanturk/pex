@@ -57,4 +57,22 @@ else
   perl -0pi -e 's{(android:name="\.MainActivity")}{$1\n            android:windowSoftInputMode="adjustResize"}' "$MANIFEST"
 fi
 
+# 4. Release signing config. The signing material lives in
+#    gen/android/keystore.properties (git-ignored; written from secrets in CI or
+#    by the developer locally). When that file is absent the release build is
+#    simply unsigned, so this is safe to apply unconditionally.
+GRADLE="$GEN/app/build.gradle.kts"
+if grep -q 'pex-signing' "$GRADLE"; then
+  echo "==> Signing config already present — skipping"
+else
+  echo "==> Injecting release signing config into build.gradle.kts"
+  # Load keystore.properties (uses the `import java.util.Properties` already at
+  # the top of the generated file).
+  perl -0pi -e 's~\nandroid \{\n~\n// pex-signing: release signing pulled from keystore.properties (git-ignored)\nval keystorePropertiesFile = rootProject.file("keystore.properties")\nval keystoreProperties = Properties().apply {\n    if (keystorePropertiesFile.exists()) keystorePropertiesFile.inputStream().use { load(it) }\n}\n\nandroid {\n~' "$GRADLE"
+  # Declare the release signingConfig (populated only when the keystore exists).
+  perl -0pi -e 's~\n    buildTypes \{\n~\n    signingConfigs {\n        create("release") {\n            if (keystorePropertiesFile.exists()) {\n                storeFile = file(keystoreProperties.getProperty("storeFile"))\n                storePassword = keystoreProperties.getProperty("storePassword")\n                keyAlias = keystoreProperties.getProperty("keyAlias")\n                keyPassword = keystoreProperties.getProperty("keyPassword")\n            }\n        }\n    }\n    buildTypes {\n~' "$GRADLE"
+  # Apply it to the release build type (only when a keystore is configured).
+  perl -0pi -e 's~(        getByName\("release"\) \{\n)~${1}            if (keystorePropertiesFile.exists()) signingConfig = signingConfigs.getByName("release")\n~' "$GRADLE"
+fi
+
 echo "==> Android customizations applied."

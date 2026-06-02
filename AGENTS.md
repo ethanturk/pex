@@ -280,5 +280,54 @@ cd src-tauri && cargo build && cargo test --lib   # 18 tests
 tauri ios build        # produces .ipa for App Store / TestFlight
 
 # Android app (needs Android SDK + NDK)
-tauri android build    # produces .apk / .aab for Play Store
+tauri android build    # produces a signed .apk / .aab (release)
+```
+
+> **Dev vs. release builds:** `tauri android dev` and `tauri android build --debug`
+> point the WebView at the Vite dev server (`http://localhost:1420`) and only
+> work while that server is running — opening such a build standalone shows
+> `Failed to request http://localhost:1420/`. Only a **release** build
+> (`tauri android build`) bundles the frontend (served from `https://tauri.localhost`
+> via the asset loader) and runs offline. Ship release builds.
+
+### Release signing & distribution (Firebase App Distribution)
+
+CI lives in `.github/workflows/release.yml`. On a `v*` tag, the **`android`**
+job builds a **signed universal APK** and uploads it to **Firebase App
+Distribution**. Signing is wired by `npm run android:setup`, which injects a
+gradle `signingConfig` that reads `src-tauri/gen/android/keystore.properties`
+(git-ignored). When that file is absent the release build is simply unsigned.
+
+**Required GitHub secrets:**
+
+| Secret | What |
+|--------|------|
+| `ANDROID_KEYSTORE_BASE64` | `base64 -w0 release.jks` of your release keystore |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore (store) password |
+| `ANDROID_KEY_ALIAS` | signing key alias |
+| `ANDROID_KEY_PASSWORD` | signing key password |
+| `FIREBASE_ANDROID_APP_ID` | Firebase Android app id (e.g. `1:123:android:abcd`) |
+| `FIREBASE_SERVICE_ACCOUNT` | Firebase service-account JSON (App Distribution Admin) |
+
+Optional repo **variable** `FIREBASE_TESTER_GROUPS` (comma-separated; defaults to `testers`).
+
+**Build a signed APK locally:**
+
+```bash
+# 1. one-time: create a release keystore
+keytool -genkeypair -v -keystore release.jks -alias upload \
+  -keyalg RSA -keysize 2048 -validity 10000
+
+# 2. point the build at it (git-ignored; absolute storeFile path)
+cat > src-tauri/gen/android/keystore.properties <<EOF
+storeFile=$PWD/release.jks
+storePassword=…
+keyAlias=upload
+keyPassword=…
+EOF
+
+# 3. build (android:setup already injected the signing config)
+source .android-env.sh
+npm run android:setup           # idempotent
+npx tauri android build --apk   # → app-universal-release.apk (signed)
 ```
