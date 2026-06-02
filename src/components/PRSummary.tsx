@@ -1,4 +1,4 @@
-import type { PullRequest, PRCheck, Reviewer } from "@/lib/api";
+import type { PullRequest, PRCheck, Reviewer, VoteHistoryEntry } from "@/lib/api";
 import { prFiles } from "@/lib/signals";
 import { getPrCheckRollup } from "@/lib/prChecks";
 
@@ -15,6 +15,8 @@ interface Props {
   prId: number;
   provider: Provider;
   iterationCount: number;
+  voteHistory: VoteHistoryEntry[];
+  currentUserId: string;
   checksEnabled: boolean;
   checksState: ChecksState;
   onRefreshChecks: () => void;
@@ -25,12 +27,35 @@ function branchName(refName: string): string {
 }
 
 function formatDate(value: string): string {
+  if (!value) return "Unknown";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function sameIdentity(a: string, b: string): boolean {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
+function historyForReviewer(
+  reviewer: Reviewer,
+  history: VoteHistoryEntry[],
+): VoteHistoryEntry[] {
+  return history.filter((event) => {
+    if (sameIdentity(event.reviewerId, reviewer.id)) return true;
+    if (!event.reviewerId && event.reviewerName === reviewer.displayName) return true;
+    return false;
+  });
+}
+
+function reviewerHadResetApproval(reviewer: Reviewer, history: VoteHistoryEntry[]): boolean {
+  const events = historyForReviewer(reviewer, history);
+  if (reviewer.vote !== 0 || events.length < 2) return false;
+  const latest = events[events.length - 1];
+  return latest?.vote === 0 && events.slice(0, -1).some((event) => event.vote === 10);
 }
 
 function statusClass(status: string): string {
@@ -98,17 +123,26 @@ function votePriority(vote: number): number {
   }
 }
 
-function ReviewerRow({ reviewer, provider }: { reviewer: Reviewer; provider: Provider }) {
+function ReviewerRow({
+  reviewer,
+  provider,
+  history,
+}: {
+  reviewer: Reviewer;
+  provider: Provider;
+  history: VoteHistoryEntry[];
+}) {
   const vote = voteInfo(reviewer.vote, provider);
+  const resetApproval = reviewerHadResetApproval(reviewer, history);
   return (
     <li class="flex items-center justify-between gap-3 px-3 py-2 border-b border-gray-100 dark:border-gray-800 last:border-0">
       <div class="min-w-0">
         <div class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
           {reviewer.displayName}
         </div>
-        {reviewer.isRequired && (
+        {(resetApproval || reviewer.isRequired) && (
           <div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            Required reviewer
+            {resetApproval ? "Previously approved; vote reset" : "Required reviewer"}
           </div>
         )}
       </div>
@@ -116,6 +150,56 @@ function ReviewerRow({ reviewer, provider }: { reviewer: Reviewer; provider: Pro
         {vote.label}
       </span>
     </li>
+  );
+}
+
+function VoteHistoryPanel({
+  history,
+  provider,
+}: {
+  history: VoteHistoryEntry[];
+  provider: Provider;
+}) {
+  const recent = [...history].reverse().slice(0, 8);
+
+  return (
+    <div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Historical votes</h2>
+        <span class="text-xs text-gray-500 dark:text-gray-400">
+          {history.length} event{history.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {recent.length > 0 ? (
+        <ol class="rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+          {recent.map((event) => {
+            const vote = voteInfo(event.vote, provider);
+            return (
+              <li
+                key={`${event.threadId}-${event.publishedDate}-${event.vote}`}
+                class="flex items-center justify-between gap-3 px-3 py-2 border-b border-gray-100 dark:border-gray-800 last:border-0"
+              >
+                <div class="min-w-0">
+                  <div class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                    {event.reviewerName || event.reviewerId || "Unknown reviewer"}
+                  </div>
+                  <div class="text-xs text-gray-500 dark:text-gray-400">
+                    {formatDate(event.publishedDate)}
+                  </div>
+                </div>
+                <span class={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium ${vote.className}`}>
+                  {event.vote === 0 ? "Vote reset" : vote.label}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <div class="text-sm text-gray-500 dark:text-gray-400">
+          No historical vote events were found for this PR.
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -227,6 +311,8 @@ export function PRSummary({
   prId,
   provider,
   iterationCount,
+  voteHistory,
+  currentUserId,
   checksEnabled,
   checksState,
   onRefreshChecks,
@@ -249,6 +335,15 @@ export function PRSummary({
   const votedCount = reviewers.filter((r) => r.vote !== 0).length;
   const sourceBranch = branchName(pullRequest.sourceRefName);
   const targetBranch = branchName(pullRequest.targetRefName);
+  const currentReviewer = reviewers.find((r) => sameIdentity(r.id, currentUserId));
+  const myHistory = currentUserId
+    ? voteHistory.filter((event) => sameIdentity(event.reviewerId, currentUserId))
+    : [];
+  const latestMyHistory = myHistory[myHistory.length - 1];
+  const myApprovalWasReset =
+    currentReviewer?.vote === 0 &&
+    latestMyHistory?.vote === 0 &&
+    myHistory.slice(0, -1).some((event) => event.vote === 10);
 
   return (
     <div class="h-full bg-gray-50 dark:bg-gray-800/50 overflow-y-auto">
@@ -297,10 +392,21 @@ export function PRSummary({
           </div>
         </section>
 
+        {myApprovalWasReset && (
+          <section class="rounded border border-yellow-300 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-900/20 p-4">
+            <div class="text-sm font-semibold text-yellow-900 dark:text-yellow-200">
+              Your previous approval was reset
+            </div>
+            <div class="text-sm text-yellow-800 dark:text-yellow-300 mt-1">
+              You approved this PR earlier, but your current vote is now no vote. Review the latest changes before voting again.
+            </div>
+          </section>
+        )}
+
         <section class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
           <div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 min-w-0">
             <div class="flex items-center justify-between gap-3 mb-3">
-              <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Previous votes</h2>
+              <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Current votes</h2>
               <span class="text-xs text-gray-500 dark:text-gray-400">
                 {votedCount}/{reviewers.length} reviewers voted
               </span>
@@ -310,7 +416,12 @@ export function PRSummary({
               {reviewers.length > 0 ? (
                 <ul class="divide-y-0">
                   {reviewers.map((reviewer) => (
-                    <ReviewerRow key={reviewer.id} reviewer={reviewer} provider={provider} />
+                    <ReviewerRow
+                      key={reviewer.id}
+                      reviewer={reviewer}
+                      provider={provider}
+                      history={voteHistory}
+                    />
                   ))}
                 </ul>
               ) : (
@@ -342,6 +453,8 @@ export function PRSummary({
             />
           </div>
         </section>
+
+        <VoteHistoryPanel history={voteHistory} provider={provider} />
 
         {pullRequest.description && (
           <section class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">

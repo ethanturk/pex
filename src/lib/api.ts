@@ -65,6 +65,14 @@ export interface Comment {
   canEdit: boolean;
 }
 
+export interface VoteHistoryEntry {
+  threadId: number;
+  reviewerId: string;
+  reviewerName: string;
+  vote: number;
+  publishedDate: string;
+}
+
 // ============= Auth =============
 
 export async function loginPat(
@@ -253,6 +261,14 @@ export async function getViewedFiles(
 }
 
 // ============= Comments =============
+
+export async function getVoteHistory(
+  projectId: string,
+  repoId: string,
+  prId: number,
+): Promise<VoteHistoryEntry[]> {
+  return invoke<VoteHistoryEntry[]>("get_vote_history", { projectId, repoId, prId });
+}
 
 export async function getThreads(
   projectId: string,

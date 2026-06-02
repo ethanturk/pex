@@ -6,6 +6,8 @@ import {
   getPullRequest,
   getPrFiles,
   getViewedFiles,
+  getVoteHistory,
+  getCurrentUserId,
   markFileViewed,
   getFileDiff,
   prefetchPrDiffs,
@@ -16,6 +18,7 @@ import {
   type CommentThread,
   type PullRequest,
   type PRCheck,
+  type VoteHistoryEntry,
   type FileDiff,
 } from "@/lib/api";
 import { getPrCheckRollup, describeChecksError } from "@/lib/prChecks";
@@ -111,6 +114,8 @@ export function PRDetail({ prId }: Props) {
   const [loading, setLoading] = useState(false);
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
+  const [voteHistory, setVoteHistory] = useState<VoteHistoryEntry[]>([]);
+  const [currentUserId, setCurrentUserId] = useState("");
   const [copied, setCopied] = useState(false);
   const [voteError, setVoteError] = useState<string>("");
   const [checksState, setChecksState] = useState<PRChecksState>({
@@ -175,6 +180,7 @@ export function PRDetail({ prId }: Props) {
     setOldContent("");
     setNewContent("");
     setThreads([]);
+    setVoteHistory([]);
     setChecksState({ loading: false, checks: [], error: "" });
   }, [prId]);
 
@@ -200,6 +206,43 @@ export function PRDetail({ prId }: Props) {
       cancelled = true;
     };
   }, [projectId, repoId, prId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId || !repoId) {
+      setVoteHistory([]);
+      return;
+    }
+
+    getVoteHistory(projectId, repoId, prId)
+      .then((history) => {
+        if (!cancelled) setVoteHistory(history);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setVoteHistory([]);
+          console.debug("Failed to load vote history:", e);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, repoId, prId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCurrentUserId()
+      .then((id) => {
+        if (!cancelled) setCurrentUserId(id);
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentUserId("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, repoId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -666,6 +709,8 @@ export function PRDetail({ prId }: Props) {
                 prId={prId}
                 provider={activeOrg.value?.provider}
                 iterationCount={iterationCount}
+                voteHistory={voteHistory}
+                currentUserId={currentUserId}
                 checksEnabled={checksEnabled}
                 checksState={checksState}
                 onRefreshChecks={loadChecks}

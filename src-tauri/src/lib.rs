@@ -114,6 +114,7 @@ pub fn run() {
             commands::files::get_file_lines,
             commands::files::mark_file_viewed,
             commands::files::get_viewed_files,
+            commands::comments::get_vote_history,
             commands::comments::get_threads,
             commands::comments::post_comment,
             commands::comments::post_review_finding,

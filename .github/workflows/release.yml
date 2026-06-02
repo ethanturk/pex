@@ -93,9 +93,8 @@ jobs:
           args: --target ${{ matrix.target }}
 
   # Android: build a signed universal APK and ship it to Firebase App
-  # Distribution. Runs in parallel with the desktop `build` job (does not block
-  # `sync-version`, so a desktop release still completes if Android secrets are
-  # not configured yet).
+  # Distribution. Runs in parallel with the desktop `build` job, so a desktop
+  # release still completes if Android secrets are not configured yet.
   #
   # Required repository secrets:
   #   ANDROID_KEYSTORE_BASE64    - base64 of the release keystore (.jks/.keystore)
@@ -291,68 +290,3 @@ jobs:
           groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
           releaseNotes: 'Pex ${{ github.ref_name }}'
           file: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
-
-  # After every build target succeeds, commit the bumped version back to
-  # master so the source tree stays honest about what was released. Runs once
-  # (not in the matrix) on ubuntu.
-  sync-version:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: master
-          # We need the default token to be able to push back. If branch
-          # protection blocks bot pushes, this step will fail loudly — fix
-          # by allowing github-actions[bot] to bypass, or by replacing
-          # GITHUB_TOKEN with a PAT in `token:`.
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Apply version bump to master
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
-          awk -v v="$VERSION" '
-            BEGIN { done = 0 }
-            /^version = "[^"]*"/ && !done { sub(/"[^"]*"/, "\"" v "\""); done = 1 }
-            { print }
-          ' src-tauri/Cargo.toml > src-tauri/Cargo.toml.tmp
-          mv src-tauri/Cargo.toml.tmp src-tauri/Cargo.toml
-          if [ -f src-tauri/gen/apple/project.yml ]; then
-            awk -v v="$VERSION" '
-              /^        CFBundleShortVersionString:/ { print "        CFBundleShortVersionString: " v; next }
-              { print }
-            ' src-tauri/gen/apple/project.yml > src-tauri/gen/apple/project.yml.tmp
-            mv src-tauri/gen/apple/project.yml.tmp src-tauri/gen/apple/project.yml
-          fi
-          if [ -f src-tauri/gen/apple/pex_iOS/Info.plist ]; then
-            awk -v v="$VERSION" '
-              /<key>CFBundleShortVersionString<\/key>/ {
-                print
-                getline
-                print "\t<string>" v "</string>"
-                next
-              }
-              { print }
-            ' src-tauri/gen/apple/pex_iOS/Info.plist > src-tauri/gen/apple/pex_iOS/Info.plist.tmp
-            mv src-tauri/gen/apple/pex_iOS/Info.plist.tmp src-tauri/gen/apple/pex_iOS/Info.plist
-          fi
-
-      - name: Commit and push if changed
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- package.json package-lock.json src-tauri/Cargo.toml src-tauri/gen/apple/project.yml src-tauri/gen/apple/pex_iOS/Info.plist; then
-            echo "Master is already at ${GITHUB_REF_NAME#v}; nothing to commit."
-            exit 0
-          fi
-          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/gen/apple/project.yml src-tauri/gen/apple/pex_iOS/Info.plist
-          # [skip ci] prevents re-triggering workflows on the bump commit.
-          git commit -m "chore: sync version to ${GITHUB_REF_NAME#v} [skip ci]"
-          git push origin master

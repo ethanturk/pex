@@ -42,6 +42,58 @@ fn comment_to_json(
     })
 }
 
+fn property_value<'a>(
+    properties: &'a Option<serde_json::Value>,
+    key: &str,
+) -> Option<&'a serde_json::Value> {
+    properties.as_ref()?.get(key)?.get("$value")
+}
+
+fn property_string(properties: &Option<serde_json::Value>, key: &str) -> Option<String> {
+    property_value(properties, key).and_then(|value| {
+        value
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| value.as_i64().map(|n| n.to_string()))
+    })
+}
+
+fn property_i32(properties: &Option<serde_json::Value>, key: &str) -> Option<i32> {
+    property_value(properties, key).and_then(|value| {
+        value
+            .as_i64()
+            .and_then(|n| i32::try_from(n).ok())
+            .or_else(|| value.as_str()?.parse::<i32>().ok())
+    })
+}
+
+fn vote_history_event(t: &CommentThread) -> Option<serde_json::Value> {
+    let thread_type = property_string(&t.properties, "CodeReviewThreadType")?;
+    if !thread_type.eq_ignore_ascii_case("VoteUpdate") {
+        return None;
+    }
+
+    let reviewer_id = property_string(&t.properties, "CodeReviewVotedByTfId")
+        .or_else(|| property_string(&t.properties, "CodeReviewVotedByIdentity"))
+        .unwrap_or_default();
+    let reviewer_name =
+        property_string(&t.properties, "CodeReviewVotedByDisplayName").unwrap_or_default();
+    let vote = property_i32(&t.properties, "CodeReviewVoteResult")?;
+    let published_date = visible_comments(t)
+        .into_iter()
+        .filter_map(|c| c.published_date.clone())
+        .next()
+        .unwrap_or_default();
+
+    Some(serde_json::json!({
+        "threadId": t.id,
+        "reviewerId": reviewer_id,
+        "reviewerName": reviewer_name,
+        "vote": vote,
+        "publishedDate": published_date,
+    }))
+}
+
 fn thread_to_json(t: &CommentThread, current_user_id: Option<&str>) -> serde_json::Value {
     // ADO returns thread filePath with a leading "/" (and post_comment normalizes
     // to that shape), but the frontend works in slashless paths because
@@ -68,6 +120,36 @@ fn thread_to_json(t: &CommentThread, current_user_id: Option<&str>) -> serde_jso
             .map(|c| comment_to_json(c, current_user_id))
             .collect::<Vec<_>>()
     })
+}
+
+#[tauri::command]
+pub async fn get_vote_history(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+) -> Result<Vec<serde_json::Value>, String> {
+    let client = get_client(&state)?;
+    let threads = client
+        .get_threads(&project_id, &repo_id, pr_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut events = threads
+        .iter()
+        .filter(|t| !t.is_deleted)
+        .filter_map(vote_history_event)
+        .collect::<Vec<_>>();
+    events.sort_by(|a, b| {
+        a.get("publishedDate")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .cmp(
+                b.get("publishedDate")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+            )
+    });
+    Ok(events)
 }
 
 #[tauri::command]
@@ -344,4 +426,80 @@ fn get_client(state: &AppState) -> Result<crate::provider::GitClient, String> {
         .as_ref()
         .cloned()
         .ok_or_else(|| "Not authenticated".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prop(value: impl serde::Serialize) -> serde_json::Value {
+        serde_json::json!({ "$value": value })
+    }
+
+    #[test]
+    fn vote_history_event_extracts_ado_vote_update() {
+        let thread = CommentThread {
+            id: 42,
+            thread_context: None,
+            status: None,
+            is_deleted: false,
+            properties: Some(serde_json::json!({
+                "CodeReviewThreadType": prop("VoteUpdate"),
+                "CodeReviewVotedByTfId": prop("user-1"),
+                "CodeReviewVotedByDisplayName": prop("Ethan Turk"),
+                "CodeReviewVoteResult": prop(10),
+            })),
+            comments: vec![crate::provider::Comment {
+                id: 1,
+                author: None,
+                content: None,
+                published_date: Some("2026-06-02T18:00:00Z".to_string()),
+                is_deleted: false,
+            }],
+        };
+
+        let event = vote_history_event(&thread).expect("vote event");
+        assert_eq!(event["threadId"], 42);
+        assert_eq!(event["reviewerId"], "user-1");
+        assert_eq!(event["reviewerName"], "Ethan Turk");
+        assert_eq!(event["vote"], 10);
+        assert_eq!(event["publishedDate"], "2026-06-02T18:00:00Z");
+    }
+
+    #[test]
+    fn vote_history_event_extracts_reset_vote() {
+        let thread = CommentThread {
+            id: 43,
+            thread_context: None,
+            status: None,
+            is_deleted: false,
+            properties: Some(serde_json::json!({
+                "CodeReviewThreadType": prop("VoteUpdate"),
+                "CodeReviewVotedByTfId": prop("user-1"),
+                "CodeReviewVotedByDisplayName": prop("Ethan Turk"),
+                "CodeReviewVoteResult": prop(0),
+            })),
+            comments: vec![],
+        };
+
+        let event = vote_history_event(&thread).expect("vote event");
+        assert_eq!(event["vote"], 0);
+        assert_eq!(event["publishedDate"], "");
+    }
+
+    #[test]
+    fn vote_history_event_ignores_non_vote_threads() {
+        let thread = CommentThread {
+            id: 44,
+            thread_context: None,
+            status: None,
+            comments: vec![],
+            is_deleted: false,
+            properties: Some(serde_json::json!({
+                "CodeReviewThreadType": prop("General"),
+            })),
+        };
+
+        assert!(vote_history_event(&thread).is_none());
+    }
 }

@@ -130,6 +130,8 @@ pub struct CommentThread {
     pub comments: Vec<Comment>,
     #[serde(rename = "isDeleted", default)]
     pub is_deleted: bool,
+    #[serde(default)]
+    pub properties: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

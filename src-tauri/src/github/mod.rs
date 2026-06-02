@@ -905,6 +905,7 @@ fn review_comment_to_thread(c: &serde_json::Value) -> CommentThread {
         status: None,
         comments: vec![json_comment(c)],
         is_deleted: false,
+        properties: None,
     }
 }
 
@@ -915,6 +916,7 @@ fn issue_comment_to_thread(c: &serde_json::Value) -> CommentThread {
         status: None,
         comments: vec![json_comment(c)],
         is_deleted: false,
+        properties: None,
     }
 }
 
