@@ -24,3 +24,6 @@ Thumbs.db
 # Pex
 pex.db
 .claude/settings.local.json
+
+# Local Android toolchain env (machine-specific SDK/NDK/JDK paths)
+.android-env.sh

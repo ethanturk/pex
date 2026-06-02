@@ -24,6 +24,7 @@ pub enum AppError {
     Auth(String),
     #[error("Cache error: {0}")]
     Cache(#[from] rusqlite::Error),
+    #[cfg(not(target_os = "android"))]
     #[error("Keyring error: {0}")]
     Keyring(#[from] keyring::Error),
     #[error("HTTP error: {0}")]
@@ -73,7 +74,15 @@ pub fn run() {
                 });
                 window_state::restore(&window);
             }
-            #[cfg(any(target_os = "linux", mobile))]
+            #[cfg(target_os = "android")]
+            {
+                use tauri::Manager;
+                match app.path().app_data_dir() {
+                    Ok(dir) => auth::android_keystore::init(dir),
+                    Err(e) => eprintln!("pex: could not resolve app data dir: {e}"),
+                }
+            }
+            #[cfg(any(target_os = "linux", target_os = "ios"))]
             let _ = app;
             Ok(())
         })

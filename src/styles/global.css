@@ -268,3 +268,19 @@ html[data-diff-size="xl"]     { --diff-font-size: 18px; --diff-line-height: 28px
     -webkit-tap-highlight-color: transparent;
   }
 }
+
+/* Placeholder color — set explicitly with a literal value so the hint text
+   renders reliably in the Android/iOS WebView. Tailwind v4's Preflight colors
+   `::placeholder` via `color-mix(... in oklab ...)` and oklch theme variables,
+   which can compute to an invisible/unsupported color in some WebView builds
+   (e.g. the empty-looking inputs on Android). Element-scoped + after the
+   Tailwind import so it wins the cascade. */
+input::placeholder,
+textarea::placeholder {
+  color: #9ca3af; /* gray-400 */
+  opacity: 1;
+}
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: #6b7280; /* gray-500 — readable on dark inputs */
+}
