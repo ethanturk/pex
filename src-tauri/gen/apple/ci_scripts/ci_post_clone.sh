@@ -29,8 +29,9 @@ retry() {
 }
 
 install_rustup() {
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --profile minimal --default-toolchain stable
+  rustup_script="${TMPDIR:-/tmp}/rustup-init.sh"
+  curl --proto '=https' --tlsv1.2 -sSfL https://sh.rustup.rs -o "$rustup_script"
+  sh "$rustup_script" -y --profile minimal --default-toolchain stable
 }
 
 if ! command -v npm >/dev/null 2>&1; then
@@ -46,8 +47,16 @@ if ! command -v rustup >/dev/null 2>&1; then
   retry install_rustup
 fi
 
-# shellcheck disable=SC1091
-. "$HOME/.cargo/env"
+if [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.cargo/env"
+elif command -v cargo >/dev/null 2>&1; then
+  echo "==> Using Rust toolchain already available on PATH"
+else
+  echo "Rust toolchain bootstrap did not create $HOME/.cargo/env and cargo is not on PATH." >&2
+  echo "Check Xcode Cloud network/DNS access to https://sh.rustup.rs and retry the build." >&2
+  exit 1
+fi
 
 echo "==> Installing Rust iOS targets"
 retry rustup target add aarch64-apple-ios aarch64-apple-ios-sim
