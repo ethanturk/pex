@@ -5,9 +5,11 @@ import {
   prFiles,
   reviewRuns,
   activeReviewPrId,
+  PR_SUMMARY_TAB,
   PR_REVIEW_TAB,
   pinTab,
   closeTab,
+  focusPrSummaryTab,
   focusPrReviewTab,
   selectedFile,
 } from "@/lib/signals";
@@ -76,6 +78,7 @@ function FileTab({ path, preview }: { path: string; preview: boolean }) {
 
 export function TabBar({ prId }: Props) {
   const review = reviewTabState(prId);
+  const summaryActive = activeTab.value === PR_SUMMARY_TAB;
   const reviewActive = activeTab.value === PR_REVIEW_TAB;
   const pinned = openTabs.value;
   const preview = previewPath.value;
@@ -83,6 +86,14 @@ export function TabBar({ prId }: Props) {
 
   return (
     <div class="flex items-stretch overflow-x-auto whitespace-nowrap border-b border-gray-200 dark:border-gray-800 shrink-0 bg-gray-50 dark:bg-gray-900">
+      <div
+        class={`${TAB_BASE} font-medium ${summaryActive ? TAB_ACTIVE : TAB_INACTIVE}`}
+        title="PR summary"
+        onClick={focusPrSummaryTab}
+      >
+        <span class="truncate">Summary</span>
+      </div>
+
       <div
         class={`${TAB_BASE} font-medium ${reviewActive ? TAB_ACTIVE : TAB_INACTIVE}`}
         title="PR review"

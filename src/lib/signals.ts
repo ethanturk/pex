@@ -162,19 +162,24 @@ export const visibleFilePaths = signal<string[]>([]);
 export const threadsRefreshTick = signal<number>(0);
 
 // ---- Main-area tabs (VS Code style) ----
-// The center area is a tab strip. The PR Review panel is a permanent, pinned
-// pseudo-tab identified by this sentinel; it never appears in `openTabs`. All
+// The center area is a tab strip. Summary and PR Review are permanent, pinned
+// pseudo-tabs identified by sentinels; they never appear in `openTabs`. All
 // other tabs are file paths.
+export const PR_SUMMARY_TAB = "__pr-summary__";
 export const PR_REVIEW_TAB = "__pr-review__";
-export type ActiveTab = string; // a file path, or PR_REVIEW_TAB
+export type ActiveTab = string; // a file path, or one of the PR_*_TAB sentinels
 
-// Pinned file tabs, in display order (never contains PR_REVIEW_TAB).
+// Pinned file tabs, in display order (never contains PR_*_TAB sentinels).
 export const openTabs = signal<string[]>([]);
 // The transient "preview" tab (italic, replaced by the next single-click), or
 // null. A preview path is never also in `openTabs`.
 export const previewPath = signal<string | null>(null);
-// Which tab is focused: a file path (pinned or preview) or PR_REVIEW_TAB.
-export const activeTab = signal<ActiveTab>(PR_REVIEW_TAB);
+// Which tab is focused: a file path (pinned or preview) or a PR_*_TAB sentinel.
+export const activeTab = signal<ActiveTab>(PR_SUMMARY_TAB);
+
+export function isPrMetaTab(tab: ActiveTab | null): boolean {
+  return tab === PR_SUMMARY_TAB || tab === PR_REVIEW_TAB;
+}
 
 // Single-click a file: open it as the preview tab (replacing any prior preview,
 // unless it's already pinned) and focus it.
@@ -197,11 +202,15 @@ export function closeTab(path: string) {
   if (remaining.length !== openTabs.value.length) openTabs.value = remaining;
   if (previewPath.value === path) previewPath.value = null;
   if (activeTab.value === path) {
-    // Focus the last pinned tab, else the preview, else fall back to PR Review.
-    const next = remaining[remaining.length - 1] ?? previewPath.value ?? PR_REVIEW_TAB;
+    // Focus the last pinned tab, else the preview, else fall back to Summary.
+    const next = remaining[remaining.length - 1] ?? previewPath.value ?? PR_SUMMARY_TAB;
     activeTab.value = next;
-    selectedFile.value = next === PR_REVIEW_TAB ? null : next;
+    selectedFile.value = isPrMetaTab(next) ? null : next;
   }
+}
+
+export function focusPrSummaryTab() {
+  activeTab.value = PR_SUMMARY_TAB;
 }
 
 export function focusPrReviewTab() {
@@ -211,7 +220,7 @@ export function focusPrReviewTab() {
 export function resetTabs() {
   openTabs.value = [];
   previewPath.value = null;
-  activeTab.value = PR_REVIEW_TAB;
+  activeTab.value = PR_SUMMARY_TAB;
 }
 
 // ---- PR Review (background, per-PR) ----

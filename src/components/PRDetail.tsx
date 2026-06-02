@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { useResizableWidth } from "@/lib/useResizableWidth";
-import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, explainAllHunksRequest, threadsRefreshTick, showPrChecks, openTabs, previewPath, activeTab, PR_REVIEW_TAB, resetTabs } from "@/lib/signals";
+import { currentView, prFiles, selectedFile, currentIteration, selectedProject, selectedRepo, activeOrg, diffView, visibleFilePaths, sidebarMode, explainAllHunksRequest, threadsRefreshTick, showPrChecks, openTabs, previewPath, activeTab, PR_SUMMARY_TAB, PR_REVIEW_TAB, isPrMetaTab, resetTabs } from "@/lib/signals";
 import {
   getPrChecks,
   getPullRequest,
@@ -23,6 +23,7 @@ import { FileTree } from "@/components/FileTree";
 import { DiffViewer } from "@/components/DiffViewer";
 import { HunkReview } from "@/components/HunkReview";
 import { PRReviewPanel } from "@/components/PRReviewPanel";
+import { PRSummary } from "@/components/PRSummary";
 import { TabBar } from "@/components/TabBar";
 import { ApprovalBar } from "@/components/ApprovalBar";
 import { getPlatform, onPlatformChange } from "@/lib/platform";
@@ -135,6 +136,7 @@ export function PRDetail({ prId }: Props) {
   const checksEnabled = showPrChecks.value;
   const sourceBranch = pullRequest ? branchName(pullRequest.sourceRefName) : "";
   const targetBranch = pullRequest ? branchName(pullRequest.targetRefName) : "";
+  const activeFileTab = !isPrMetaTab(activeTab.value);
 
   const loadChecks = useCallback(async () => {
     if (!checksEnabled || !projectId || !repoId) {
@@ -576,10 +578,10 @@ export function PRDetail({ prId }: Props) {
                 filePath: diffPath,
               };
             }}
-            disabled={!diffHtml}
+            disabled={!diffHtml || !activeFileTab}
             aria-pressed={sidebarMode.value === "hunks"}
             title={
-              !diffHtml
+              !diffHtml || !activeFileTab
                 ? "Select a file to explain its changes"
                 : "Explain all hunks in this file"
             }
@@ -658,7 +660,17 @@ export function PRDetail({ prId }: Props) {
         <div class="flex-1 overflow-hidden min-w-0 flex flex-col">
           <TabBar prId={prId} />
           <div class="flex-1 overflow-hidden min-w-0">
-            {activeTab.value === PR_REVIEW_TAB ? (
+            {activeTab.value === PR_SUMMARY_TAB ? (
+              <PRSummary
+                pullRequest={pullRequest}
+                prId={prId}
+                provider={activeOrg.value?.provider}
+                iterationCount={iterationCount}
+                checksEnabled={checksEnabled}
+                checksState={checksState}
+                onRefreshChecks={loadChecks}
+              />
+            ) : activeTab.value === PR_REVIEW_TAB ? (
               projectId && repoId ? (
                 <PRReviewPanel
                   projectId={projectId}
@@ -706,7 +718,7 @@ export function PRDetail({ prId }: Props) {
           </div>
         </div>
 
-        {sidebarMode.value === "hunks" && diffHtml && activeTab.value !== PR_REVIEW_TAB && (
+        {sidebarMode.value === "hunks" && diffHtml && activeFileTab && (
           <HunkReview
             key={diffPath}
             filePath={diffPath}
