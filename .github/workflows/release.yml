@@ -92,6 +92,110 @@ jobs:
           prerelease: false
           args: --target ${{ matrix.target }}
 
+  # Android: build a signed universal APK and ship it to Firebase App
+  # Distribution. Runs in parallel with the desktop `build` job (does not block
+  # `sync-version`, so a desktop release still completes if Android secrets are
+  # not configured yet).
+  #
+  # Required repository secrets:
+  #   ANDROID_KEYSTORE_BASE64    - base64 of the release keystore (.jks/.keystore)
+  #   ANDROID_KEYSTORE_PASSWORD  - keystore (store) password
+  #   ANDROID_KEY_ALIAS          - signing key alias
+  #   ANDROID_KEY_PASSWORD       - signing key password
+  #   FIREBASE_ANDROID_APP_ID    - Firebase Android app id (e.g. 1:123:android:abcd)
+  #   FIREBASE_SERVICE_ACCOUNT   - Firebase service-account JSON (App Distribution Admin)
+  # Optional variable:
+  #   FIREBASE_TESTER_GROUPS     - comma-separated tester groups (default: testers)
+  android:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # package.json is the single version source; tauri.conf.json reads it
+          # via "../package.json", so versionName/versionCode follow.
+          npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
+
+      - name: Install JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages (platform, build-tools, NDK)
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-34" "platforms;android-36" \
+            "build-tools;35.0.0" "ndk;28.2.13676358"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: Install Rust + Android targets
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Apply Android customizations (icons, manifest, signing config)
+        run: npm run android:setup
+
+      - name: Configure release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          GEN="$GITHUB_WORKSPACE/src-tauri/gen/android"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$GEN/release.jks"
+          # storeFile is absolute so gradle's file() resolves it regardless of
+          # the module it is evaluated from.
+          cat > "$GEN/keystore.properties" <<EOF
+          storeFile=$GEN/release.jks
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+
+      - name: Build signed APK
+        run: npx tauri android build --apk
+
+      - name: Upload to Firebase App Distribution
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
+          releaseNotes: 'Pex ${{ github.ref_name }}'
+          file: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+
   # After every build target succeeds, commit the bumped version back to
   # master so the source tree stays honest about what was released. Runs once
   # (not in the matrix) on ubuntu.
