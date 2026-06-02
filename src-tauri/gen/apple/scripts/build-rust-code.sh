@@ -81,6 +81,8 @@ npm run build
 cd "$TAURI_DIR"
 export CARGO_NET_RETRY="${CARGO_NET_RETRY:-10}"
 export CARGO_HTTP_TIMEOUT="${CARGO_HTTP_TIMEOUT:-120}"
+export CARGO_REGISTRIES_CRATES_IO_PROTOCOL="${CARGO_REGISTRIES_CRATES_IO_PROTOCOL:-git}"
+export CARGO_NET_GIT_FETCH_WITH_CLI="${CARGO_NET_GIT_FETCH_WITH_CLI:-true}"
 
 retry rustup target add "$RUST_TARGET"
 retry cargo fetch --locked --target "$RUST_TARGET"
