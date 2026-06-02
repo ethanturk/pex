@@ -85,8 +85,8 @@ export CARGO_REGISTRIES_CRATES_IO_PROTOCOL="${CARGO_REGISTRIES_CRATES_IO_PROTOCO
 export CARGO_NET_GIT_FETCH_WITH_CLI="${CARGO_NET_GIT_FETCH_WITH_CLI:-true}"
 
 retry rustup target add "$RUST_TARGET"
-retry cargo fetch --locked --target "$RUST_TARGET"
-retry cargo build --locked --lib --target "$RUST_TARGET" $CARGO_FEATURE_FLAG $CARGO_PROFILE_FLAG
+retry cargo fetch --target "$RUST_TARGET"
+retry cargo build --lib --target "$RUST_TARGET" $CARGO_FEATURE_FLAG $CARGO_PROFILE_FLAG
 
 LIB_SOURCE="$TAURI_DIR/target/$RUST_TARGET/$CARGO_PROFILE_DIR/libpex_lib.a"
 LIB_DEST_DIR="${SRCROOT:?}/Externals/$EXTERNALS_ARCH/${CONFIGURATION:?}"
