@@ -1,1 +1,4 @@
 /target
+
+# Tauri mobile: generated native projects (regenerate with `tauri android/ios init`)
+/gen

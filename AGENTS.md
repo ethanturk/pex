@@ -173,34 +173,45 @@ asset-loader origin, library name).
    - `libpex_lib.so` built per-ABI via `cargo-ndk` and packaged into `jniLibs/`
    - Gradle tasks that compile the Rust lib and bundle the frontend assets
 
-3. **Replace the generated entry point**
-   - Open `src-tauri/gen/android` in Android Studio
-   - Copy the four files from `src-tauri/android/Pex/` into the generated
-     package (`app/src/main/java/com/pex/pr_reviewer/`), keeping the package
-     name so `AndroidManifest.xml`'s launcher `<activity>` still resolves
-   - Keep a single launcher Activity (this `MainActivity`)
-
-4. **Fill in wry/Tauri-specific symbols**
-   Open `WebView.kt` and resolve every `// CHECK:` comment:
-   - **IPC interface:** wry injects a `@JavascriptInterface` named
-     `__TAURI_IPC__` (`ipc.postMessage`). Prefer reusing wry's `RustWebView`
-     rather than re-creating the bridge.
-   - **Asset-loader origin:** the frontend is served from
-     `https://tauri.localhost/` via `WebViewAssetLoader` (not `file://`).
-   - **Library name:** the Rust lib loads via `System.loadLibrary("pex_lib")`
-     — the generated `TauriActivity` already does this; verify the name.
-   - **Soft keyboard:** set `android:windowSoftInputMode="adjustResize"` on the
-     `<activity>` in the generated manifest so the WebView resizes for the IME.
-
-5. **Set the min SDK**
-   - `app/build.gradle.kts` → `minSdk = 24` (Android 7.0; covers Compose +
-     `WebViewAssetLoader` and ~98% of devices).
-
-6. **Build & run**
+3. **Apply Pex's Android customizations** (icons + manifest)
    ```bash
-   tauri android dev      # builds Rust .so + frontend, launches emulator/device
+   npm run android:setup        # = src-tauri/scripts/android-setup.sh
+   ```
+   `gen/android` is **.gitignored** (it's generated and ~1 GB with build
+   artifacts), so its customizations must be reproducible from source. This
+   idempotent script:
+   - Installs the branded launcher icons from `src-tauri/icons/android/` (the
+     committed source of truth — a full adaptive-icon set). To refresh that set
+     from a new brand image, run `cargo tauri icon <1024px.png>` and re-commit
+     `icons/android/`. (`cargo tauri icon` also writes mipmaps straight into
+     `gen/android`, but without the adaptive `mipmap-anydpi-v26` XML, so we keep
+     `icons/android/` as the canonical set and copy it in.)
+   - Sets `android:windowSoftInputMode="adjustResize"` on the launcher
+     `<activity>` so the WebView resizes for the soft keyboard (paired with the
+     `visualViewport` handling in `DiffViewer.tsx`). Tauri has no
+     tauri.conf.json field for this, hence the manifest patch.
+
+   > **Entry point:** keep the generated `MainActivity : TauriActivity`. wry
+   > already wires the WebView, the `__TAURI_IPC__` bridge, the
+   > `WebViewAssetLoader` origin (`https://tauri.localhost/`), and
+   > `System.loadLibrary("pex_lib")`. The Compose templates in
+   > `src-tauri/android/Pex/` are **superseded** by the shared JS `MobileShell`
+   > (two-tab PRs/Settings layout) and are not copied in — doing so would
+   > replace the working webview with placeholder code.
+
+4. **Min SDK** — `tauri android init` already sets `minSdk = 24` in
+   `app/build.gradle.kts` (Android 7.0; covers `WebViewAssetLoader` and ~98% of
+   devices). No action needed.
+
+5. **Build & run**
+   ```bash
+   source .android-env.sh   # ANDROID_HOME / NDK_HOME / JDK 17 (NOT system JDK 25)
+   tauri android dev        # builds Rust .so + frontend, launches emulator/device
    # Or open src-tauri/gen/android in Android Studio and press Run
    ```
+   The credential store, SQLite path, and JavaVM access are all handled in the
+   Rust backend (see `auth::android_keystore`, `cache::dirs_data_dir`, and the
+   `JNI_OnLoad` hook) — no manual wiring required.
 
 ### Known integration points (things that need wiring)
 

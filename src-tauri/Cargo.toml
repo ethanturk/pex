@@ -24,7 +24,6 @@ serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = "1", features = ["full"] }
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 similar = "2"
 syntect = "5"
@@ -33,3 +32,14 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 async-trait = "0.1"
 url = "2"
+
+# Credential storage backends are platform-specific. Desktop/iOS use the OS
+# keyring; Android (no keyring backend) uses an AES-GCM file with an
+# Android-Keystore-wrapped data key (see auth::android_keystore).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+aes-gcm = "0.10"
+getrandom = "0.2"
+jni = "0.21"

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "android:setup": "bash src-tauri/scripts/android-setup.sh"
   },
   "dependencies": {
     "@preact/signals": "^2.0.1",

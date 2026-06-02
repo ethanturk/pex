@@ -5,7 +5,11 @@ use crate::AppError;
 /// Returns the user's display name on success.
 pub async fn validate_pat(org_url: &str, pat: &str) -> Result<String, AppError> {
     let url = format!("{}/_apis/connectionData", org_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| AppError::Provider(format!("HTTP client init failed: {}", e)))?;
     let auth_header = format!(
         "Basic {}",
         base64::Engine::encode(
