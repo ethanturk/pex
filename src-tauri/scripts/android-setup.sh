@@ -76,4 +76,19 @@ else
   perl -0pi -e 's~(        getByName\("release"\) \{\n)~${1}            if (keystorePropertiesFile.exists()) signingConfig = signingConfigs.getByName("release")\n~' "$GRADLE"
 fi
 
+# 5. Some Tauri plugin crates declare an Android consumer ProGuard file in
+#    their Gradle templates but omit the empty file from the published crate.
+#    AGP treats that as a release build issue, so materialize harmless empty
+#    files before Gradle assembles the APK.
+echo "==> Ensuring declared Android consumer ProGuard files exist"
+( cd "$SRC_TAURI" && cargo fetch )
+while IFS= read -r build_file; do
+  plugin_dir="$(dirname "$build_file")"
+  if grep -q 'consumerProguardFiles("consumer-rules.pro")' "$build_file" \
+      && [ ! -f "$plugin_dir/consumer-rules.pro" ]; then
+    echo "==> Creating missing $plugin_dir/consumer-rules.pro"
+    : > "$plugin_dir/consumer-rules.pro"
+  fi
+done < <(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*/tauri-plugin-*/android/build.gradle.kts' -type f 2>/dev/null)
+
 echo "==> Android customizations applied."

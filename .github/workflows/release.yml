@@ -110,6 +110,8 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    env:
+      ANDROID_NDK_VERSION: 28.2.13676358
     steps:
       - uses: actions/checkout@v6
 
@@ -141,9 +143,13 @@ jobs:
         run: |
           set -euo pipefail
           sdkmanager "platform-tools" "platforms;android-34" "platforms;android-36" \
-            "build-tools;35.0.0" "ndk;28.2.13676358"
-          echo "NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+            "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}"
+          NDK_PATH="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
+          find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d \
+            ! -path "$NDK_PATH" -exec rm -rf {} +
+          echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Install Rust + Android targets
         uses: dtolnay/rust-toolchain@master
@@ -162,10 +168,61 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Validate Android distribution secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FIREBASE_ANDROID_APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+
+          count_present() {
+            present=0
+            for name in "$@"; do
+              if [ -n "${!name:-}" ]; then
+                present=$((present + 1))
+              fi
+            done
+            echo "$present"
+          }
+
+          signing_present="$(count_present \
+            ANDROID_KEYSTORE_BASE64 \
+            ANDROID_KEYSTORE_PASSWORD \
+            ANDROID_KEY_ALIAS \
+            ANDROID_KEY_PASSWORD)"
+          firebase_present="$(count_present \
+            FIREBASE_ANDROID_APP_ID \
+            FIREBASE_SERVICE_ACCOUNT)"
+
+          if [ "$signing_present" -eq 4 ]; then
+            echo "ANDROID_SIGNING_CONFIGURED=true" >> "$GITHUB_ENV"
+          elif [ "$signing_present" -eq 0 ]; then
+            echo "ANDROID_SIGNING_CONFIGURED=false" >> "$GITHUB_ENV"
+            echo "::notice::Android signing secrets are not configured; building an unsigned APK and skipping distribution."
+          else
+            echo "::error::Android signing secrets are partially configured. Set all of ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD."
+            exit 1
+          fi
+
+          if [ "$firebase_present" -eq 2 ]; then
+            echo "ANDROID_FIREBASE_CONFIGURED=true" >> "$GITHUB_ENV"
+          elif [ "$firebase_present" -eq 0 ]; then
+            echo "ANDROID_FIREBASE_CONFIGURED=false" >> "$GITHUB_ENV"
+            echo "::notice::Firebase App Distribution secrets are not configured; upload will be skipped."
+          else
+            echo "::error::Firebase App Distribution secrets are partially configured. Set both FIREBASE_ANDROID_APP_ID and FIREBASE_SERVICE_ACCOUNT."
+            exit 1
+          fi
+
       - name: Apply Android customizations (icons, manifest, signing config)
         run: npm run android:setup
 
       - name: Configure release signing
+        if: env.ANDROID_SIGNING_CONFIGURED == 'true'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -174,20 +231,59 @@ jobs:
         run: |
           set -euo pipefail
           GEN="$GITHUB_WORKSPACE/src-tauri/gen/android"
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$GEN/release.jks"
+          KEYSTORE="$GEN/release.jks"
+          KEYSTORE_ERR="$RUNNER_TEMP/android-keystore.err"
+          VALIDATION_DIR="$RUNNER_TEMP/android-signing-validation"
+          VALIDATION_JAR="$RUNNER_TEMP/android-signing-validation.jar"
+
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$KEYSTORE"; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not valid base64. Recreate it from the binary keystore file, for example: base64 -w0 release.jks"
+            exit 1
+          fi
+
+          if [ ! -s "$KEYSTORE" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 decoded to an empty keystore file."
+            exit 1
+          fi
+
+          if ! keytool -list \
+            -keystore "$KEYSTORE" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" > /dev/null 2> "$KEYSTORE_ERR"; then
+            echo "::error::Android release keystore validation failed. Check ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, and ANDROID_KEY_ALIAS."
+            sed 's/^/keytool: /' "$KEYSTORE_ERR" >&2
+            exit 1
+          fi
+
+          rm -rf "$VALIDATION_DIR" "$VALIDATION_JAR"
+          mkdir -p "$VALIDATION_DIR"
+          printf 'pex android signing validation\n' > "$VALIDATION_DIR/marker.txt"
+          jar cf "$VALIDATION_JAR" -C "$VALIDATION_DIR" marker.txt
+          if ! jarsigner \
+            -keystore "$KEYSTORE" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -keypass "$ANDROID_KEY_PASSWORD" \
+            "$VALIDATION_JAR" \
+            "$ANDROID_KEY_ALIAS" > /dev/null 2> "$KEYSTORE_ERR"; then
+            echo "::error::Android release key validation failed. Check ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD."
+            sed 's/^/jarsigner: /' "$KEYSTORE_ERR" >&2
+            exit 1
+          fi
+
           # storeFile is absolute so gradle's file() resolves it regardless of
           # the module it is evaluated from.
-          cat > "$GEN/keystore.properties" <<EOF
-          storeFile=$GEN/release.jks
-          storePassword=$ANDROID_KEYSTORE_PASSWORD
-          keyAlias=$ANDROID_KEY_ALIAS
-          keyPassword=$ANDROID_KEY_PASSWORD
-          EOF
+          {
+            printf 'storeFile=%s\n' "$KEYSTORE"
+            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
+          } > "$GEN/keystore.properties"
 
-      - name: Build signed APK
-        run: npx tauri android build --apk
+      - name: Build APK
+        run: npx tauri android build --apk --verbose
 
       - name: Upload to Firebase App Distribution
+        if: env.ANDROID_SIGNING_CONFIGURED == 'true' && env.ANDROID_FIREBASE_CONFIGURED == 'true'
         uses: wzieba/Firebase-Distribution-Github-Action@v1
         with:
           appId: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
