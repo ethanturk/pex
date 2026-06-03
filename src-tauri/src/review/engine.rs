@@ -429,20 +429,39 @@ pub async fn run_review(
             Vec::new()
         };
 
-    // Check for resumable state
+    // Check for resumable state. The persisted state indexes files positionally
+    // (`current_file_idx`), so before we trust those indices the freshly built
+    // `file_entries` must line up slot-for-slot with the order the state was
+    // saved against. That order isn't stable across runs (see
+    // `align_to_saved_order`), so realign to the saved order first. If the file
+    // set has genuinely drifted since the save, the saved indices are
+    // meaningless — discard the state and review fresh rather than re-reviewing
+    // already-completed files (the "resume just restarts" bug).
+    let mut resuming = false;
     if let Ok(db_lock) = db.lock() {
         if let Ok(Some(saved)) = state::load_state(&db_lock) {
             if saved.pr_key == state.pr_key && !saved.is_done() {
-                state = saved;
-                emit_progress(
-                    &app,
-                    "resume",
-                    "Resuming from saved progress...",
-                    serde_json::json!({}),
-                );
+                if align_to_saved_order(&mut file_entries, &saved.file_paths) {
+                    state = saved;
+                    resuming = true;
+                } else {
+                    let _ = state::clear_state(&db_lock);
+                }
             }
         }
     }
+    if resuming {
+        emit_progress(
+            &app,
+            "resume",
+            "Resuming from saved progress...",
+            serde_json::json!({}),
+        );
+    }
+
+    // Recompute after any reordering so the plan — and the file slots the loop
+    // below indexes into — reflect the actual (possibly realigned) worklist.
+    let file_paths: Vec<String> = file_entries.iter().map(|(f, _)| f.path.clone()).collect();
 
     // Announce the full, ordered worklist up front so the UI can render every
     // file (and tick them off as they complete). `completedCount` lets a resumed
@@ -1305,6 +1324,55 @@ async fn chat_with_retries_and_model(
     Err(last_err.unwrap_or_else(|| AppError::Ai("Chat failed with no error info".into())))
 }
 
+/// Reorder `entries` so their paths follow `order`, returning `true` on success.
+///
+/// Resume is positional: the persisted state addresses files by
+/// `current_file_idx` into the worklist, so a resumed run must rebuild that
+/// worklist in the exact order the state was saved against. We can't, because
+/// the order is derived fresh each run and isn't stable: `fetch_file_inputs`
+/// emits cache hits before cache misses, so a cold first run and a warm resume
+/// reorder equal-hunk-count files differently. Realigning the freshly built
+/// entries to the saved order restores the slot-for-slot correspondence.
+///
+/// Succeeds only when `entries` and `order` describe exactly the same set of
+/// paths — the precondition for a coherent resume. On any divergence (a file
+/// added, removed, or renamed since the save) it returns `false` and leaves
+/// `entries` untouched so the caller can fall back to a fresh run.
+fn align_to_saved_order(
+    entries: &mut Vec<(FileInput, Vec<crate::diff::engine::DiffHunk>)>,
+    order: &[String],
+) -> bool {
+    if entries.len() != order.len() {
+        return false;
+    }
+    let mut by_path: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::with_capacity(entries.len());
+    for (i, (f, _)) in entries.iter().enumerate() {
+        by_path.insert(f.path.as_str(), i);
+    }
+    // Resolve each saved path to a current entry, refusing to reuse one so a
+    // duplicate (or a path missing from the current set) bails cleanly.
+    let mut picks = Vec::with_capacity(order.len());
+    let mut used = vec![false; entries.len()];
+    for p in order {
+        match by_path.get(p.as_str()) {
+            Some(&i) if !used[i] => {
+                used[i] = true;
+                picks.push(i);
+            }
+            _ => return false,
+        }
+    }
+    let mut slots: Vec<Option<(FileInput, Vec<crate::diff::engine::DiffHunk>)>> =
+        entries.drain(..).map(Some).collect();
+    *entries = picks
+        .into_iter()
+        // Each index is used exactly once (guarded by `used`), so `take` is Some.
+        .map(|i| slots[i].take().expect("entry index reused"))
+        .collect();
+    true
+}
+
 fn save_state_to_db(db: &std::sync::Mutex<rusqlite::Connection>, state: &ReviewState) {
     if let Ok(db_lock) = db.lock() {
         let _ = state::save_state(&db_lock, state);
@@ -1468,6 +1536,62 @@ pub fn select_auto_post_findings(findings: &[Finding], confidence_floor: u8) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(path: &str, hunks: usize) -> (FileInput, Vec<crate::diff::engine::DiffHunk>) {
+        (
+            FileInput {
+                path: path.into(),
+                old_content: String::new(),
+                new_content: String::new(),
+            },
+            (0..hunks).map(|i| hunk(i + 1, 1)).collect(),
+        )
+    }
+
+    fn paths(entries: &[(FileInput, Vec<crate::diff::engine::DiffHunk>)]) -> Vec<String> {
+        entries.iter().map(|(f, _)| f.path.clone()).collect()
+    }
+
+    #[test]
+    fn align_reorders_to_saved_order() {
+        // The cold run saved this order; the warm resume rebuilt a different one
+        // (e.g. cache hits floated to the front). Realigning restores it.
+        let saved = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut entries = vec![entry("c", 1), entry("a", 2), entry("b", 1)];
+        assert!(align_to_saved_order(&mut entries, &saved));
+        assert_eq!(paths(&entries), saved);
+        // Hunks travel with their file, not the slot.
+        assert_eq!(entries[0].1.len(), 2); // "a" still has 2 hunks
+    }
+
+    #[test]
+    fn align_succeeds_for_identical_order() {
+        let saved = vec!["a".to_string(), "b".to_string()];
+        let mut entries = vec![entry("a", 1), entry("b", 1)];
+        assert!(align_to_saved_order(&mut entries, &saved));
+        assert_eq!(paths(&entries), saved);
+    }
+
+    #[test]
+    fn align_fails_when_a_file_was_removed() {
+        // Current set is missing "b" → indices can't be mapped; bail untouched.
+        let saved = vec!["a".to_string(), "b".to_string()];
+        let mut entries = vec![entry("a", 1)];
+        assert!(!align_to_saved_order(&mut entries, &saved));
+        assert_eq!(paths(&entries), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn align_fails_when_a_file_was_added() {
+        // Current set has an extra "c" not in the saved order → bail untouched.
+        let saved = vec!["a".to_string(), "b".to_string()];
+        let mut entries = vec![entry("a", 1), entry("b", 1), entry("c", 1)];
+        assert!(!align_to_saved_order(&mut entries, &saved));
+        assert_eq!(
+            paths(&entries),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
 
     /// A hunk covering new-side lines [new_start, new_start+new_count).
     fn hunk(new_start: usize, new_count: usize) -> crate::diff::engine::DiffHunk {
