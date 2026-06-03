@@ -1,4 +1,5 @@
-import type { PullRequest, PRCheck, Reviewer, VoteHistoryEntry } from "@/lib/api";
+import { useState } from "preact/hooks";
+import type { PullRequest, PRCheck, Reviewer, VoteHistoryEntry, CommentThread } from "@/lib/api";
 import { prFiles } from "@/lib/signals";
 import { getPrCheckRollup } from "@/lib/prChecks";
 
@@ -20,6 +21,7 @@ interface Props {
   checksEnabled: boolean;
   checksState: ChecksState;
   onRefreshChecks: () => void;
+  commentThreads: CommentThread[];
 }
 
 function branchName(refName: string): string {
@@ -69,6 +71,40 @@ function statusClass(status: string): string {
     default:
       return "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200";
   }
+}
+
+function threadStatusLabel(status: string | undefined): string {
+  const value = status?.trim();
+  if (!value) return "No status";
+  return value.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+function threadStatusClass(status: string | undefined): string {
+  switch (status?.trim().toLowerCase()) {
+    case "active":
+      return "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300";
+    case "fixed":
+    case "closed":
+    case "completed":
+      return "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300";
+    case "wontfix":
+    case "won't fix":
+      return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300";
+    default:
+      return "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200";
+  }
+}
+
+function threadLocation(thread: CommentThread): string {
+  if (!thread.filePath) return "PR-level thread";
+  if (thread.lineStart > 0) {
+    const line =
+      thread.lineStart === thread.lineEnd || thread.lineEnd <= 0
+        ? `line ${thread.lineStart}`
+        : `lines ${thread.lineStart}-${thread.lineEnd}`;
+    return `${thread.filePath} - ${line}`;
+  }
+  return `${thread.filePath} - file-level thread`;
 }
 
 function voteInfo(vote: number, provider: Provider) {
@@ -372,6 +408,90 @@ function ChecksSummary({
   );
 }
 
+function CommentsAccordion({ threads }: { threads: CommentThread[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const commentCount = threads.reduce((sum, thread) => sum + thread.comments.length, 0);
+  const sortedThreads = [...threads].sort((a, b) => {
+    const aDate = a.comments[a.comments.length - 1]?.publishedDate ?? "";
+    const bDate = b.comments[b.comments.length - 1]?.publishedDate ?? "";
+    return bDate.localeCompare(aDate);
+  });
+
+  return (
+    <section class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        class="w-full px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/70"
+      >
+        <div class="min-w-0">
+          <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Comments</h2>
+          <div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            {commentCount} comment{commentCount === 1 ? "" : "s"} across {threads.length} thread{threads.length === 1 ? "" : "s"}
+          </div>
+        </div>
+        <span class="shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true">
+          {expanded ? "v" : ">"}
+        </span>
+      </button>
+
+      {expanded && (
+        <div class="border-t border-gray-200 dark:border-gray-700">
+          {sortedThreads.length > 0 ? (
+            <div class="divide-y divide-gray-100 dark:divide-gray-800">
+              {sortedThreads.map((thread) => (
+                <article key={thread.id} class="p-4">
+                  <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div class="min-w-0">
+                      <div class="text-xs font-mono text-gray-500 dark:text-gray-400 break-all">
+                        {threadLocation(thread)}
+                      </div>
+                      <div class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                        Thread #{thread.id}
+                      </div>
+                    </div>
+                    <span class={`shrink-0 self-start text-xs px-2 py-0.5 rounded-full font-medium ${threadStatusClass(thread.status)}`}>
+                      {threadStatusLabel(thread.status)}
+                    </span>
+                  </div>
+
+                  <div class="mt-3 space-y-3">
+                    {thread.comments.map((comment) => (
+                      <div
+                        key={comment.id}
+                        class="pl-3 border-l-2 border-gray-200 dark:border-gray-700"
+                      >
+                        <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                          <span class="font-medium text-gray-900 dark:text-gray-100">
+                            {comment.author || "Unknown author"}
+                          </span>
+                          {comment.publishedDate && (
+                            <span class="text-gray-400 dark:text-gray-500">
+                              {formatDate(comment.publishedDate)}
+                            </span>
+                          )}
+                        </div>
+                        <div class="mt-1 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
+                          {comment.content || <span class="italic text-gray-400">(no content)</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div class="px-4 py-5 text-sm text-gray-500 dark:text-gray-400">
+              No comments were found for this PR.
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function PRSummary({
   pullRequest,
   prId,
@@ -382,6 +502,7 @@ export function PRSummary({
   checksEnabled,
   checksState,
   onRefreshChecks,
+  commentThreads,
 }: Props) {
   if (!pullRequest) {
     return (
@@ -532,6 +653,8 @@ export function PRSummary({
             </div>
           </section>
         )}
+
+        <CommentsAccordion threads={commentThreads} />
       </div>
     </div>
   );

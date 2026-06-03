@@ -114,6 +114,7 @@ export function PRDetail({ prId }: Props) {
   const [loading, setLoading] = useState(false);
   const [iterationCount, setIterationCount] = useState(1);
   const [threads, setThreads] = useState<CommentThread[]>([]);
+  const [allThreads, setAllThreads] = useState<CommentThread[]>([]);
   const [voteHistory, setVoteHistory] = useState<VoteHistoryEntry[]>([]);
   const [currentUserId, setCurrentUserId] = useState("");
   const [copied, setCopied] = useState(false);
@@ -180,6 +181,7 @@ export function PRDetail({ prId }: Props) {
     setOldContent("");
     setNewContent("");
     setThreads([]);
+    setAllThreads([]);
     setVoteHistory([]);
     setChecksState({ loading: false, checks: [], error: "" });
   }, [prId]);
@@ -222,6 +224,29 @@ export function PRDetail({ prId }: Props) {
         if (!cancelled) {
           setVoteHistory([]);
           console.debug("Failed to load vote history:", e);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, repoId, prId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId || !repoId) {
+      setAllThreads([]);
+      return;
+    }
+
+    getThreads(projectId, repoId, prId)
+      .then((loadedThreads) => {
+        if (!cancelled) setAllThreads(loadedThreads);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setAllThreads([]);
+          console.debug("Failed to load PR comments:", e);
         }
       });
 
@@ -365,7 +390,10 @@ export function PRDetail({ prId }: Props) {
       setLoading(false);
       getThreads(projectId, repoId, prId)
         .then((all) => {
-          if (reqId === diffReqId.current) setThreads(all.filter((t: any) => t.filePath === cached.path));
+          if (reqId === diffReqId.current) {
+            setAllThreads(all);
+            setThreads(all.filter((t: any) => t.filePath === cached.path));
+          }
         })
         .catch((e) => console.error("Failed to load threads:", e));
       return;
@@ -378,9 +406,10 @@ export function PRDetail({ prId }: Props) {
       diffCache.current.set(diffCacheKey(path), d);
       applyDiff(d);
       // Load threads for this file
-      const allThreads = await getThreads(projectId, repoId, prId);
+      const loadedThreads = await getThreads(projectId, repoId, prId);
       if (reqId !== diffReqId.current) return;
-      setThreads(allThreads.filter((t: any) => t.filePath === d.path));
+      setAllThreads(loadedThreads);
+      setThreads(loadedThreads.filter((t: any) => t.filePath === d.path));
     } catch (e: any) {
       if (reqId !== diffReqId.current) return;
       const msg = typeof e === "string" ? e : e?.message ?? String(e);
@@ -443,9 +472,12 @@ export function PRDetail({ prId }: Props) {
     let firstTick = true;
     const unsub4 = threadsRefreshTick.subscribe(() => {
       if (firstTick) { firstTick = false; return; }
-      if (!projectId || !repoId || !diffPath) return;
+      if (!projectId || !repoId) return;
       getThreads(projectId, repoId, prId)
-        .then((all) => setThreads(all.filter((t: any) => t.filePath === diffPath)))
+        .then((all) => {
+          setAllThreads(all);
+          if (diffPath) setThreads(all.filter((t: any) => t.filePath === diffPath));
+        })
         .catch((e) => console.error("Failed to refresh threads:", e));
     });
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
@@ -501,8 +533,9 @@ export function PRDetail({ prId }: Props) {
     );
     // Refetch to get the canonical thread (the POST response from ADO sometimes
     // omits comment content/author fields).
-    const allThreads = await getThreads(projectId, repoId, prId);
-    setThreads(allThreads.filter((t: any) => t.filePath === filePath));
+    const loadedThreads = await getThreads(projectId, repoId, prId);
+    setAllThreads(loadedThreads);
+    setThreads(loadedThreads.filter((t: any) => t.filePath === filePath));
   };
 
   // ---- Keyboard shortcuts ----
@@ -588,7 +621,7 @@ export function PRDetail({ prId }: Props) {
               class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 shrink-0"
             >
               {Array.from({ length: iterationCount }, (_, i) => i + 1).map((n) => (
-                <option key={n} value={n}>Iter {n}</option>
+                <option key={n} value={n}>#{n}</option>
               ))}
             </select>
           )}
@@ -714,6 +747,7 @@ export function PRDetail({ prId }: Props) {
                 checksEnabled={checksEnabled}
                 checksState={checksState}
                 onRefreshChecks={loadChecks}
+                commentThreads={allThreads}
               />
             ) : activeTab.value === PR_REVIEW_TAB ? (
               projectId && repoId ? (
