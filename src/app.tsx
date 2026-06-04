@@ -4,9 +4,7 @@ import { AuthScreen } from "@/components/AuthScreen";
 import { OrgSelect } from "@/components/OrgSelect";
 import { PRList } from "@/components/PRList";
 import { PRDetail } from "@/components/PRDetail";
-import { ThemeToggle } from "@/components/ThemeToggle";
 import { AiSettings } from "@/components/AiSettings";
-import { DiffViewToggle } from "@/components/DiffViewToggle";
 import { MobileReviewActions } from "@/components/ApprovalBar";
 import { useEffectOnce } from "@/lib/hooks";
 import { getSavedOrgs, activateOrg } from "@/lib/api";
@@ -105,8 +103,6 @@ function DesktopShell({ onOpenSettings }: { onOpenSettings: () => void }) {
               {activeOrg.value.name}
             </button>
           )}
-          <DiffViewToggle />
-          <ThemeToggle />
         </div>
       </header>
       <main class="flex-1 overflow-hidden">{viewComponent(currentView.value)}</main>
@@ -134,10 +130,8 @@ function MobileShell({ tab, onTab }: { tab: MobileTab; onTab: (t: MobileTab) => 
                   {activeOrg.value.name}
                 </button>
               )}
-              <DiffViewToggle />
             </>
           )}
-          <ThemeToggle />
           {tab === "prs" && currentView.value.kind === "pr-detail" && <MobileReviewActions />}
         </div>
       </header>

@@ -127,6 +127,13 @@ impl KeyringStore {
         Self::save_ai_token_bundle(&bundle)
     }
 
+    /// Delete an AI provider token from the bundled keychain item.
+    pub fn delete_ai_token(provider: &str) -> Result<(), AppError> {
+        let mut bundle = Self::get_ai_token_bundle()?;
+        bundle.remove(provider);
+        Self::save_ai_token_bundle(&bundle)
+    }
+
     /// Retrieve an AI provider token from the bundled keychain item.
     ///
     /// Backward compatibility: if the bundle does not contain the requested

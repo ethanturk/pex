@@ -153,10 +153,40 @@ pub struct AiSettings {
     pub api_key: String,
 }
 
+/// One configured AI provider. API keys are stored separately in keyring.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderConfig {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub endpoint: String,
+    pub model: String,
+    pub connect_timeout_secs: u64,
+    pub read_timeout_secs: u64,
+}
+
+/// One configured AI provider as returned to the UI. The key itself is never
+/// returned; `has_api_key` only drives the masked input placeholder.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderConfigNoKey {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub endpoint: String,
+    pub model: String,
+    pub has_api_key: bool,
+    pub connect_timeout_secs: u64,
+    pub read_timeout_secs: u64,
+}
+
 /// Settings stored in SQLite (no API key).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiSettingsNoKey {
+    pub default_provider_id: String,
+    pub providers: Vec<AiProviderConfigNoKey>,
     pub provider: String,
     pub endpoint: String,
     pub model: String,
@@ -192,6 +222,148 @@ pub struct AiSettingsNoKey {
     pub auto_post_confidence: u8,
     /// Opt-in: write a JSONL diagnostic trace per review run.
     pub ai_diagnostics: bool,
+}
+
+pub const AI_PROVIDERS_SETTING: &str = "ai_providers";
+pub const AI_DEFAULT_PROVIDER_ID_SETTING: &str = "ai_default_provider_id";
+
+pub fn ai_provider_secret_key(provider_id: &str) -> String {
+    format!("provider:{}", provider_id)
+}
+
+pub fn legacy_provider_secret_key(kind: AiProviderKind) -> &'static str {
+    match kind {
+        AiProviderKind::OpenAI => "openai",
+        AiProviderKind::Anthropic => "anthropic",
+    }
+}
+
+pub fn default_endpoint_for_kind(kind: AiProviderKind) -> &'static str {
+    match kind {
+        AiProviderKind::OpenAI => "https://api.openai.com",
+        AiProviderKind::Anthropic => "https://api.anthropic.com",
+    }
+}
+
+pub fn default_model_for_kind(kind: AiProviderKind) -> &'static str {
+    match kind {
+        AiProviderKind::OpenAI => "gpt-4.1",
+        AiProviderKind::Anthropic => "claude-3-5-sonnet-latest",
+    }
+}
+
+pub fn read_ai_provider_configs(
+    conn: &rusqlite::Connection,
+) -> Result<(String, Vec<AiProviderConfig>), AppError> {
+    let configured = match crate::cache::get_setting(conn, AI_PROVIDERS_SETTING)? {
+        Some(raw) if !raw.trim().is_empty() => {
+            serde_json::from_str::<Vec<AiProviderConfig>>(&raw).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
+
+    let mut providers = configured
+        .into_iter()
+        .filter(|p| !p.id.trim().is_empty())
+        .map(|mut p| {
+            p.name = p.name.trim().to_string();
+            if p.name.is_empty() {
+                p.name = "Provider".to_string();
+            }
+            p.provider = p.provider.trim().to_lowercase();
+            p.endpoint = p.endpoint.trim().to_string();
+            p.model = p.model.trim().to_string();
+            p.connect_timeout_secs =
+                clamp_timeout_value(p.connect_timeout_secs, DEFAULT_CONNECT_TIMEOUT_SECS);
+            p.read_timeout_secs =
+                clamp_timeout_value(p.read_timeout_secs, DEFAULT_READ_TIMEOUT_SECS);
+            p
+        })
+        .collect::<Vec<_>>();
+
+    if providers.is_empty() {
+        let provider =
+            crate::cache::get_setting(conn, "ai_provider")?.unwrap_or_else(|| "openai".to_string());
+        let kind = provider.parse().unwrap_or(AiProviderKind::OpenAI);
+        providers.push(AiProviderConfig {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            provider: kind.to_string(),
+            endpoint: crate::cache::get_setting(conn, "ai_endpoint")?
+                .unwrap_or_else(|| default_endpoint_for_kind(kind).to_string()),
+            model: crate::cache::get_setting(conn, "ai_model")?
+                .unwrap_or_else(|| default_model_for_kind(kind).to_string()),
+            connect_timeout_secs: read_connect_timeout(conn)?,
+            read_timeout_secs: read_read_timeout(conn)?,
+        });
+    }
+
+    let default_id = crate::cache::get_setting(conn, AI_DEFAULT_PROVIDER_ID_SETTING)?
+        .filter(|id| providers.iter().any(|p| p.id == *id))
+        .unwrap_or_else(|| providers[0].id.clone());
+
+    Ok((default_id, providers))
+}
+
+pub fn write_ai_provider_configs(
+    conn: &rusqlite::Connection,
+    default_provider_id: &str,
+    providers: &[AiProviderConfig],
+) -> Result<(), AppError> {
+    let payload = serde_json::to_string(providers)
+        .map_err(|e| AppError::Ai(format!("Failed to serialize AI providers: {}", e)))?;
+    crate::cache::set_setting(conn, AI_PROVIDERS_SETTING, &payload)?;
+    crate::cache::set_setting(conn, AI_DEFAULT_PROVIDER_ID_SETTING, default_provider_id)?;
+    Ok(())
+}
+
+pub fn clamp_timeout_value(secs: u64, default: u64) -> u64 {
+    if secs == 0 {
+        default
+    } else {
+        secs.min(MAX_TIMEOUT_SECS)
+    }
+}
+
+pub fn provider_from_config(
+    provider: &AiProviderConfig,
+    api_key: &str,
+) -> Result<std::sync::Arc<dyn AiProvider>, AppError> {
+    let kind: AiProviderKind = provider.provider.parse()?;
+    Ok(match kind {
+        AiProviderKind::OpenAI => {
+            let p = openai::OpenAiProvider::new(
+                provider.endpoint.clone(),
+                provider.model.clone(),
+                api_key.to_string(),
+                provider.connect_timeout_secs,
+                provider.read_timeout_secs,
+            );
+            std::sync::Arc::new(p) as std::sync::Arc<dyn AiProvider>
+        }
+        AiProviderKind::Anthropic => {
+            let p = anthropic::AnthropicProvider::new(
+                provider.endpoint.clone(),
+                provider.model.clone(),
+                api_key.to_string(),
+                provider.connect_timeout_secs,
+                provider.read_timeout_secs,
+            );
+            std::sync::Arc::new(p) as std::sync::Arc<dyn AiProvider>
+        }
+    })
+}
+
+pub fn read_ai_provider_api_key(provider: &AiProviderConfig) -> Result<Option<String>, AppError> {
+    let provider_key = ai_provider_secret_key(&provider.id);
+    let mut api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(&provider_key)?;
+    if api_key.is_none() && provider.id == "default" {
+        let kind: AiProviderKind = provider.provider.parse()?;
+        api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(
+            legacy_provider_secret_key(kind),
+        )?;
+    }
+    Ok(api_key.filter(|key| !key.is_empty()))
 }
 
 /// Read the TCP/TLS connect timeout (seconds), defaulting if missing.
@@ -288,7 +460,9 @@ pub const DEFAULT_INCREMENTAL_REVIEW: bool = false;
 /// Read whether incremental review is enabled.
 pub fn read_incremental_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
     let raw = crate::cache::get_setting(conn, "ai_incremental_review")?;
-    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_INCREMENTAL_REVIEW))
+    Ok(raw
+        .map(|s| s == "true")
+        .unwrap_or(DEFAULT_INCREMENTAL_REVIEW))
 }
 
 /// Write a JSONL diagnostic trace per review run (prompts, responses, and every
@@ -323,7 +497,9 @@ pub fn read_auto_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
 
 pub fn read_auto_post_blocking(conn: &rusqlite::Connection) -> Result<bool, AppError> {
     let raw = crate::cache::get_setting(conn, "ai_auto_post_blocking")?;
-    Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_AUTO_POST_BLOCKING))
+    Ok(raw
+        .map(|s| s == "true")
+        .unwrap_or(DEFAULT_AUTO_POST_BLOCKING))
 }
 
 pub fn read_auto_post_confidence(conn: &rusqlite::Connection) -> Result<u8, AppError> {
@@ -390,36 +566,17 @@ impl AiManager {
 
     /// Try to auto-configure from stored settings in SQLite + keyring.
     pub fn try_configure_from_db(&mut self, conn: &rusqlite::Connection) -> Result<bool, AppError> {
-        let provider_str = crate::cache::get_setting(conn, "ai_provider")?;
-        let endpoint = crate::cache::get_setting(conn, "ai_endpoint")?;
-        let model = crate::cache::get_setting(conn, "ai_model")?;
-        let connect_timeout = read_connect_timeout(conn)?;
-        let read_timeout = read_read_timeout(conn)?;
-
-        let (Some(provider_str), Some(endpoint), Some(model)) = (provider_str, endpoint, model)
-        else {
+        let (default_id, providers) = read_ai_provider_configs(conn)?;
+        let Some(default_provider) = providers.iter().find(|p| p.id == default_id) else {
             return Ok(false);
         };
 
-        let kind: AiProviderKind = provider_str.parse()?;
-        let provider_key = match kind {
-            AiProviderKind::OpenAI => "openai",
-            AiProviderKind::Anthropic => "anthropic",
-        };
-        let api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)?;
-
+        let api_key = read_ai_provider_api_key(default_provider)?;
         let Some(api_key) = api_key else {
             return Ok(false);
         };
 
-        self.configure(
-            kind,
-            &endpoint,
-            &model,
-            &api_key,
-            connect_timeout,
-            read_timeout,
-        );
+        self.provider = Some(provider_from_config(default_provider, &api_key)?);
         Ok(true)
     }
 

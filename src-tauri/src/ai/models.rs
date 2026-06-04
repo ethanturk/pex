@@ -3,9 +3,9 @@
 //! model dropdowns.
 //!
 //! Cache: a single SQLite row keyed `ai_models_cache` holding JSON
-//! `{ provider, endpoint, models }`. The cache is invalidated implicitly when
-//! `provider` or `endpoint` changes — callers consume the cache only when those
-//! two fields match the current settings.
+//! `{ provider_id, provider, endpoint, models }`. The cache is invalidated
+//! implicitly when the selected default provider, provider kind, or endpoint
+//! changes.
 
 use crate::ai::AiProviderKind;
 use crate::AppError;
@@ -15,6 +15,8 @@ const CACHE_KEY: &str = "ai_models_cache";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedModels {
+    #[serde(default)]
+    provider_id: String,
     provider: String,
     endpoint: String,
     models: Vec<String>,
@@ -24,11 +26,13 @@ struct CachedModels {
 /// or `None` if there is no cache, the cache is stale (different provider /
 /// endpoint), or provider settings aren't configured.
 pub fn get_cached(conn: &rusqlite::Connection) -> Result<Option<Vec<String>>, AppError> {
-    let provider = crate::cache::get_setting(conn, "ai_provider")?;
-    let endpoint = crate::cache::get_setting(conn, "ai_endpoint")?;
+    let (default_provider_id, providers) = crate::ai::read_ai_provider_configs(conn)?;
+    let Some(default_provider) = providers.iter().find(|p| p.id == default_provider_id) else {
+        return Ok(None);
+    };
     let raw = crate::cache::get_setting(conn, CACHE_KEY)?;
 
-    let (Some(provider), Some(endpoint), Some(raw)) = (provider, endpoint, raw) else {
+    let Some(raw) = raw else {
         return Ok(None);
     };
 
@@ -41,7 +45,12 @@ pub fn get_cached(conn: &rusqlite::Connection) -> Result<Option<Vec<String>>, Ap
         }
     };
 
-    if cached.provider != provider || cached.endpoint != endpoint {
+    let provider_id_matches =
+        cached.provider_id.is_empty() || cached.provider_id == default_provider.id;
+    if !provider_id_matches
+        || cached.provider != default_provider.provider
+        || cached.endpoint != default_provider.endpoint
+    {
         return Ok(None);
     }
 
@@ -55,22 +64,30 @@ pub async fn fetch_and_cache(
 ) -> Result<Vec<String>, AppError> {
     // Read the settings we need under a short lock, then drop the guard before
     // doing network I/O so other DB consumers aren't blocked on the request.
-    let (kind, endpoint, api_key) = {
+    let (provider_id, kind, endpoint, api_key) = {
         let conn = conn_mutex
             .lock()
             .map_err(|_| AppError::Ai("Failed to acquire DB lock".to_string()))?;
-        let provider = crate::cache::get_setting(&conn, "ai_provider")?
+        let (default_provider_id, providers) = crate::ai::read_ai_provider_configs(&conn)?;
+        let provider = providers
+            .iter()
+            .find(|p| p.id == default_provider_id)
             .ok_or_else(|| AppError::Ai("AI provider not configured.".to_string()))?;
-        let endpoint = crate::cache::get_setting(&conn, "ai_endpoint")?
-            .ok_or_else(|| AppError::Ai("AI endpoint not configured.".to_string()))?;
-        let kind: AiProviderKind = provider.parse()?;
-        let provider_key = match kind {
-            AiProviderKind::OpenAI => "openai",
-            AiProviderKind::Anthropic => "anthropic",
-        };
-        let api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)?
-            .ok_or_else(|| AppError::Ai("API key not configured.".to_string()))?;
-        (kind, endpoint, api_key)
+        let kind: AiProviderKind = provider.provider.parse()?;
+        let provider_key = crate::ai::ai_provider_secret_key(&provider.id);
+        let mut api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(&provider_key)?;
+        if api_key.is_none() && provider.id == "default" {
+            api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(
+                crate::ai::legacy_provider_secret_key(kind),
+            )?;
+        }
+        let api_key = api_key.ok_or_else(|| AppError::Ai("API key not configured.".to_string()))?;
+        (
+            provider.id.clone(),
+            kind,
+            provider.endpoint.clone(),
+            api_key,
+        )
     };
 
     let models = match kind {
@@ -84,6 +101,7 @@ pub async fn fetch_and_cache(
         AiProviderKind::Anthropic => "anthropic",
     };
     let payload = serde_json::to_string(&CachedModels {
+        provider_id,
         provider: provider_str.to_string(),
         endpoint,
         models: models.clone(),

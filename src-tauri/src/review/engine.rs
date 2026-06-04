@@ -1,4 +1,4 @@
-use crate::ai::prompts::{resolve_prompt, PromptKey};
+use crate::ai::prompts::{resolve_prompt, PromptKey, PromptModelOverride};
 use crate::ai::{AiProvider, ChatMessage, ChatRole};
 use crate::diff::engine::extract_hunks;
 use crate::review::prompts;
@@ -9,12 +9,42 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Semaphore;
 
+#[derive(Clone)]
+struct SpecialistPrompt {
+    key: PromptKey,
+    system_prompt: String,
+    provider: Arc<dyn AiProvider>,
+    model_override: Option<String>,
+}
+
 fn cancelled(flag: &AtomicBool) -> Result<(), AppError> {
     if flag.load(Ordering::SeqCst) {
         Err(AppError::Provider("Review cancelled".into()))
     } else {
         Ok(())
     }
+}
+
+fn resolve_prompt_provider(
+    providers: &[crate::ai::AiProviderConfig],
+    default_provider_id: &str,
+    model_override: Option<&PromptModelOverride>,
+    default_runtime_provider: &Arc<dyn AiProvider>,
+) -> Result<Arc<dyn AiProvider>, AppError> {
+    let selected_provider_id = model_override
+        .and_then(|m| m.provider_id.as_deref())
+        .unwrap_or(default_provider_id);
+    if selected_provider_id == default_provider_id {
+        return Ok(default_runtime_provider.clone());
+    }
+
+    let provider = providers
+        .iter()
+        .find(|p| p.id == selected_provider_id)
+        .ok_or_else(|| AppError::Ai(format!("AI provider not found: {}", selected_provider_id)))?;
+    let api_key = crate::ai::read_ai_provider_api_key(provider)?
+        .ok_or_else(|| AppError::Ai(format!("API key not configured for {}", provider.name)))?;
+    crate::ai::provider_from_config(provider, &api_key)
 }
 
 /// Input for a PR review: the files and their content.
@@ -390,8 +420,8 @@ pub async fn run_review(
     // the run (Thorough mode only). Resolved up front so user edits in Settings
     // take effect on the next run without restarting the app.
     //
-    // Each tuple: (key, system prompt text, optional model override).
-    // `None` model override means: fall back to the provider's configured model.
+    // Each entry carries the specialist prompt, provider, and optional model
+    // override. No override means: fall back to that provider's configured model.
     // Which specialists to run. An explicit (non-empty) selection narrows the
     // set; `None` or a selection that matches nothing falls back to the full
     // roster so a stale/empty list never yields a silent no-op review.
@@ -400,34 +430,55 @@ pub async fn run_review(
         .as_ref()
         .filter(|v| !v.is_empty())
         .map(|v| v.iter().map(|s| s.as_str()).collect());
-    let resolve_specialist = |key: PromptKey| -> (PromptKey, String, Option<String>) {
-        let (text, model) = match db.lock() {
+    let (default_prompt_provider_id, prompt_providers) = match db.lock() {
+        Ok(c) => crate::ai::read_ai_provider_configs(&c)
+            .unwrap_or_else(|_| ("default".to_string(), Vec::new())),
+        Err(_) => ("default".to_string(), Vec::new()),
+    };
+    let resolve_specialist = |key: PromptKey| -> Result<SpecialistPrompt, AppError> {
+        let (text, model_override) = match db.lock() {
             Ok(c) => {
                 let t = resolve_prompt(&c, key).unwrap_or_else(|_| key.default_text().to_string());
-                let m = crate::ai::prompts::resolve_model(&c, key).unwrap_or(None);
+                let m = crate::ai::prompts::resolve_model_override(&c, key).unwrap_or(None);
                 (t, m)
             }
             Err(_) => (key.default_text().to_string(), None),
         };
-        (key, text, model)
+        let provider = resolve_prompt_provider(
+            &prompt_providers,
+            &default_prompt_provider_id,
+            model_override.as_ref(),
+            &provider,
+        )?;
+        Ok(SpecialistPrompt {
+            key,
+            system_prompt: text,
+            provider,
+            model_override: model_override.map(|m| m.model),
+        })
     };
-    let specialist_prompts: Vec<(PromptKey, String, Option<String>)> =
-        if input.mode == ReviewMode::Thorough {
-            let selected: Vec<PromptKey> = PromptKey::THOROUGH_SPECIALISTS
-                .iter()
-                .copied()
-                .filter(|key| enabled.as_ref().map_or(true, |set| set.contains(key.as_str())))
-                .collect();
-            // Selection filtered everything out (only unknown keys): run them all.
-            let keys = if selected.is_empty() {
-                PromptKey::THOROUGH_SPECIALISTS.to_vec()
-            } else {
-                selected
-            };
-            keys.into_iter().map(resolve_specialist).collect()
+    let specialist_prompts: Vec<SpecialistPrompt> = if input.mode == ReviewMode::Thorough {
+        let selected: Vec<PromptKey> = PromptKey::THOROUGH_SPECIALISTS
+            .iter()
+            .copied()
+            .filter(|key| {
+                enabled
+                    .as_ref()
+                    .map_or(true, |set| set.contains(key.as_str()))
+            })
+            .collect();
+        // Selection filtered everything out (only unknown keys): run them all.
+        let keys = if selected.is_empty() {
+            PromptKey::THOROUGH_SPECIALISTS.to_vec()
         } else {
-            Vec::new()
+            selected
         };
+        keys.into_iter()
+            .map(resolve_specialist)
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
 
     // Check for resumable state. The persisted state indexes files positionally
     // (`current_file_idx`), so before we trust those indices the freshly built
@@ -715,7 +766,14 @@ pub async fn run_review(
                             o.insert("reason".into(), serde_json::json!(reason));
                         }
                     }
-                    diag.event(if kept { "adjudicated_finding" } else { "guard_drop" }, payload);
+                    diag.event(
+                        if kept {
+                            "adjudicated_finding"
+                        } else {
+                            "guard_drop"
+                        },
+                        payload,
+                    );
                 }
             }
 
@@ -1030,15 +1088,19 @@ pub async fn review_single_file(
         });
     }
 
-    let specialist_prompts: Vec<(PromptKey, String, Option<String>)> =
-        if mode == ReviewMode::Thorough {
-            PromptKey::THOROUGH_SPECIALISTS
-                .iter()
-                .map(|k| (*k, k.default_text().to_string(), None))
-                .collect()
-        } else {
-            Vec::new()
-        };
+    let specialist_prompts: Vec<SpecialistPrompt> = if mode == ReviewMode::Thorough {
+        PromptKey::THOROUGH_SPECIALISTS
+            .iter()
+            .map(|k| SpecialistPrompt {
+                key: *k,
+                system_prompt: k.default_text().to_string(),
+                provider: provider.clone(),
+                model_override: None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let file_new_content = Arc::new(file.new_content.clone());
     let permits = Arc::new(Semaphore::new(1));
@@ -1152,7 +1214,7 @@ async fn review_single_hunk(
     total_hunks: usize,
     hunk: crate::diff::engine::DiffHunk,
     standards: String,
-    specialist_prompts: Vec<(PromptKey, String, Option<String>)>,
+    specialist_prompts: Vec<SpecialistPrompt>,
     retry_count: u32,
     llm_permits: Arc<Semaphore>,
     file_new_content: Arc<String>,
@@ -1173,8 +1235,11 @@ async fn review_single_hunk(
 
     if mode == ReviewMode::Thorough {
         let mut handles = Vec::new();
-        for (idx, (key, sys_text, model_override)) in specialist_prompts.into_iter().enumerate() {
-            let provider = provider.clone();
+        for (idx, specialist) in specialist_prompts.into_iter().enumerate() {
+            let provider = specialist.provider.clone();
+            let key = specialist.key;
+            let sys_text = specialist.system_prompt;
+            let model_override = specialist.model_override;
             let standards = standards.clone();
             let context_note = context_note.clone();
             let user_msg = user_msg.clone();
@@ -1481,7 +1546,10 @@ pub async fn post_single_finding(
     finding: &Finding,
 ) -> Result<(), AppError> {
     let prefix = tier_prefix(finding.tier);
-    let body = format!("{} **{}**\n\n{}", prefix, finding.file_path, finding.comment);
+    let body = format!(
+        "{} **{}**\n\n{}",
+        prefix, finding.file_path, finding.comment
+    );
     let inline = format!("{} {}", prefix, finding.comment);
 
     let thread = if let (Some(lo), Some(hi)) = (finding.line_start, finding.line_end) {
@@ -1628,7 +1696,10 @@ mod tests {
 
     #[test]
     fn default_confidence_is_reporting_threshold() {
-        assert_eq!(default_confidence(), crate::ai::DEFAULT_CONFIDENCE_THRESHOLD);
+        assert_eq!(
+            default_confidence(),
+            crate::ai::DEFAULT_CONFIDENCE_THRESHOLD
+        );
     }
 
     #[test]
@@ -1685,9 +1756,18 @@ mod tests {
         // Critical at/above the critical line blocks; below it is still
         // actionable (should-fix), never demoted to a nit, and never FYI even
         // without a line anchor.
-        assert_eq!(tier_for(Severity::Critical, 90, Some(5), BLOCK), Tier::Blocking);
-        assert_eq!(tier_for(Severity::Critical, 84, Some(5), BLOCK), Tier::ShouldFix);
-        assert_eq!(tier_for(Severity::Critical, 99, None, BLOCK), Tier::Blocking);
+        assert_eq!(
+            tier_for(Severity::Critical, 90, Some(5), BLOCK),
+            Tier::Blocking
+        );
+        assert_eq!(
+            tier_for(Severity::Critical, 84, Some(5), BLOCK),
+            Tier::ShouldFix
+        );
+        assert_eq!(
+            tier_for(Severity::Critical, 99, None, BLOCK),
+            Tier::Blocking
+        );
         assert!(tier_for(Severity::Critical, 50, None, BLOCK).is_actionable());
     }
 
@@ -1696,16 +1776,28 @@ mod tests {
         // A confidence-80 critical is should-fix at the default line (85) but
         // blocking once the line is lowered to 80; raising it past the score
         // pushes it back to should-fix.
-        assert_eq!(tier_for(Severity::Critical, 80, Some(5), 85), Tier::ShouldFix);
-        assert_eq!(tier_for(Severity::Critical, 80, Some(5), 80), Tier::Blocking);
-        assert_eq!(tier_for(Severity::Critical, 80, Some(5), 95), Tier::ShouldFix);
+        assert_eq!(
+            tier_for(Severity::Critical, 80, Some(5), 85),
+            Tier::ShouldFix
+        );
+        assert_eq!(
+            tier_for(Severity::Critical, 80, Some(5), 80),
+            Tier::Blocking
+        );
+        assert_eq!(
+            tier_for(Severity::Critical, 80, Some(5), 95),
+            Tier::ShouldFix
+        );
         // A line of 0 makes every critical finding block.
         assert_eq!(tier_for(Severity::Critical, 1, Some(5), 0), Tier::Blocking);
     }
 
     #[test]
     fn tier_moderate_splits_on_confidence_and_anchor() {
-        assert_eq!(tier_for(Severity::Moderate, 85, Some(5), BLOCK), Tier::ShouldFix);
+        assert_eq!(
+            tier_for(Severity::Moderate, 85, Some(5), BLOCK),
+            Tier::ShouldFix
+        );
         assert_eq!(tier_for(Severity::Moderate, 79, Some(5), BLOCK), Tier::Nit);
         // Non-critical with no line anchor is informational.
         assert_eq!(tier_for(Severity::Moderate, 95, None, BLOCK), Tier::Fyi);
@@ -1757,11 +1849,26 @@ mod tests {
 
     #[test]
     fn should_auto_review_respects_enabled_and_iteration() {
-        assert!(!should_auto_review(false, None, 3), "disabled never triggers");
-        assert!(should_auto_review(true, None, 1), "never-reviewed PR triggers");
-        assert!(should_auto_review(true, Some(2), 3), "newer iteration triggers");
-        assert!(!should_auto_review(true, Some(3), 3), "same iteration does not");
-        assert!(!should_auto_review(true, Some(4), 3), "older current does not");
+        assert!(
+            !should_auto_review(false, None, 3),
+            "disabled never triggers"
+        );
+        assert!(
+            should_auto_review(true, None, 1),
+            "never-reviewed PR triggers"
+        );
+        assert!(
+            should_auto_review(true, Some(2), 3),
+            "newer iteration triggers"
+        );
+        assert!(
+            !should_auto_review(true, Some(3), 3),
+            "same iteration does not"
+        );
+        assert!(
+            !should_auto_review(true, Some(4), 3),
+            "older current does not"
+        );
     }
 
     #[test]

@@ -227,10 +227,10 @@ export function ReviewConfirmDialog({
                             {shortLabel(s.label)}
                           </span>
                           <span
-                            title="Model this agent will use"
+                            title="Provider and model this agent will use"
                             class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
                           >
-                            {s.model}
+                            {s.providerName}: {s.model}
                           </span>
                         </span>
                         <span class="block mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 leading-snug">

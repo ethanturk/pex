@@ -1,5 +1,12 @@
 use crate::AppError;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptModelOverride {
+    pub provider_id: Option<String>,
+    pub model: String,
+}
+
 /// Identifier for a user-customizable system prompt.
 /// The string value is the stable key used both in the SQLite settings table
 /// and over the Tauri command boundary.
@@ -103,6 +110,10 @@ impl PromptKey {
 
     fn model_db_key(self) -> String {
         format!("ai_prompt_model_{}", self.as_str())
+    }
+
+    fn provider_db_key(self) -> String {
+        format!("ai_prompt_provider_{}", self.as_str())
     }
 }
 
@@ -253,14 +264,47 @@ pub fn reset_prompt(conn: &rusqlite::Connection, key: PromptKey) -> Result<(), A
     crate::cache::delete_setting(conn, &key.db_key())
 }
 
-/// Read the per-prompt model override, if any.
-/// Empty / missing means "use the default AI model from the AI tab".
+/// Read the per-prompt provider/model override, if any.
+/// Empty / missing means "use the default provider and model from the AI tab".
+pub fn resolve_model_override(
+    conn: &rusqlite::Connection,
+    key: PromptKey,
+) -> Result<Option<PromptModelOverride>, AppError> {
+    let stored = crate::cache::get_setting(conn, &key.model_db_key())?;
+    let Some(stored) = stored.filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+
+    let model_override = match serde_json::from_str::<PromptModelOverride>(&stored) {
+        Ok(mut parsed) => {
+            parsed.provider_id = parsed
+                .provider_id
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty());
+            parsed.model = parsed.model.trim().to_string();
+            parsed
+        }
+        Err(_) => PromptModelOverride {
+            provider_id: crate::cache::get_setting(conn, &key.provider_db_key())?
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty()),
+            model: stored.trim().to_string(),
+        },
+    };
+
+    if model_override.model.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(model_override))
+    }
+}
+
+/// Backward-compatible helper for call sites that only need the model string.
 pub fn resolve_model(
     conn: &rusqlite::Connection,
     key: PromptKey,
 ) -> Result<Option<String>, AppError> {
-    let stored = crate::cache::get_setting(conn, &key.model_db_key())?;
-    Ok(stored.filter(|s| !s.is_empty()))
+    Ok(resolve_model_override(conn, key)?.map(|o| o.model))
 }
 
 pub fn save_model(
@@ -268,11 +312,38 @@ pub fn save_model(
     key: PromptKey,
     model: &str,
 ) -> Result<(), AppError> {
-    crate::cache::set_setting(conn, &key.model_db_key(), model)
+    save_model_override(conn, key, None, model)
+}
+
+pub fn save_model_override(
+    conn: &rusqlite::Connection,
+    key: PromptKey,
+    provider_id: Option<&str>,
+    model: &str,
+) -> Result<(), AppError> {
+    let model = model.trim();
+    if model.is_empty() {
+        return reset_model(conn, key);
+    }
+    let provider_id = provider_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let payload = serde_json::to_string(&PromptModelOverride {
+        provider_id: provider_id.clone(),
+        model: model.to_string(),
+    })
+    .map_err(|e| AppError::Ai(format!("Failed to serialize prompt model override: {}", e)))?;
+    crate::cache::set_setting(conn, &key.model_db_key(), &payload)?;
+    match provider_id {
+        Some(id) => crate::cache::set_setting(conn, &key.provider_db_key(), &id),
+        None => crate::cache::delete_setting(conn, &key.provider_db_key()),
+    }
 }
 
 pub fn reset_model(conn: &rusqlite::Connection, key: PromptKey) -> Result<(), AppError> {
-    crate::cache::delete_setting(conn, &key.model_db_key())
+    crate::cache::delete_setting(conn, &key.model_db_key())?;
+    crate::cache::delete_setting(conn, &key.provider_db_key())
 }
 
 /// Prompt for generating explain-hunk user message.

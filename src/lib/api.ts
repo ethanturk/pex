@@ -342,7 +342,20 @@ export async function updateReviewerStatus(
 
 // ============= AI =============
 
+export interface AiProviderConfig {
+  id: string;
+  name: string;
+  provider: string;
+  endpoint: string;
+  model: string;
+  hasApiKey: boolean;
+  connectTimeoutSecs: number;
+  readTimeoutSecs: number;
+}
+
 export interface AiSettingsNoKey {
+  defaultProviderId: string;
+  providers: AiProviderConfig[];
   provider: string;
   endpoint: string;
   model: string;
@@ -406,6 +419,20 @@ export async function saveAiDefaults(
   });
 }
 
+/// Persist one provider entry. An empty `apiKey` keeps the stored key. When
+/// `makeDefault` is true this provider becomes the active review provider.
+export async function saveAiProviderConfig(
+  providerConfig: AiProviderConfig,
+  apiKey: string,
+  makeDefault: boolean,
+): Promise<void> {
+  return invoke("save_ai_provider_config", { providerConfig, apiKey, makeDefault });
+}
+
+export async function removeAiProvider(providerId: string): Promise<void> {
+  return invoke("remove_ai_provider", { providerId });
+}
+
 /// Test the AI Defaults form WITHOUT persisting. Returns the provider's model
 /// list on success (used to validate the key and populate the Model dropdown).
 /// An empty `apiKey` falls back to the stored key.
@@ -413,8 +440,9 @@ export async function testAiDefaults(
   provider: string,
   endpoint: string,
   apiKey: string,
+  providerId?: string,
 ): Promise<string[]> {
-  return invoke<string[]>("test_ai_defaults", { provider, endpoint, apiKey });
+  return invoke<string[]>("test_ai_defaults", { provider, endpoint, apiKey, providerId });
 }
 
 /// Persist the review/automation preferences. Autosaved on change; never
@@ -526,7 +554,9 @@ export interface AiPromptInfo {
   value: string;
   defaultValue: string;
   isCustomized: boolean;
-  /// Per-prompt model override. null/empty = use the AI tab's default model.
+  /// Per-prompt provider override. null/empty = use the AI tab's default provider.
+  providerId: string | null;
+  /// Per-prompt model override. null/empty = use the AI tab's default provider/model.
   model: string | null;
 }
 
@@ -542,9 +572,13 @@ export async function resetAiPrompt(key: string): Promise<void> {
   return invoke("reset_ai_prompt", { key });
 }
 
-/// Persist a per-prompt model override. Pass an empty string to clear.
-export async function saveAiPromptModel(key: string, model: string): Promise<void> {
-  return invoke("save_ai_prompt_model", { key, model });
+/// Persist a per-prompt provider/model override. Pass an empty model to clear.
+export async function saveAiPromptModel(
+  key: string,
+  model: string,
+  providerId?: string,
+): Promise<void> {
+  return invoke("save_ai_prompt_model", { key, model, providerId });
 }
 
 export async function resetAiPromptModel(key: string): Promise<void> {
@@ -556,6 +590,10 @@ export async function resetAiPromptModel(key: string): Promise<void> {
 /// otherwise the provider's /models endpoint is hit.
 export async function listAiModels(refresh = false): Promise<string[]> {
   return invoke<string[]>("list_ai_models", { refresh });
+}
+
+export async function listAiProviderModels(providerId: string): Promise<string[]> {
+  return invoke<string[]>("list_ai_provider_models", { providerId });
 }
 
 export async function explainHunk(
@@ -645,6 +683,7 @@ export interface ReviewSpecialistInfo {
   label: string;
   description: string;
   model: string;
+  providerName: string;
 }
 
 export async function getReviewSpecialists(): Promise<ReviewSpecialistInfo[]> {

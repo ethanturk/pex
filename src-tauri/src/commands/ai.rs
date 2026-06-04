@@ -1,4 +1,6 @@
-use crate::ai::{AiProviderKind, AiSettingsNoKey, ChatMessage, ChatRole};
+use crate::ai::{
+    AiProviderConfig, AiProviderConfigNoKey, AiProviderKind, AiSettingsNoKey, ChatMessage, ChatRole,
+};
 use crate::diff::engine::{extract_hunks, DiffHunk};
 use crate::AppState;
 use tauri::State;
@@ -9,23 +11,18 @@ use tauri::State;
 pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoKey, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
-    let provider = crate::cache::get_setting(&db, "ai_provider")
-        .map_err(|e: crate::AppError| e.to_string())?
-        .unwrap_or_else(|| "openai".to_string());
+    let (default_provider_id, providers) =
+        crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let providers_no_key = providers
+        .iter()
+        .map(provider_no_key)
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let endpoint = crate::cache::get_setting(&db, "ai_endpoint")
-        .map_err(|e: crate::AppError| e.to_string())?
-        .unwrap_or_else(|| "https://api.openai.com".to_string());
-
-    let model = crate::cache::get_setting(&db, "ai_model")
-        .map_err(|e: crate::AppError| e.to_string())?
-        .unwrap_or_else(|| "gpt-4.1".to_string());
-
-    let connect_timeout_secs =
-        crate::ai::read_connect_timeout(&db).map_err(|e: crate::AppError| e.to_string())?;
-
-    let read_timeout_secs =
-        crate::ai::read_read_timeout(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let default_provider = providers
+        .iter()
+        .find(|p| p.id == default_provider_id)
+        .or_else(|| providers.first())
+        .ok_or_else(|| "AI provider list is empty.".to_string())?;
 
     let hunk_concurrency =
         crate::ai::read_hunk_concurrency(&db).map_err(|e: crate::AppError| e.to_string())?;
@@ -58,23 +55,15 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
     let ai_diagnostics =
         crate::ai::read_ai_diagnostics(&db).map_err(|e: crate::AppError| e.to_string())?;
 
-    // Whether a key is stored for the *current* provider — drives the masked
-    // placeholder in the UI. We never return the key itself.
-    let provider_key = match provider.as_str() {
-        "anthropic" => "anthropic",
-        _ => "openai",
-    };
-    let has_api_key = crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)
-        .map(|t| t.map(|s| !s.is_empty()).unwrap_or(false))
-        .unwrap_or(false);
-
     Ok(AiSettingsNoKey {
-        provider,
-        endpoint,
-        model,
-        has_api_key,
-        connect_timeout_secs,
-        read_timeout_secs,
+        default_provider_id,
+        providers: providers_no_key,
+        provider: default_provider.provider.clone(),
+        endpoint: default_provider.endpoint.clone(),
+        model: default_provider.model.clone(),
+        has_api_key: provider_has_key(default_provider).unwrap_or(false),
+        connect_timeout_secs: default_provider.connect_timeout_secs,
+        read_timeout_secs: default_provider.read_timeout_secs,
         hunk_concurrency,
         standards_max_chars,
         retry_count,
@@ -89,29 +78,166 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
     })
 }
 
+fn provider_has_key(provider: &AiProviderConfig) -> Result<bool, String> {
+    let key = crate::ai::ai_provider_secret_key(&provider.id);
+    let stored = crate::auth::keyring_store::KeyringStore::get_ai_token(&key)
+        .map_err(|e: crate::AppError| e.to_string())?
+        .is_some_and(|s| !s.is_empty());
+    if stored {
+        return Ok(true);
+    }
+
+    if provider.id != "default" {
+        return Ok(false);
+    }
+    let Ok(kind) = provider.provider.parse::<AiProviderKind>() else {
+        return Ok(false);
+    };
+    crate::auth::keyring_store::KeyringStore::get_ai_token(crate::ai::legacy_provider_secret_key(
+        kind,
+    ))
+    .map(|t| t.is_some_and(|s| !s.is_empty()))
+    .map_err(|e: crate::AppError| e.to_string())
+}
+
+fn provider_no_key(provider: &AiProviderConfig) -> Result<AiProviderConfigNoKey, String> {
+    Ok(AiProviderConfigNoKey {
+        id: provider.id.clone(),
+        name: provider.name.clone(),
+        provider: provider.provider.clone(),
+        endpoint: provider.endpoint.clone(),
+        model: provider.model.clone(),
+        has_api_key: provider_has_key(provider)?,
+        connect_timeout_secs: provider.connect_timeout_secs,
+        read_timeout_secs: provider.read_timeout_secs,
+    })
+}
+
 /// Resolve a form API key against what's stored: a non-empty value is the new
 /// key; an empty value means "keep the existing stored key" (the UI never echoes
 /// the real key back, so blank = unchanged).
-fn resolve_api_key(provider_key: &str, form_key: &str) -> Result<String, String> {
+fn resolve_api_key(
+    provider_id: &str,
+    kind: AiProviderKind,
+    form_key: &str,
+) -> Result<String, String> {
+    let provider_key = crate::ai::ai_provider_secret_key(provider_id);
     if form_key.trim().is_empty() {
-        Ok(
-            crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)
-                .map_err(|e: crate::AppError| e.to_string())?
-                .unwrap_or_default(),
-        )
+        let mut saved = crate::auth::keyring_store::KeyringStore::get_ai_token(&provider_key)
+            .map_err(|e: crate::AppError| e.to_string())?;
+        if saved.is_none() && provider_id == "default" {
+            saved = crate::auth::keyring_store::KeyringStore::get_ai_token(
+                crate::ai::legacy_provider_secret_key(kind),
+            )
+            .map_err(|e: crate::AppError| e.to_string())?;
+        }
+        Ok(saved.unwrap_or_default())
     } else {
-        crate::auth::keyring_store::KeyringStore::save_ai_token(provider_key, form_key)
+        crate::auth::keyring_store::KeyringStore::save_ai_token(&provider_key, form_key)
             .map_err(|e: crate::AppError| e.to_string())?;
         Ok(form_key.to_string())
     }
 }
 
 fn clamp_timeout(secs: u64, default: u64) -> u64 {
-    if secs == 0 {
-        default
-    } else {
-        secs.min(crate::ai::MAX_TIMEOUT_SECS)
+    crate::ai::clamp_timeout_value(secs, default)
+}
+
+fn normalize_provider_config(
+    mut provider: AiProviderConfigNoKey,
+) -> Result<AiProviderConfig, String> {
+    let kind: AiProviderKind = provider
+        .provider
+        .parse()
+        .map_err(|e: crate::AppError| e.to_string())?;
+    provider.id = provider.id.trim().to_string();
+    if provider.id.is_empty() {
+        return Err("Provider id is required.".to_string());
     }
+    provider.name = provider.name.trim().to_string();
+    if provider.name.is_empty() {
+        provider.name = "Provider".to_string();
+    }
+    provider.endpoint = provider.endpoint.trim().to_string();
+    if provider.endpoint.is_empty() {
+        provider.endpoint = crate::ai::default_endpoint_for_kind(kind).to_string();
+    }
+    provider.model = provider.model.trim().to_string();
+
+    Ok(AiProviderConfig {
+        id: provider.id,
+        name: provider.name,
+        provider: kind.to_string(),
+        endpoint: provider.endpoint,
+        model: provider.model,
+        connect_timeout_secs: clamp_timeout(
+            provider.connect_timeout_secs,
+            crate::ai::DEFAULT_CONNECT_TIMEOUT_SECS,
+        ),
+        read_timeout_secs: clamp_timeout(
+            provider.read_timeout_secs,
+            crate::ai::DEFAULT_READ_TIMEOUT_SECS,
+        ),
+    })
+}
+
+fn mirror_default_settings(
+    db: &rusqlite::Connection,
+    provider: &AiProviderConfig,
+) -> Result<(), crate::AppError> {
+    crate::cache::set_setting(db, "ai_provider", &provider.provider)?;
+    crate::cache::set_setting(db, "ai_endpoint", &provider.endpoint)?;
+    crate::cache::set_setting(db, "ai_model", &provider.model)?;
+    crate::cache::set_setting(
+        db,
+        "ai_connect_timeout_secs",
+        &provider.connect_timeout_secs.to_string(),
+    )?;
+    crate::cache::set_setting(
+        db,
+        "ai_read_timeout_secs",
+        &provider.read_timeout_secs.to_string(),
+    )?;
+    let _ = crate::cache::delete_setting(db, "ai_request_timeout_secs");
+    Ok(())
+}
+
+fn configure_default_provider(
+    state: &State<'_, AppState>,
+    provider: &AiProviderConfig,
+    api_key: &str,
+) -> Result<(), String> {
+    if provider.model.trim().is_empty() || api_key.trim().is_empty() {
+        return Ok(());
+    }
+    let kind: AiProviderKind = provider
+        .provider
+        .parse()
+        .map_err(|e: crate::AppError| e.to_string())?;
+    let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
+    match ai_mgr_lock.as_mut() {
+        Some(mgr) => mgr.configure(
+            kind,
+            &provider.endpoint,
+            &provider.model,
+            api_key,
+            provider.connect_timeout_secs,
+            provider.read_timeout_secs,
+        ),
+        None => {
+            let mut mgr = crate::ai::AiManager::new();
+            mgr.configure(
+                kind,
+                &provider.endpoint,
+                &provider.model,
+                api_key,
+                provider.connect_timeout_secs,
+                provider.read_timeout_secs,
+            );
+            *ai_mgr_lock = Some(mgr);
+        }
+    }
+    Ok(())
 }
 
 /// Persist the "AI Defaults": provider, endpoint, model, API key, and the
@@ -130,41 +256,134 @@ pub async fn save_ai_defaults(
     let kind: AiProviderKind = provider
         .parse()
         .map_err(|e: crate::AppError| e.to_string())?;
-    let provider_key = match kind {
-        AiProviderKind::OpenAI => "openai",
-        AiProviderKind::Anthropic => "anthropic",
-    };
 
-    let connect_timeout = clamp_timeout(connect_timeout_secs, crate::ai::DEFAULT_CONNECT_TIMEOUT_SECS);
+    let connect_timeout = clamp_timeout(
+        connect_timeout_secs,
+        crate::ai::DEFAULT_CONNECT_TIMEOUT_SECS,
+    );
     let read_timeout = clamp_timeout(read_timeout_secs, crate::ai::DEFAULT_READ_TIMEOUT_SECS);
 
-    let api_key = resolve_api_key(provider_key, &api_key)?;
+    let default_provider = AiProviderConfig {
+        id: "default".to_string(),
+        name: "Default".to_string(),
+        provider: kind.to_string(),
+        endpoint,
+        model,
+        connect_timeout_secs: connect_timeout,
+        read_timeout_secs: read_timeout,
+    };
+    let api_key = resolve_api_key(&default_provider.id, kind, &api_key)?;
 
     {
         let db = state.db.lock().map_err(|e| e.to_string())?;
-        crate::cache::set_setting(&db, "ai_provider", &provider)
+        crate::ai::write_ai_provider_configs(
+            &db,
+            &default_provider.id,
+            &[default_provider.clone()],
+        )
+        .map_err(|e: crate::AppError| e.to_string())?;
+        mirror_default_settings(&db, &default_provider)
             .map_err(|e: crate::AppError| e.to_string())?;
-        crate::cache::set_setting(&db, "ai_endpoint", &endpoint)
-            .map_err(|e: crate::AppError| e.to_string())?;
-        crate::cache::set_setting(&db, "ai_model", &model)
-            .map_err(|e: crate::AppError| e.to_string())?;
-        crate::cache::set_setting(&db, "ai_connect_timeout_secs", &connect_timeout.to_string())
-            .map_err(|e: crate::AppError| e.to_string())?;
-        crate::cache::set_setting(&db, "ai_read_timeout_secs", &read_timeout.to_string())
-            .map_err(|e: crate::AppError| e.to_string())?;
-        // Drop the legacy total-request timeout so future reads use the new semantics.
-        let _ = crate::cache::delete_setting(&db, "ai_request_timeout_secs");
     }
 
-    // Reconfigure the live provider.
-    let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
-    match ai_mgr_lock.as_mut() {
-        Some(mgr) => mgr.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout),
-        None => {
-            let mut mgr = crate::ai::AiManager::new();
-            mgr.configure(kind, &endpoint, &model, &api_key, connect_timeout, read_timeout);
-            *ai_mgr_lock = Some(mgr);
+    configure_default_provider(&state, &default_provider, &api_key)?;
+
+    Ok(())
+}
+
+/// Persist one provider entry. The UI autosaves this on field changes. When the
+/// entry is the default, the live AI manager and legacy flat settings are kept
+/// in sync so existing review code continues to use the selected default.
+#[tauri::command]
+pub async fn save_ai_provider_config(
+    state: State<'_, AppState>,
+    provider_config: AiProviderConfigNoKey,
+    api_key: String,
+    make_default: bool,
+) -> Result<(), String> {
+    let provider = normalize_provider_config(provider_config)?;
+    let kind: AiProviderKind = provider
+        .provider
+        .parse()
+        .map_err(|e: crate::AppError| e.to_string())?;
+    let resolved_key = resolve_api_key(&provider.id, kind, &api_key)?;
+
+    let default_id = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let (current_default_id, mut providers) =
+            crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+        if let Some(existing) = providers.iter_mut().find(|p| p.id == provider.id) {
+            *existing = provider.clone();
+        } else {
+            providers.push(provider.clone());
         }
+
+        let default_id = if make_default {
+            provider.id.clone()
+        } else if providers.iter().any(|p| p.id == current_default_id) {
+            current_default_id
+        } else {
+            providers[0].id.clone()
+        };
+
+        crate::ai::write_ai_provider_configs(&db, &default_id, &providers)
+            .map_err(|e: crate::AppError| e.to_string())?;
+        if default_id == provider.id {
+            mirror_default_settings(&db, &provider).map_err(|e: crate::AppError| e.to_string())?;
+        }
+        default_id
+    };
+
+    if default_id == provider.id {
+        configure_default_provider(&state, &provider, &resolved_key)?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_ai_provider(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<(), String> {
+    let (new_default, providers) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let (current_default_id, mut providers) =
+            crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+        if providers.len() <= 1 {
+            return Err("At least one AI provider is required.".to_string());
+        }
+        providers.retain(|p| p.id != provider_id);
+        if providers.is_empty() {
+            return Err("At least one AI provider is required.".to_string());
+        }
+        let new_default = if current_default_id == provider_id {
+            providers[0].id.clone()
+        } else {
+            current_default_id
+        };
+        crate::ai::write_ai_provider_configs(&db, &new_default, &providers)
+            .map_err(|e: crate::AppError| e.to_string())?;
+        let default_provider = providers
+            .iter()
+            .find(|p| p.id == new_default)
+            .ok_or_else(|| "Default AI provider not found.".to_string())?;
+        mirror_default_settings(&db, default_provider)
+            .map_err(|e: crate::AppError| e.to_string())?;
+        (new_default, providers)
+    };
+
+    let key = crate::ai::ai_provider_secret_key(&provider_id);
+    crate::auth::keyring_store::KeyringStore::delete_ai_token(&key)
+        .map_err(|e: crate::AppError| e.to_string())?;
+
+    if let Some(default_provider) = providers.iter().find(|p| p.id == new_default) {
+        let kind: AiProviderKind = default_provider
+            .provider
+            .parse()
+            .map_err(|e: crate::AppError| e.to_string())?;
+        let api_key = resolve_api_key(&default_provider.id, kind, "")?;
+        configure_default_provider(&state, default_provider, &api_key)?;
     }
 
     Ok(())
@@ -223,7 +442,11 @@ pub async fn save_ai_preferences(
     crate::cache::set_setting(
         &db,
         "ai_auto_vote_on_blocking",
-        if auto_vote_on_blocking { "true" } else { "false" },
+        if auto_vote_on_blocking {
+            "true"
+        } else {
+            "false"
+        },
     )
     .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(
@@ -267,19 +490,21 @@ pub async fn test_ai_defaults(
     provider: String,
     endpoint: String,
     api_key: String,
+    provider_id: Option<String>,
 ) -> Result<Vec<String>, String> {
     let kind: AiProviderKind = provider
         .parse()
         .map_err(|e: crate::AppError| e.to_string())?;
-    let provider_key = match kind {
-        AiProviderKind::OpenAI => "openai",
-        AiProviderKind::Anthropic => "anthropic",
-    };
 
     let key = if api_key.trim().is_empty() {
-        crate::auth::keyring_store::KeyringStore::get_ai_token(provider_key)
+        match provider_id.as_ref().filter(|id| !id.trim().is_empty()) {
+            Some(id) => resolve_api_key(id, kind, "")?,
+            None => crate::auth::keyring_store::KeyringStore::get_ai_token(
+                crate::ai::legacy_provider_secret_key(kind),
+            )
             .map_err(|e: crate::AppError| e.to_string())?
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        }
     } else {
         api_key
     };
@@ -395,9 +620,10 @@ pub struct PromptInfo {
     pub value: String,
     pub default_value: String,
     pub is_customized: bool,
-    /// Per-prompt model override. `None` means: fall back to the AI tab's model.
-    /// Only consulted by Thorough PR review for specialist prompts today, but
-    /// stored for any prompt so the UI is uniform.
+    /// Per-prompt provider override. `None` means use the default provider.
+    pub provider_id: Option<String>,
+    /// Per-prompt model override. `None` means: fall back to the default
+    /// provider/model from the AI tab.
     pub model: Option<String>,
 }
 
@@ -447,7 +673,7 @@ fn prompt_info(
         ),
     };
 
-    let model = crate::ai::prompts::resolve_model(conn, key)?;
+    let model_override = crate::ai::prompts::resolve_model_override(conn, key)?;
 
     Ok(PromptInfo {
         key: key.as_str().to_string(),
@@ -456,7 +682,8 @@ fn prompt_info(
         value,
         default_value,
         is_customized,
-        model,
+        provider_id: model_override.as_ref().and_then(|m| m.provider_id.clone()),
+        model: model_override.map(|m| m.model),
     })
 }
 
@@ -472,6 +699,8 @@ pub struct ReviewSpecialistInfo {
     /// The concrete model this specialist will use — its per-prompt override if
     /// set, otherwise the AI tab's default model. Never the literal "Default".
     pub model: String,
+    /// The concrete provider this specialist will use.
+    pub provider_name: String,
 }
 
 /// The Thorough-mode specialist roster, in run order, each annotated with the
@@ -481,18 +710,28 @@ pub async fn get_review_specialists(
     state: State<'_, AppState>,
 ) -> Result<Vec<ReviewSpecialistInfo>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let default_model = crate::cache::get_setting(&db, "ai_model")
-        .map_err(|e: crate::AppError| e.to_string())?
-        .unwrap_or_else(|| "gpt-4.1".to_string());
+    let (default_provider_id, providers) =
+        crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let default_provider = providers
+        .iter()
+        .find(|p| p.id == default_provider_id)
+        .or_else(|| providers.first())
+        .ok_or_else(|| "AI provider list is empty.".to_string())?;
     crate::ai::prompts::PromptKey::THOROUGH_SPECIALISTS
         .iter()
         .map(|k| {
             let info = prompt_info(&db, *k).map_err(|e: crate::AppError| e.to_string())?;
+            let provider = info
+                .provider_id
+                .as_ref()
+                .and_then(|id| providers.iter().find(|p| p.id == *id))
+                .unwrap_or(default_provider);
             Ok(ReviewSpecialistInfo {
                 key: info.key,
                 label: info.label,
                 description: info.description,
-                model: info.model.unwrap_or_else(|| default_model.clone()),
+                model: info.model.unwrap_or_else(|| provider.model.clone()),
+                provider_name: provider.name.clone(),
             })
         })
         .collect()
@@ -539,16 +778,28 @@ pub async fn save_ai_prompt_model(
     state: State<'_, AppState>,
     key: String,
     model: String,
+    provider_id: Option<String>,
 ) -> Result<(), String> {
     let prompt_key = crate::ai::prompts::PromptKey::from_str(&key)
         .map_err(|e: crate::AppError| e.to_string())?;
     let trimmed = model.trim();
     let db = state.db.lock().map_err(|e| e.to_string())?;
     if trimmed.is_empty() {
-        // Empty string means "use the default AI model" — just drop the override.
+        // Empty string means "use the default AI provider/model" — drop the override.
         crate::ai::prompts::reset_model(&db, prompt_key).map_err(|e: crate::AppError| e.to_string())
     } else {
-        crate::ai::prompts::save_model(&db, prompt_key, trimmed)
+        let provider_id = provider_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        if let Some(provider_id) = provider_id {
+            let (_, providers) = crate::ai::read_ai_provider_configs(&db)
+                .map_err(|e: crate::AppError| e.to_string())?;
+            if !providers.iter().any(|p| p.id == provider_id) {
+                return Err("Selected AI provider was not found.".to_string());
+            }
+        }
+        crate::ai::prompts::save_model_override(&db, prompt_key, provider_id, trimmed)
             .map_err(|e: crate::AppError| e.to_string())
     }
 }
@@ -582,6 +833,35 @@ pub async fn list_ai_models(
     }
 
     crate::ai::models::fetch_and_cache(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Returns the live model list for a specific configured provider.
+#[tauri::command]
+pub async fn list_ai_provider_models(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<Vec<String>, String> {
+    let (kind, endpoint, api_key) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let (_, providers) =
+            crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+        let provider = providers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| "Selected AI provider was not found.".to_string())?;
+        let kind: AiProviderKind = provider
+            .provider
+            .parse()
+            .map_err(|e: crate::AppError| e.to_string())?;
+        let api_key = crate::ai::read_ai_provider_api_key(provider)
+            .map_err(|e: crate::AppError| e.to_string())?
+            .ok_or_else(|| format!("API key not configured for {}.", provider.name))?;
+        (kind, provider.endpoint.clone(), api_key)
+    };
+
+    crate::ai::models::probe_models(kind, &endpoint, &api_key)
         .await
         .map_err(|e| e.to_string())
 }

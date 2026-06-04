@@ -1,14 +1,20 @@
 import { useState, useEffect, useRef } from "preact/hooks";
 import {
   showPrChecks,
+  theme,
+  applyTheme,
+  diffView,
   appFont,
   appTextSize,
   diffTextSize,
+  type Theme,
+  type DiffView,
   type TextSize,
 } from "@/lib/signals";
 import {
   getAiSettings,
-  saveAiDefaults,
+  saveAiProviderConfig,
+  removeAiProvider,
   saveAiPreferences,
   testAiDefaults,
   getAiPrompts,
@@ -16,9 +22,11 @@ import {
   resetAiPrompt,
   saveAiPromptModel,
   listAiModels,
+  listAiProviderModels,
   getReviewCalibration,
   clearReviewFeedback,
   getDiagnosticsDir,
+  type AiProviderConfig,
   type AiPromptInfo,
   type CalibrationStats,
 } from "@/lib/api";
@@ -56,6 +64,17 @@ const TEXT_SIZE_OPTIONS: { label: string; value: TextSize }[] = [
   { label: "XL", value: "xl" },
 ];
 
+const THEME_OPTIONS: { label: string; value: Theme }[] = [
+  { label: "System", value: "system" },
+  { label: "Light", value: "light" },
+  { label: "Dark", value: "dark" },
+];
+
+const DIFF_VIEW_OPTIONS: { label: string; value: DiffView }[] = [
+  { label: "Inline", value: "inline" },
+  { label: "Side-by-side", value: "split" },
+];
+
 const DEFAULT_STANDARDS_MAX_CHARS = 8000;
 const MIN_STANDARDS_MAX_CHARS = 500;
 const MAX_STANDARDS_MAX_CHARS = 65535;
@@ -63,6 +82,24 @@ const MAX_STANDARDS_MAX_CHARS = 65535;
 // Placeholder shown in the API Key field when a key is already stored. Typing
 // replaces it; leaving it blank keeps the stored key.
 const API_KEY_MASK = "••••••••••••";
+
+const DEFAULT_OPENAI_ENDPOINT = "https://api.openai.com";
+const DEFAULT_ANTHROPIC_ENDPOINT = "https://api.anthropic.com";
+
+function defaultEndpoint(provider: string): string {
+  return provider === "anthropic" ? DEFAULT_ANTHROPIC_ENDPOINT : DEFAULT_OPENAI_ENDPOINT;
+}
+
+function providerKindLabel(provider: string): string {
+  return provider === "anthropic" ? "Anthropic-compatible" : "OpenAI-compatible";
+}
+
+function makeProviderId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `provider-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
 function normalizeStandardsMaxChars(value: string | number): number {
   const n = typeof value === "number" ? value : parseInt(value, 10);
@@ -76,18 +113,15 @@ const INPUT_CLASS =
 export function AiSettings({ open, onClose, standalone }: Props) {
   const [tab, setTab] = useState<Tab>("ai-defaults");
 
-  // ---- AI Defaults tab (provider creds — save-button gated) ----
-  const [provider, setProvider] = useState("openai");
-  const [endpoint, setEndpoint] = useState("");
-  const [model, setModel] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [hasApiKey, setHasApiKey] = useState(false);
-  const [connectTimeoutSecs, setConnectTimeoutSecs] = useState(10);
-  const [readTimeoutSecs, setReadTimeoutSecs] = useState(60);
-  // Save is gated on a successful Test of the current form values. Any edit to a
-  // credential field clears this so the user must re-test before saving.
-  const [tested, setTested] = useState(false);
-  const [saving, setSaving] = useState(false);
+  // ---- AI providers tab (provider creds + defaults — autosaved) ----
+  const [providers, setProviders] = useState<AiProviderConfig[]>([]);
+  const [defaultProviderId, setDefaultProviderId] = useState("default");
+  const [selectedProviderId, setSelectedProviderId] = useState("default");
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
+  const [providerModels, setProviderModels] = useState<Record<string, string[]>>({});
+  const [providerModelsError, setProviderModelsError] = useState<string | null>(null);
+  const [providerSaveStatus, setProviderSaveStatus] = useState<{ text: string; ok: boolean } | null>(null);
+  const [providerSaving, setProviderSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [testing, setTesting] = useState(false);
 
@@ -112,6 +146,8 @@ export function AiSettings({ open, onClose, standalone }: Props) {
   const [prompts, setPrompts] = useState<AiPromptInfo[]>([]);
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
   const [promptStatus, setPromptStatus] = useState<Record<string, { text: string; ok: boolean } | null>>({});
+  const [openPromptModelPicker, setOpenPromptModelPicker] = useState<string | null>(null);
+  const [promptModelDrafts, setPromptModelDrafts] = useState<Record<string, string>>({});
   // Available models from the configured provider's /models endpoint.
   // `null` distinguishes "not yet attempted" from "fetched but empty".
   const [availableModels, setAvailableModels] = useState<string[] | null>(null);
@@ -124,6 +160,9 @@ export function AiSettings({ open, onClose, standalone }: Props) {
 
   // Guards autosave: don't persist while loadSettings is populating state.
   const hydrating = useRef(false);
+  const selectedProvider = providers.find((p) => p.id === selectedProviderId) ?? providers[0] ?? null;
+  const selectedProviderModels = selectedProvider ? (providerModels[selectedProvider.id] ?? []) : [];
+  const selectedApiKeyDraft = selectedProvider ? (apiKeyDrafts[selectedProvider.id] ?? "") : "";
 
   useEffect(() => {
     if (open) {
@@ -148,6 +187,18 @@ export function AiSettings({ open, onClose, standalone }: Props) {
     }
   }, [open, tab]);
 
+  useEffect(() => {
+    if (!openPromptModelPicker) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest("[data-prompt-model-picker]")) return;
+      setOpenPromptModelPicker(null);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [openPromptModelPicker]);
+
   const handleClearCalibration = async () => {
     if (
       !window.confirm(
@@ -171,12 +222,28 @@ export function AiSettings({ open, onClose, standalone }: Props) {
         getAiSettings(),
         getAiPrompts(),
       ]);
-      setProvider(settings.provider);
-      setEndpoint(settings.endpoint);
-      setModel(settings.model);
-      setHasApiKey(settings.hasApiKey);
-      setConnectTimeoutSecs(settings.connectTimeoutSecs || 10);
-      setReadTimeoutSecs(settings.readTimeoutSecs || 60);
+      const loadedProviders = settings.providers?.length
+        ? settings.providers
+        : [{
+            id: "default",
+            name: "Default",
+            provider: settings.provider || "openai",
+            endpoint: settings.endpoint || DEFAULT_OPENAI_ENDPOINT,
+            model: settings.model || "gpt-4.1",
+            hasApiKey: !!settings.hasApiKey,
+            connectTimeoutSecs: settings.connectTimeoutSecs || 10,
+            readTimeoutSecs: settings.readTimeoutSecs || 60,
+          }];
+      setProviders(loadedProviders);
+      const defaultId = loadedProviders.some((p) => p.id === settings.defaultProviderId)
+        ? settings.defaultProviderId
+        : loadedProviders[0].id;
+      setDefaultProviderId(defaultId);
+      setSelectedProviderId(defaultId);
+      setApiKeyDrafts({});
+      setProviderModels({});
+      setProviderModelsError(null);
+      setProviderSaveStatus(null);
       setHunkConcurrency(settings.hunkConcurrency || 1);
       setStandardsMaxChars(String(settings.standardsMaxChars || DEFAULT_STANDARDS_MAX_CHARS));
       // retryCount of 0 is valid ("no retries"), so don't fall back to a default
@@ -200,13 +267,13 @@ export function AiSettings({ open, onClose, standalone }: Props) {
         Number.isFinite(settings.autoPostConfidence) ? settings.autoPostConfidence : 90,
       );
       setAiDiagnostics(!!settings.aiDiagnostics);
-      setApiKey("");
-      setTested(false);
       setMessage(null);
       getDiagnosticsDir().then(setDiagnosticsDir).catch(() => {});
       setPrompts(ps);
       setPromptDrafts(Object.fromEntries(ps.map((p) => [p.key, p.value])));
       setPromptStatus({});
+      setPromptModelDrafts({});
+      setOpenPromptModelPicker(null);
       // Fire-and-forget: populate the model dropdown from the cached list if
       // there is one, so the picker shows real options without blocking the
       // dialog. A refresh button gives the user explicit control over hitting
@@ -214,6 +281,7 @@ export function AiSettings({ open, onClose, standalone }: Props) {
       listAiModels(false)
         .then((m) => {
           setAvailableModels(m);
+          setProviderModels((prev) => ({ ...prev, [defaultId]: m }));
           setModelsError(null);
         })
         .catch((e: unknown) => {
@@ -270,14 +338,74 @@ export function AiSettings({ open, onClose, standalone }: Props) {
     aiDiagnostics,
   ]);
 
+  useEffect(() => {
+    if (!open || hydrating.current || providers.length === 0) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setProviderSaving(true);
+      try {
+        for (const p of providers) {
+          await saveAiProviderConfig(
+            p,
+            apiKeyDrafts[p.id] ?? "",
+            p.id === defaultProviderId,
+          );
+        }
+        if (cancelled) return;
+        const savedKeyIds = new Set(
+          Object.entries(apiKeyDrafts)
+            .filter(([, value]) => value.trim().length > 0)
+            .map(([id]) => id),
+        );
+        if (savedKeyIds.size > 0) {
+          setProviders((prev) =>
+            prev.map((p) =>
+              savedKeyIds.has(p.id) ? { ...p, hasApiKey: true } : p,
+            ),
+          );
+          setApiKeyDrafts((prev) => {
+            const next = { ...prev };
+            savedKeyIds.forEach((id) => delete next[id]);
+            return next;
+          });
+        }
+        setProviderSaveStatus({ text: "Saved.", ok: true });
+      } catch (e: any) {
+        if (!cancelled) setProviderSaveStatus({ text: String(e), ok: false });
+      } finally {
+        if (!cancelled) setProviderSaving(false);
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, providers, defaultProviderId, apiKeyDrafts]);
+
   const handleRefreshModels = async () => {
     setModelsRefreshing(true);
     setModelsError(null);
     try {
       const m = await listAiModels(true);
       setAvailableModels(m);
-      if (m.length > 0 && model && !m.includes(model)) {
-        setModel(m[0]);
+      setProviderModels((prev) => ({ ...prev, [defaultProviderId]: m }));
+    } catch (e: unknown) {
+      setModelsError(String(e));
+    } finally {
+      setModelsRefreshing(false);
+    }
+  };
+
+  const handleRefreshProviderModels = async (providerId: string) => {
+    setModelsRefreshing(true);
+    setModelsError(null);
+    try {
+      const m = providerId === defaultProviderId
+        ? await listAiModels(true)
+        : await listAiProviderModels(providerId);
+      setProviderModels((prev) => ({ ...prev, [providerId]: m }));
+      if (providerId === defaultProviderId) {
+        setAvailableModels(m);
       }
     } catch (e: unknown) {
       setModelsError(String(e));
@@ -286,15 +414,18 @@ export function AiSettings({ open, onClose, standalone }: Props) {
     }
   };
 
-  const handleChangePromptModel = async (key: string, model: string) => {
+  const handleChangePromptModel = async (key: string, model: string, providerId?: string) => {
     try {
-      await saveAiPromptModel(key, model);
+      await saveAiPromptModel(key, model, providerId);
       const refreshed = await getAiPrompts();
       setPrompts(refreshed);
+      const providerName = providerId
+        ? providers.find((p) => p.id === providerId)?.name ?? "provider"
+        : "default provider";
       setPromptStatus((prev) => ({
         ...prev,
         [key]: {
-          text: model ? `Model set to ${model}.` : "Model set to default.",
+          text: model ? `Model set to ${model} on ${providerName}.` : "Model set to default.",
           ok: true,
         },
       }));
@@ -335,30 +466,95 @@ export function AiSettings({ open, onClose, standalone }: Props) {
     }
   };
 
-  // ---- AI Defaults: credential-field edits invalidate the last Test ----
-  const markDirty = () => {
-    setTested(false);
+  const updateProvider = (id: string, patch: Partial<AiProviderConfig>) => {
+    setProviders((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+    );
+    setProviderSaveStatus(null);
+    setProviderModelsError(null);
     setMessage(null);
-    setModelsError(null);
+  };
+
+  const handleAddProvider = () => {
+    const id = makeProviderId();
+    const next: AiProviderConfig = {
+      id,
+      name: `Provider ${providers.length + 1}`,
+      provider: "openai",
+      endpoint: DEFAULT_OPENAI_ENDPOINT,
+      model: "",
+      hasApiKey: false,
+      connectTimeoutSecs: 10,
+      readTimeoutSecs: 60,
+    };
+    setProviders((prev) => [...prev, next]);
+    setSelectedProviderId(id);
+    setProviderSaveStatus(null);
+  };
+
+  const handleRemoveProvider = async (id: string) => {
+    if (providers.length <= 1) return;
+    const providerToRemove = providers.find((p) => p.id === id);
+    if (!providerToRemove) return;
+    const confirmed = window.confirm(`Remove "${providerToRemove.name}" from AI providers?`);
+    if (!confirmed) return;
+    setProviderSaving(true);
+    setProviderSaveStatus(null);
+    try {
+      await removeAiProvider(id);
+      const remaining = providers.filter((p) => p.id !== id);
+      const nextDefault = defaultProviderId === id ? remaining[0].id : defaultProviderId;
+      setProviders(remaining);
+      setDefaultProviderId(nextDefault);
+      setSelectedProviderId((current) => (current === id ? nextDefault : current));
+      setApiKeyDrafts((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setProviderSaveStatus({ text: "Provider removed.", ok: true });
+    } catch (e: any) {
+      setProviderSaveStatus({ text: String(e), ok: false });
+    } finally {
+      setProviderSaving(false);
+    }
+  };
+
+  const handleMakeDefault = (id: string) => {
+    setDefaultProviderId(id);
+    setProviderSaveStatus(null);
   };
 
   const handleTestDefaults = async () => {
+    if (!selectedProvider) return;
     setTesting(true);
     setMessage(null);
-    setModelsError(null);
+    setProviderModelsError(null);
     try {
-      const models = await testAiDefaults(provider, endpoint, apiKey);
-      setAvailableModels(models);
+      const models = await testAiDefaults(
+        selectedProvider.provider,
+        selectedProvider.endpoint,
+        selectedApiKeyDraft,
+        selectedProvider.id,
+      );
+      setProviderModels((prev) => ({ ...prev, [selectedProvider.id]: models }));
+      if (selectedProvider.id === defaultProviderId) {
+        setAvailableModels(models);
+        setModelsError(null);
+      }
       // Validate / settle the selected model against what the provider offers.
-      const selected = models.includes(model) ? model : models[0] ?? "";
-      if (selected !== model) setModel(selected);
-      setTested(true);
+      const selected = models.includes(selectedProvider.model)
+        ? selectedProvider.model
+        : models[0] ?? "";
+      if (selected !== selectedProvider.model) {
+        updateProvider(selectedProvider.id, { model: selected });
+      }
       if (models.length === 0) {
         setMessage({
-          text: "Connected, but the provider returned no models. You can still save and pick a model later.",
+          text: "Connected, but the provider returned no models. You can still type a model.",
           ok: true,
         });
-      } else if (selected !== model) {
+      } else if (selected !== selectedProvider.model) {
         setMessage({
           text: `Connected. Selected ${selected} (the previous model isn't offered by this provider).`,
           ok: true,
@@ -367,26 +563,9 @@ export function AiSettings({ open, onClose, standalone }: Props) {
         setMessage({ text: `Connected. Found ${models.length} model${models.length === 1 ? "" : "s"}.`, ok: true });
       }
     } catch (e: any) {
-      setTested(false);
       setMessage({ text: String(e), ok: false });
     } finally {
       setTesting(false);
-    }
-  };
-
-  const handleSaveDefaults = async () => {
-    setSaving(true);
-    setMessage(null);
-    try {
-      await saveAiDefaults(provider, endpoint, model, apiKey, connectTimeoutSecs, readTimeoutSecs);
-      // The key (if any) is now stored; clear the field and show the mask.
-      if (apiKey.trim()) setHasApiKey(true);
-      setApiKey("");
-      setMessage({ text: "AI defaults saved.", ok: true });
-    } catch (e: any) {
-      setMessage({ text: String(e), ok: false });
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -430,6 +609,40 @@ export function AiSettings({ open, onClose, standalone }: Props) {
               <p class="text-xs text-gray-500 dark:text-gray-400">
                 Appearance preferences. These apply instantly and are saved on this device.
               </p>
+
+              <Field label="Color scheme">
+                <select
+                  value={theme.value}
+                  onChange={(e) => {
+                    const next = e.currentTarget.value as Theme;
+                    theme.value = next;
+                    applyTheme(next);
+                  }}
+                  class={INPUT_CLASS}
+                >
+                  {THEME_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Controls whether Pex uses light mode, dark mode, or your system setting.
+                </p>
+              </Field>
+
+              <Field label="Diff display">
+                <select
+                  value={diffView.value}
+                  onChange={(e) => (diffView.value = e.currentTarget.value as DiffView)}
+                  class={INPUT_CLASS}
+                >
+                  {DIFF_VIEW_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Chooses inline or side-by-side layout for file diffs.
+                </p>
+              </Field>
 
               <Field label="Font">
                 <select
@@ -482,164 +695,250 @@ export function AiSettings({ open, onClose, standalone }: Props) {
           )}
 
           {tab === "ai-defaults" && (
-            <section>
-              <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-                The default provider and model used for AI review. Test your connection, then Save — these changes only apply when you click Save.
-              </p>
-              <div class="space-y-3">
-                <Field label="Provider">
-                  <select
-                    value={provider}
-                    onChange={(e) => {
-                      setProvider(e.currentTarget.value);
-                      setModel("");
-                      setAvailableModels(null);
-                      markDirty();
-                    }}
-                    class={INPUT_CLASS}
-                  >
-                    <option value="openai">OpenAI-compatible</option>
-                    <option value="anthropic">Anthropic-compatible</option>
-                  </select>
-                </Field>
-
-                <Field label="Endpoint URL">
-                  <input
-                    type="url"
-                    value={endpoint}
-                    onInput={(e) => {
-                      setEndpoint(e.currentTarget.value);
-                      setModel("");
-                      setAvailableModels(null);
-                      markDirty();
-                    }}
-                    placeholder={provider === "openai" ? "https://api.openai.com" : "https://api.anthropic.com"}
-                    class={INPUT_CLASS}
-                  />
-                </Field>
-
-                <Field label="API Key">
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onInput={(e) => {
-                      setApiKey(e.currentTarget.value);
-                      markDirty();
-                    }}
-                    placeholder={hasApiKey ? API_KEY_MASK : "Enter API key"}
-                    class={INPUT_CLASS}
-                  />
-                  {hasApiKey && !apiKey && (
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      A key is saved. Leave blank to keep it, or type a new one to replace it.
-                    </p>
+            <section class="space-y-3">
+              <div class="flex items-center justify-between gap-3">
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  AI provider settings. The default provider is used for reviews; changes save automatically.
+                </p>
+                <div class="text-xs min-w-[56px] text-right">
+                  {providerSaving && (
+                    <span class="text-gray-500 dark:text-gray-400">Saving...</span>
                   )}
-                </Field>
-
-                <Field label="Model">
-                  {(() => {
-                    const modelOptions = availableModels ?? [];
-                    const showOrphan = !!model && !modelOptions.includes(model);
-                    return (
-                      <div class="flex items-center gap-2">
-                        <select
-                          value={model}
-                          onChange={(e) => {
-                            setModel(e.currentTarget.value);
-                            // Model is offered by the tested provider, so picking
-                            // a different one doesn't require re-testing.
-                          }}
-                          class={`flex-1 ${INPUT_CLASS}`}
-                        >
-                          {!model && <option value="">Select a model…</option>}
-                          {showOrphan && (
-                            <option value={model}>{model} (not in list)</option>
-                          )}
-                          {modelOptions.map((m) => (
-                            <option value={m}>{m}</option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={handleRefreshModels}
-                          disabled={modelsRefreshing}
-                          title="Re-fetch the available models from your provider"
-                          class="text-xs px-2 py-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-                        >
-                          {modelsRefreshing ? "Refreshing…" : "Refresh"}
-                        </button>
-                      </div>
-                    );
-                  })()}
-                  {modelsError && (
-                    <p class="text-xs text-red-600 dark:text-red-400 mt-1">
-                      Couldn't load models: {modelsError}
-                    </p>
+                  {!providerSaving && providerSaveStatus && (
+                    <span class={providerSaveStatus.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                      {providerSaveStatus.text}
+                    </span>
                   )}
-                </Field>
-
-                <Field label="Connect timeout (seconds)">
-                  <input
-                    type="number"
-                    min={1}
-                    max={3600}
-                    value={connectTimeoutSecs}
-                    onInput={(e) => {
-                      const n = parseInt(e.currentTarget.value, 10);
-                      setConnectTimeoutSecs(Number.isFinite(n) && n > 0 ? n : 10);
-                    }}
-                    placeholder="10"
-                    class={INPUT_CLASS}
-                  />
-                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Maximum time for the TCP / TLS handshake. Catches a dead or unreachable server quickly. Does not bound generation time.
-                  </p>
-                </Field>
-
-                <Field label="Read timeout (seconds)">
-                  <input
-                    type="number"
-                    min={1}
-                    max={3600}
-                    value={readTimeoutSecs}
-                    onInput={(e) => {
-                      const n = parseInt(e.currentTarget.value, 10);
-                      setReadTimeoutSecs(Number.isFinite(n) && n > 0 ? n : 60);
-                    }}
-                    placeholder="60"
-                    class={INPUT_CLASS}
-                  />
-                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Stalled-stream guard: maximum time between successive bytes from the server. <strong>Does not bound total generation time</strong> — a slow local model that keeps the connection alive will be allowed to finish. Only raise this if your provider returns large bursts with long pauses between them.
-                  </p>
-                </Field>
+                </div>
               </div>
 
-              {message && (
-                <div class={`mt-3 text-sm px-3 py-2 rounded-lg ${message.ok ? "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300" : "bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300"}`}>
-                  {message.text}
-                </div>
-              )}
+              <div class="grid gap-3 md:grid-cols-[190px_1fr]">
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">
+                      Providers
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleAddProvider}
+                      class="text-xs px-2 py-1 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+                    >
+                      Add
+                    </button>
+                  </div>
 
-              <div class="mt-3 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleTestDefaults}
-                  disabled={testing || !endpoint}
-                  class="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-                >
-                  {testing ? "Testing..." : "Test"}
-                </button>
-                <button
-                  onClick={handleSaveDefaults}
-                  disabled={saving || !tested || !endpoint || !model}
-                  title={!tested ? "Run Test successfully before saving" : undefined}
-                  class="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {saving ? "Saving..." : "Save"}
-                </button>
-                {!tested && (
-                  <span class="text-xs text-gray-400">Test to enable Save</span>
+                  <div class="space-y-1">
+                    {providers.map((p) => (
+                      <button
+                        type="button"
+                        key={p.id}
+                        onClick={() => {
+                          setSelectedProviderId(p.id);
+                          setMessage(null);
+                          setProviderModelsError(null);
+                        }}
+                        class={`w-full text-left px-3 py-2 rounded-lg border text-sm ${
+                          selectedProvider?.id === p.id
+                            ? "border-accent bg-accent/10"
+                            : "border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                        }`}
+                      >
+                        <span class="flex items-center justify-between gap-2">
+                          <span class="min-w-0 truncate">{p.name || "Provider"}</span>
+                          {p.id === defaultProviderId && (
+                            <span class="shrink-0 text-[10px] uppercase tracking-wide text-accent">
+                              Default
+                            </span>
+                          )}
+                        </span>
+                        <span class="block text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                          {providerKindLabel(p.provider)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {selectedProvider && (
+                  <div class="space-y-3 min-w-0">
+                    <div class="flex items-center justify-between gap-2">
+                      <div class="min-w-0">
+                        <div class="text-sm font-medium truncate">
+                          {selectedProvider.name || "Provider"}
+                        </div>
+                        <div class="text-[11px] text-gray-500 dark:text-gray-400">
+                          {selectedProvider.id === defaultProviderId
+                            ? "Default review provider"
+                            : "Available provider"}
+                        </div>
+                      </div>
+                      <div class="flex items-center gap-2 shrink-0">
+                        {selectedProvider.id !== defaultProviderId && (
+                          <button
+                            type="button"
+                            onClick={() => handleMakeDefault(selectedProvider.id)}
+                            class="text-xs px-2 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+                          >
+                            Make default
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveProvider(selectedProvider.id)}
+                          disabled={providers.length <= 1}
+                          class="text-xs px-2 py-1.5 rounded-lg border border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+
+                    <Field label="Name">
+                      <input
+                        value={selectedProvider.name}
+                        onInput={(e) => updateProvider(selectedProvider.id, { name: e.currentTarget.value })}
+                        placeholder="Provider name"
+                        class={INPUT_CLASS}
+                      />
+                    </Field>
+
+                    <Field label="Provider">
+                      <select
+                        value={selectedProvider.provider}
+                        onChange={(e) => {
+                          const nextProvider = e.currentTarget.value;
+                          updateProvider(selectedProvider.id, {
+                            provider: nextProvider,
+                            endpoint: defaultEndpoint(nextProvider),
+                            model: "",
+                          });
+                          setProviderModels((prev) => ({ ...prev, [selectedProvider.id]: [] }));
+                        }}
+                        class={INPUT_CLASS}
+                      >
+                        <option value="openai">OpenAI-compatible</option>
+                        <option value="anthropic">Anthropic-compatible</option>
+                      </select>
+                    </Field>
+
+                    <Field label="Endpoint URL">
+                      <input
+                        type="url"
+                        value={selectedProvider.endpoint}
+                        onInput={(e) => {
+                          updateProvider(selectedProvider.id, {
+                            endpoint: e.currentTarget.value,
+                            model: "",
+                          });
+                          setProviderModels((prev) => ({ ...prev, [selectedProvider.id]: [] }));
+                        }}
+                        placeholder={defaultEndpoint(selectedProvider.provider)}
+                        class={INPUT_CLASS}
+                      />
+                    </Field>
+
+                    <Field label="API Key">
+                      <input
+                        type="password"
+                        value={selectedApiKeyDraft}
+                        onInput={(e) => {
+                          const value = e.currentTarget.value;
+                          setApiKeyDrafts((prev) => ({ ...prev, [selectedProvider.id]: value }));
+                          setProviderSaveStatus(null);
+                        }}
+                        placeholder={selectedProvider.hasApiKey ? API_KEY_MASK : "Enter API key"}
+                        class={INPUT_CLASS}
+                      />
+                      {selectedProvider.hasApiKey && !selectedApiKeyDraft && (
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                          A key is saved. Leave blank to keep it, or type a new one to replace it.
+                        </p>
+                      )}
+                    </Field>
+
+                    <Field label="Model">
+                      {(() => {
+                        const modelOptions = selectedProviderModels;
+                        const modelListId = `ai-provider-models-${selectedProvider.id}`;
+                        return (
+                          <div class="flex items-center gap-2">
+                            <input
+                              list={modelListId}
+                              value={selectedProvider.model}
+                              onInput={(e) => updateProvider(selectedProvider.id, { model: e.currentTarget.value })}
+                              placeholder="Model name"
+                              class={`flex-1 min-w-0 ${INPUT_CLASS}`}
+                            />
+                            <datalist id={modelListId}>
+                              {modelOptions.map((m) => (
+                                <option value={m}>{m}</option>
+                              ))}
+                            </datalist>
+                            <button
+                              type="button"
+                              onClick={handleTestDefaults}
+                              disabled={testing || !selectedProvider.endpoint}
+                              title="Test connection and fetch models"
+                              class="text-xs px-2 py-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                            >
+                              {testing ? "Testing..." : "Test"}
+                            </button>
+                          </div>
+                        );
+                      })()}
+                      {providerModelsError && (
+                        <p class="text-xs text-red-600 dark:text-red-400 mt-1">
+                          Couldn't load models: {providerModelsError}
+                        </p>
+                      )}
+                    </Field>
+
+                    <Field label="Connect timeout (seconds)">
+                      <input
+                        type="number"
+                        min={1}
+                        max={3600}
+                        value={selectedProvider.connectTimeoutSecs}
+                        onInput={(e) => {
+                          const n = parseInt(e.currentTarget.value, 10);
+                          updateProvider(selectedProvider.id, {
+                            connectTimeoutSecs: Number.isFinite(n) && n > 0 ? n : 10,
+                          });
+                        }}
+                        placeholder="10"
+                        class={INPUT_CLASS}
+                      />
+                      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        Maximum time for the TCP / TLS handshake. Catches a dead or unreachable server quickly. Does not bound generation time.
+                      </p>
+                    </Field>
+
+                    <Field label="Read timeout (seconds)">
+                      <input
+                        type="number"
+                        min={1}
+                        max={3600}
+                        value={selectedProvider.readTimeoutSecs}
+                        onInput={(e) => {
+                          const n = parseInt(e.currentTarget.value, 10);
+                          updateProvider(selectedProvider.id, {
+                            readTimeoutSecs: Number.isFinite(n) && n > 0 ? n : 60,
+                          });
+                        }}
+                        placeholder="60"
+                        class={INPUT_CLASS}
+                      />
+                      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        Stalled-stream guard: maximum time between successive bytes from the server. <strong>Does not bound total generation time</strong> — a slow local model that keeps the connection alive will be allowed to finish.
+                      </p>
+                    </Field>
+
+                    {message && (
+                      <div class={`text-sm px-3 py-2 rounded-lg ${message.ok ? "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300" : "bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300"}`}>
+                        {message.text}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </section>
@@ -910,9 +1209,19 @@ export function AiSettings({ open, onClose, standalone }: Props) {
                   const status = promptStatus[p.key];
                   const dirty = draft !== p.value;
                   const selectedModel = p.model ?? "";
-                  const modelOptions = availableModels ?? [];
-                  const showOrphan =
-                    selectedModel && !modelOptions.includes(selectedModel);
+                  const modelInputValue = promptModelDrafts[p.key] ?? selectedModel;
+                  const selectedPromptProviderId = p.providerId || defaultProviderId;
+                  const promptProvider = providers.find((provider) => provider.id === selectedPromptProviderId)
+                    ?? providers.find((provider) => provider.id === defaultProviderId)
+                    ?? providers[0];
+                  const modelOptions = promptProvider
+                    ? (providerModels[promptProvider.id] ?? (promptProvider.id === defaultProviderId ? availableModels ?? [] : []))
+                    : [];
+                  const modelFilter = modelInputValue.trim().toLowerCase();
+                  const filteredModelOptions = modelFilter
+                    ? modelOptions.filter((m) => m.toLowerCase().includes(modelFilter))
+                    : modelOptions;
+                  const modelPickerOpen = openPromptModelPicker === p.key;
                   return (
                     <div key={p.key}>
                       <div class="flex items-center gap-2 mb-1">
@@ -925,29 +1234,169 @@ export function AiSettings({ open, onClose, standalone }: Props) {
                           </span>
                         )}
                       </div>
-                      <label class="flex items-center gap-2 mb-1">
-                        <span class="text-[11px] text-gray-500 dark:text-gray-400 shrink-0">
-                          Model:
-                        </span>
-                        <select
-                          value={selectedModel}
-                          onChange={(e) =>
-                            handleChangePromptModel(p.key, e.currentTarget.value)
-                          }
-                          class="flex-1 min-w-0 text-[11px] px-1.5 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
-                          title="Override the model used by this prompt. 'Default' uses the model from the AI Defaults tab."
+                      <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)_auto] gap-2 mb-1">
+                        <label class="min-w-0">
+                          <span class="block text-[11px] text-gray-500 dark:text-gray-400 mb-1">
+                            Provider
+                          </span>
+                          <select
+                            value={promptProvider?.id ?? ""}
+                            onChange={(e) => {
+                              const providerId = e.currentTarget.value;
+                              setPrompts((prev) =>
+                                prev.map((prompt) =>
+                                  prompt.key === p.key ? { ...prompt, providerId } : prompt,
+                                ),
+                              );
+                              setPromptModelDrafts((prev) => {
+                                const next = { ...prev };
+                                delete next[p.key];
+                                return next;
+                              });
+                              setOpenPromptModelPicker(null);
+                              if (selectedModel) {
+                                handleChangePromptModel(p.key, selectedModel, providerId);
+                              }
+                            }}
+                            class="w-full min-w-0 h-7 text-[11px] px-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                            title="Provider used by this prompt. Default follows the AI tab default provider."
+                          >
+                            {providers.map((provider) => (
+                              <option value={provider.id}>
+                                {provider.id === defaultProviderId ? `${provider.name} (Default)` : provider.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label class="min-w-0">
+                          <span class="block text-[11px] text-gray-500 dark:text-gray-400 mb-1">
+                            Model
+                          </span>
+                          <div class="relative" data-prompt-model-picker>
+                            <div class="flex min-w-0">
+                              <input
+                                value={modelInputValue}
+                                onFocus={() => setOpenPromptModelPicker(p.key)}
+                                onClick={() => setOpenPromptModelPicker(p.key)}
+                                onInput={(e) => {
+                                  const model = e.currentTarget.value;
+                                  setOpenPromptModelPicker(p.key);
+                                  setPromptModelDrafts((prev) => ({ ...prev, [p.key]: model }));
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key !== "Enter") return;
+                                  e.preventDefault();
+                                  const draftModel = promptModelDrafts[p.key];
+                                  if (draftModel !== undefined && draftModel.trim() === "") {
+                                    setOpenPromptModelPicker(null);
+                                    setPromptModelDrafts((prev) => {
+                                      const next = { ...prev };
+                                      delete next[p.key];
+                                      return next;
+                                    });
+                                    setPrompts((prev) =>
+                                      prev.map((prompt) =>
+                                        prompt.key === p.key ? { ...prompt, model: "" } : prompt,
+                                      ),
+                                    );
+                                    handleChangePromptModel(p.key, "", promptProvider?.id);
+                                  }
+                                  e.currentTarget.blur();
+                                }}
+                                onBlur={() => {
+                                  window.setTimeout(() => {
+                                    const active = document.activeElement;
+                                    if (active instanceof Element && active.closest("[data-prompt-model-picker]")) {
+                                      return;
+                                    }
+                                    const draftModel = promptModelDrafts[p.key];
+                                    if (draftModel !== undefined && draftModel.trim() === "") {
+                                      setPrompts((prev) =>
+                                        prev.map((prompt) =>
+                                          prompt.key === p.key ? { ...prompt, model: "" } : prompt,
+                                        ),
+                                      );
+                                      handleChangePromptModel(p.key, "", promptProvider?.id);
+                                    }
+                                    setOpenPromptModelPicker((current) => (current === p.key ? null : current));
+                                    setPromptModelDrafts((prev) => {
+                                      const next = { ...prev };
+                                      delete next[p.key];
+                                      return next;
+                                    });
+                                  }, 0);
+                                }}
+                                placeholder="Default model"
+                                class="w-full min-w-0 h-7 text-[11px] px-1.5 rounded-l-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                                title="Override the model used by this prompt. Empty uses the selected provider's configured model."
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setOpenPromptModelPicker((current) =>
+                                    current === p.key ? null : p.key,
+                                  )
+                                }
+                                disabled={modelOptions.length === 0}
+                                class="shrink-0 h-7 px-2 rounded-r-lg border border-l-0 border-gray-300 dark:border-gray-600 text-[11px] hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                                title="Show matching fetched models"
+                                aria-label="Show matching fetched models"
+                              >
+                                ▾
+                              </button>
+                            </div>
+                            {modelPickerOpen && (
+                              <div class="absolute z-20 mt-1 max-h-44 w-full overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                                {modelOptions.length === 0 ? (
+                                  <div class="px-2 py-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                                    No models loaded
+                                  </div>
+                                ) : filteredModelOptions.length === 0 ? (
+                                  <div class="px-2 py-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                                    No matching models
+                                  </div>
+                                ) : (
+                                  filteredModelOptions.map((m) => (
+                                    <button
+                                      type="button"
+                                      key={m}
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={() => {
+                                        setOpenPromptModelPicker(null);
+                                        setPromptModelDrafts((prev) => {
+                                          const next = { ...prev };
+                                          delete next[p.key];
+                                          return next;
+                                        });
+                                        setPrompts((prev) =>
+                                          prev.map((prompt) =>
+                                            prompt.key === p.key ? { ...prompt, model: m } : prompt,
+                                          ),
+                                        );
+                                        handleChangePromptModel(p.key, m, promptProvider?.id);
+                                      }}
+                                      class={`block w-full px-2 py-1.5 text-left text-[11px] hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                                        m === selectedModel ? "text-accent" : "text-gray-700 dark:text-gray-200"
+                                      }`}
+                                    >
+                                      {m}
+                                    </button>
+                                  ))
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => promptProvider && handleRefreshProviderModels(promptProvider.id)}
+                          disabled={modelsRefreshing || !promptProvider}
+                          title="Fetch models for this provider"
+                          class="self-end px-2 py-1 rounded-lg border border-gray-300 dark:border-gray-600 text-[11px] hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
                         >
-                          <option value="">Default</option>
-                          {showOrphan && (
-                            <option value={selectedModel}>
-                              {selectedModel} (not in list)
-                            </option>
-                          )}
-                          {modelOptions.map((m) => (
-                            <option value={m}>{m}</option>
-                          ))}
-                        </select>
-                      </label>
+                          {modelsRefreshing ? "Refreshing..." : "Refresh"}
+                        </button>
+                      </div>
                       <textarea
                         value={draft}
                         onInput={(e) =>
