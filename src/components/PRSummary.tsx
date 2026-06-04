@@ -169,6 +169,10 @@ function voteDotClass(vote: number): string {
   }
 }
 
+function voteHistoryEventKey(event: VoteHistoryEntry, index: number): string {
+  return `${event.threadId}-${event.reviewerId}-${event.reviewerName}-${event.publishedDate}-${event.vote}-${index}`;
+}
+
 function ReviewerRow({
   reviewer,
   provider,
@@ -227,16 +231,16 @@ function VoteHistoryPanel({
   )
     .map((timeline) => ({
       ...timeline,
-      events: [...timeline.events].sort((a, b) => a.publishedDate.localeCompare(b.publishedDate)),
+      events: [...timeline.events].sort((a, b) => b.publishedDate.localeCompare(a.publishedDate)),
     }))
     .sort((a, b) => {
-      const aLast = a.events[a.events.length - 1]?.publishedDate ?? "";
-      const bLast = b.events[b.events.length - 1]?.publishedDate ?? "";
-      return bLast.localeCompare(aLast);
+      const aLatest = a.events[0]?.publishedDate ?? "";
+      const bLatest = b.events[0]?.publishedDate ?? "";
+      return bLatest.localeCompare(aLatest);
     });
 
   return (
-    <div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+    <div class="mt-5 pt-4 border-t border-gray-200 dark:border-gray-700">
       <div class="flex items-center justify-between gap-3 mb-3">
         <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Historical votes</h2>
         <span class="text-xs text-gray-500 dark:text-gray-400">
@@ -258,18 +262,18 @@ function VoteHistoryPanel({
               <ol class="relative py-2">
                 {timeline.events.map((event, index) => {
                   const vote = voteInfo(event.vote, provider);
-                  const previous = index > 0 ? timeline.events[index - 1] : null;
-                  const previousVote = previous ? voteInfo(previous.vote, provider) : null;
+                  const older = timeline.events[index + 1] ?? null;
+                  const olderVote = older ? voteInfo(older.vote, provider) : null;
                   const label = event.vote === 0 ? "Vote reset" : vote.label;
-                  const previousLabel = previous && previousVote
-                    ? previous.vote === 0 ? "No vote" : previousVote.label
+                  const olderLabel = older && olderVote
+                    ? older.vote === 0 ? "No vote" : olderVote.label
                     : "";
-                  const transition = previousLabel
-                    ? `${previousLabel} -> ${label}`
+                  const transition = olderLabel
+                    ? `${olderLabel} -> ${label}`
                     : label;
                   return (
                     <li
-                      key={`${event.threadId}-${event.publishedDate}-${event.vote}`}
+                      key={voteHistoryEventKey(event, index)}
                       class="grid grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-2 px-3 py-2 items-start"
                     >
                       <div class="relative flex justify-center h-full">
@@ -333,6 +337,50 @@ function VoteSummary({
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function VotesPanel({
+  reviewers,
+  provider,
+  history,
+  votedCount,
+}: {
+  reviewers: Reviewer[];
+  provider: Provider;
+  history: VoteHistoryEntry[];
+  votedCount: number;
+}) {
+  return (
+    <div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 min-w-0">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Current votes</h2>
+        <span class="text-xs text-gray-500 dark:text-gray-400">
+          {votedCount}/{reviewers.length} reviewers voted
+        </span>
+      </div>
+      <VoteSummary reviewers={reviewers} provider={provider} />
+      <div class="mt-4 rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+        {reviewers.length > 0 ? (
+          <ul class="divide-y-0">
+            {reviewers.map((reviewer) => (
+              <ReviewerRow
+                key={reviewer.id}
+                reviewer={reviewer}
+                provider={provider}
+                history={history}
+              />
+            ))}
+          </ul>
+        ) : (
+          <div class="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
+            No reviewers are assigned to this PR.
+          </div>
+        )}
+      </div>
+
+      <VoteHistoryPanel history={history} provider={provider} />
     </div>
   );
 }
@@ -593,33 +641,12 @@ export function PRSummary({
         )}
 
         <section class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-          <div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 min-w-0">
-            <div class="flex items-center justify-between gap-3 mb-3">
-              <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Current votes</h2>
-              <span class="text-xs text-gray-500 dark:text-gray-400">
-                {votedCount}/{reviewers.length} reviewers voted
-              </span>
-            </div>
-            <VoteSummary reviewers={reviewers} provider={provider} />
-            <div class="mt-4 rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
-              {reviewers.length > 0 ? (
-                <ul class="divide-y-0">
-                  {reviewers.map((reviewer) => (
-                    <ReviewerRow
-                      key={reviewer.id}
-                      reviewer={reviewer}
-                      provider={provider}
-                      history={voteHistory}
-                    />
-                  ))}
-                </ul>
-              ) : (
-                <div class="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
-                  No reviewers are assigned to this PR.
-                </div>
-              )}
-            </div>
-          </div>
+          <VotesPanel
+            reviewers={reviewers}
+            provider={provider}
+            history={voteHistory}
+            votedCount={votedCount}
+          />
 
           <div class="space-y-4">
             <div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
@@ -642,8 +669,6 @@ export function PRSummary({
             />
           </div>
         </section>
-
-        <VoteHistoryPanel history={voteHistory} provider={provider} />
 
         {pullRequest.description && (
           <section class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
