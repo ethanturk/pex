@@ -60,6 +60,46 @@ impl ChatRole {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolChatMessage {
+    Message(ChatMessage),
+    AssistantToolCalls {
+        content: Option<String>,
+        tool_calls: Vec<ToolCall>,
+    },
+    ToolResult {
+        tool_call_id: String,
+        name: String,
+        content: String,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolChatResponse {
+    pub content: String,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
+}
+
 /// AI provider trait — implemented by OpenAI and Anthropic backends.
 #[async_trait::async_trait]
 pub trait AiProvider: Send + Sync {
@@ -75,6 +115,20 @@ pub trait AiProvider: Send + Sync {
         messages: &[ChatMessage],
         model_override: Option<&str>,
     ) -> Result<String, AppError>;
+
+    /// Send a tool-enabled chat request. Providers that do not support native
+    /// tool calls return an error; callers should treat that as a signal to
+    /// continue without the optional context layer.
+    async fn chat_with_tools(
+        &self,
+        _messages: &[ToolChatMessage],
+        _tools: &[ToolDefinition],
+        _model_override: Option<&str>,
+    ) -> Result<ToolChatResponse, AppError> {
+        Err(AppError::Ai(
+            "Tool calls are not supported by this provider".to_string(),
+        ))
+    }
 }
 
 /// Default request timeout in seconds when none is configured.

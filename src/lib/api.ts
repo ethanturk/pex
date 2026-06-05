@@ -671,9 +671,57 @@ export interface ReviewOutput {
   findings: ReviewFinding[];
 }
 
+export type ReviewSkipReason =
+  | "deleted"
+  | "binary"
+  | "excluded"
+  | "notIncluded"
+  | "unsupportedPath"
+  | "diffUnavailable"
+  | "noChanges"
+  | string;
+
+export interface ReviewRuleMatch {
+  source: string;
+  pattern: string | null;
+  title: string;
+  rule: string;
+}
+
+export interface ReviewPreviewFile {
+  path: string;
+  status: string;
+  willReview: boolean;
+  skipReason: ReviewSkipReason | null;
+  hunkCount: number;
+  changedLines: number;
+  ruleSource: string | null;
+  rulePattern: string | null;
+  ruleTitle: string | null;
+  relatedFiles: string[];
+}
+
+export interface ReviewPreview {
+  iteration: number;
+  totalFiles: number;
+  reviewableFiles: number;
+  skippedFiles: number;
+  totalHunks: number;
+  changedLines: number;
+  files: ReviewPreviewFile[];
+}
+
 /// Review strategy. "fast" = single generalist pass per hunk (original).
 /// "thorough" = multi-pass with specialist agents (slower, broader coverage).
 export type ReviewMode = "fast" | "thorough";
+
+export async function previewReview(
+  projectId: string,
+  repoId: string,
+  prId: number,
+): Promise<ReviewPreview> {
+  return invoke<ReviewPreview>("preview_review", { projectId, repoId, prId });
+}
 
 export async function startReview(
   projectId: string,

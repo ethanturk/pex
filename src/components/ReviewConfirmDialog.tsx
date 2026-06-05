@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import {
   getAiSettings,
   getReviewSpecialists,
+  previewReview,
   type ReviewMode,
+  type ReviewPreview,
   type ReviewSpecialistInfo,
 } from "@/lib/api";
 
@@ -37,6 +39,8 @@ function shortLabel(label: string): string {
 
 interface Props {
   initialMode: ReviewMode;
+  projectId: string;
+  repoId: string;
   prId: number;
   prTitle: string;
   /** Whether another review is already running (disables Start). */
@@ -47,6 +51,8 @@ interface Props {
 
 export function ReviewConfirmDialog({
   initialMode,
+  projectId,
+  repoId,
   prId,
   prTitle,
   busyElsewhere,
@@ -57,6 +63,9 @@ export function ReviewConfirmDialog({
   const [specialists, setSpecialists] = useState<ReviewSpecialistInfo[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [fastModel, setFastModel] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ReviewPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(true);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -71,6 +80,19 @@ export function ReviewConfirmDialog({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    previewReview(projectId, repoId, prId)
+      .then((p) => !cancelled && setPreview(p))
+      .catch((e) => !cancelled && setPreviewError(e instanceof Error ? e.message : String(e)))
+      .finally(() => !cancelled && setPreviewLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, repoId, prId]);
 
   // Lazily load the specialist roster the first time Thorough is selected.
   useEffect(() => {
@@ -117,6 +139,9 @@ export function ReviewConfirmDialog({
   const canStart =
     !busyElsewhere &&
     !error &&
+    !previewLoading &&
+    !previewError &&
+    (preview?.reviewableFiles ?? 0) > 0 &&
     (mode === "fast" || (thoroughReady && selected.size > 0));
 
   const start = () => {
@@ -138,7 +163,7 @@ export function ReviewConfirmDialog({
       onClick={onClose}
     >
       <div
-        class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl w-[460px] max-w-[92vw] max-h-[85vh] flex flex-col"
+        class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl w-[640px] max-w-[94vw] max-h-[85vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -173,79 +198,88 @@ export function ReviewConfirmDialog({
 
         {/* Body */}
         <div class="px-5 py-4 overflow-y-auto text-sm">
-          {error ? (
-            <div class="text-red-600 dark:text-red-400 whitespace-pre-wrap text-xs">{error}</div>
-          ) : mode === "fast" ? (
-            <div class="text-gray-600 dark:text-gray-300">
-              <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-                One pass per hunk covering bugs, logic and edge cases, and security,
-                plus a lite design-principles (DRY/SOLID) check.
-              </p>
-              <div class="flex items-center gap-2 text-xs">
-                <span class="text-gray-500 dark:text-gray-400">Model</span>
-                <span class="font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200">
-                  {fastModel ?? "loading…"}
-                </span>
-              </div>
-            </div>
-          ) : loading || !specialists ? (
-            <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400 text-xs">
-              <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
-              Loading agents…
+          {error || previewError ? (
+            <div class="text-red-600 dark:text-red-400 whitespace-pre-wrap text-xs">
+              {error ?? previewError}
             </div>
           ) : (
             <>
-              <div class="flex items-center justify-between mb-2">
-                <span class="text-xs text-gray-500 dark:text-gray-400">
-                  Choose which specialist agents to run ({selected.size}/{specialists.length})
-                </span>
-                <button onClick={toggleAll} class="text-xs text-accent hover:underline">
-                  {allSelected ? "Deselect all" : "Select all"}
-                </button>
-              </div>
-              <div class="flex flex-col gap-1">
-                {specialists.map((s) => {
-                  const on = selected.has(s.key);
-                  return (
-                    <label
-                      key={s.key}
-                      class={`flex items-start gap-2.5 px-2.5 py-2 rounded border cursor-pointer ${
-                        on
-                          ? "border-accent/60 bg-accent/5"
-                          : "border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50"
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={() => toggle(s.key)}
-                        class="mt-0.5 shrink-0 accent-accent"
-                      />
-                      <span class="min-w-0 flex-1">
-                        <span class="flex items-center gap-2 flex-wrap">
-                          <span class="font-medium text-gray-800 dark:text-gray-100">
-                            {shortLabel(s.label)}
-                          </span>
-                          <span
-                            title="Provider and model this agent will use"
-                            class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
-                          >
-                            {s.providerName}: {s.model}
-                          </span>
-                        </span>
-                        <span class="block mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 leading-snug">
-                          {s.description.replace(/^Thorough PR review specialist — /i, "")}
-                        </span>
+              <PreflightPreview preview={preview} loading={previewLoading} />
+              <div class="mt-4 border-t border-gray-200 dark:border-gray-700 pt-4">
+                {mode === "fast" ? (
+                  <div class="text-gray-600 dark:text-gray-300">
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                      One pass per hunk covering bugs, logic and edge cases, and security,
+                      plus a lite design-principles (DRY/SOLID) check.
+                    </p>
+                    <div class="flex items-center gap-2 text-xs">
+                      <span class="text-gray-500 dark:text-gray-400">Model</span>
+                      <span class="font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200">
+                        {fastModel ?? "loading..."}
                       </span>
-                    </label>
-                  );
-                })}
+                    </div>
+                  </div>
+                ) : loading || !specialists ? (
+                  <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400 text-xs">
+                    <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
+                    Loading agents...
+                  </div>
+                ) : (
+                  <>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-xs text-gray-500 dark:text-gray-400">
+                        Choose which specialist agents to run ({selected.size}/{specialists.length})
+                      </span>
+                      <button onClick={toggleAll} class="text-xs text-accent hover:underline">
+                        {allSelected ? "Deselect all" : "Select all"}
+                      </button>
+                    </div>
+                    <div class="flex flex-col gap-1">
+                      {specialists.map((s) => {
+                        const on = selected.has(s.key);
+                        return (
+                          <label
+                            key={s.key}
+                            class={`flex items-start gap-2.5 px-2.5 py-2 rounded border cursor-pointer ${
+                              on
+                                ? "border-accent/60 bg-accent/5"
+                                : "border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              onChange={() => toggle(s.key)}
+                              class="mt-0.5 shrink-0 accent-accent"
+                            />
+                            <span class="min-w-0 flex-1">
+                              <span class="flex items-center gap-2 flex-wrap">
+                                <span class="font-medium text-gray-800 dark:text-gray-100">
+                                  {shortLabel(s.label)}
+                                </span>
+                                <span
+                                  title="Provider and model this agent will use"
+                                  class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+                                >
+                                  {s.providerName}: {s.model}
+                                </span>
+                              </span>
+                              <span class="block mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 leading-snug">
+                                {s.description.replace(/^Thorough PR review specialist — /i, "")}
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {selected.size === 0 && (
+                      <div class="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+                        Select at least one agent to start.
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
-              {selected.size === 0 && (
-                <div class="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
-                  Select at least one agent to start.
-                </div>
-              )}
             </>
           )}
         </div>
@@ -262,7 +296,13 @@ export function ReviewConfirmDialog({
             onClick={start}
             disabled={!canStart}
             autofocus
-            title={busyElsewhere ? "Another review is already running" : undefined}
+            title={
+              busyElsewhere
+                ? "Another review is already running"
+                : preview && preview.reviewableFiles === 0
+                  ? "No reviewable files in this PR"
+                  : undefined
+            }
             class="px-3 py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Start review
@@ -271,4 +311,98 @@ export function ReviewConfirmDialog({
       </div>
     </div>
   );
+}
+
+function PreflightPreview({
+  preview,
+  loading,
+}: {
+  preview: ReviewPreview | null;
+  loading: boolean;
+}) {
+  if (loading || !preview) {
+    return (
+      <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400 text-xs">
+        <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
+        Preparing file list...
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div class="flex items-center justify-between gap-3 mb-2">
+        <span class="text-xs font-semibold text-gray-700 dark:text-gray-200">
+          Files ({preview.reviewableFiles}/{preview.totalFiles})
+        </span>
+        <span class="text-[11px] font-mono text-gray-400">
+          i{preview.iteration} · {preview.totalHunks} hunks · {preview.changedLines} changed
+        </span>
+      </div>
+      <div class="max-h-52 overflow-y-auto rounded border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-800">
+        {preview.files.map((file) => (
+          <PreflightRow key={file.path} file={file} />
+        ))}
+      </div>
+      {preview.reviewableFiles === 0 && (
+        <div class="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+          No reviewable files matched the current rules.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PreflightRow({ file }: { file: ReviewPreview["files"][number] }) {
+  const statusClass = file.willReview
+    ? "text-green-600 dark:text-green-400"
+    : "text-gray-400 dark:text-gray-500";
+  return (
+    <div class="px-2.5 py-2 text-xs">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class={`w-16 shrink-0 font-medium ${statusClass}`}>
+          {file.willReview ? "review" : "skip"}
+        </span>
+        <span class="min-w-0 flex-1 truncate text-gray-800 dark:text-gray-100" title={file.path}>
+          {file.path}
+        </span>
+        <span class="shrink-0 font-mono text-[11px] text-gray-400">
+          {file.hunkCount}h/{file.changedLines}l
+        </span>
+      </div>
+      <div class="mt-1 flex items-center gap-2 min-w-0 pl-[4.5rem]">
+        {file.willReview ? (
+          <span class="min-w-0 truncate text-[11px] text-gray-500 dark:text-gray-400">
+            {file.ruleTitle ?? "Default checklist"}
+            {file.relatedFiles.length > 0 && (
+              <span class="text-gray-400"> · related: {file.relatedFiles.slice(0, 3).join(", ")}</span>
+            )}
+          </span>
+        ) : (
+          <span class="text-[11px] text-gray-400">{skipReasonLabel(file.skipReason)}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function skipReasonLabel(reason: string | null): string {
+  switch (reason) {
+    case "deleted":
+      return "deleted file";
+    case "binary":
+      return "binary asset";
+    case "excluded":
+      return "excluded by rules";
+    case "notIncluded":
+      return "not included by repo rules";
+    case "unsupportedPath":
+      return "unsupported path";
+    case "diffUnavailable":
+      return "diff unavailable";
+    case "noChanges":
+      return "no reviewable changes";
+    default:
+      return reason ?? "skipped";
+  }
 }
