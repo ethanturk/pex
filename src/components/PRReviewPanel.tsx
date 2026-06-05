@@ -20,6 +20,7 @@ import {
   cancelReview,
   postReviewFinding,
   recordFindingVerdict,
+  clearFindingVerdict,
   getSavedReview,
   clearSavedReview,
   type Severity,
@@ -415,6 +416,24 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
     }
   };
 
+  const undoDismissFinding = async (i: number) => {
+    const f = findings[i];
+    if (!f) return;
+    updateFindingUi((prev) => {
+      const dismissed = new Set(prev.dismissed);
+      dismissed.delete(i);
+      const selected = new Set(prev.selected);
+      if (!prev.posted.has(i) && tierIsActionable(f.tier)) selected.add(i);
+      return { ...prev, dismissed, selected };
+    });
+    try {
+      await clearFindingVerdict(projectId, repoId, prId, f);
+    } catch {
+      // Non-fatal: the UI is usable again for this run; if persistence fails,
+      // the finding may still be suppressed on the next review run.
+    }
+  };
+
   const toggleSelected = (i: number) => {
     updateFindingUi((prev) => {
       const selected = new Set(prev.selected);
@@ -682,6 +701,7 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
                 onToggleSelected={toggleSelected}
                 onPosted={markPosted}
                 onDismiss={dismissFinding}
+                onUndoDismiss={undoDismissFinding}
                 allSelected={allSelected}
                 anySelectable={selectableIndices.length > 0}
                 onToggleSelectAll={toggleSelectAll}
@@ -854,6 +874,7 @@ interface FindingsListProps {
   onToggleSelected: (i: number) => void;
   onPosted: (i: number) => void;
   onDismiss: (i: number) => void;
+  onUndoDismiss: (i: number) => void;
   allSelected: boolean;
   anySelectable: boolean;
   onToggleSelectAll: () => void;
@@ -890,6 +911,7 @@ function FindingsList({
   onToggleSelected,
   onPosted,
   onDismiss,
+  onUndoDismiss,
   allSelected,
   anySelectable,
   onToggleSelectAll,
@@ -943,6 +965,7 @@ function FindingsList({
             setEditingIdx={setEditingIdx}
             onPosted={handlePosted}
             onDismiss={onDismiss}
+            onUndoDismiss={onUndoDismiss}
           />
         ))}
       </div>
@@ -971,6 +994,7 @@ interface TierSectionProps {
   setEditingIdx: (i: number | null) => void;
   onPosted: (i: number) => void;
   onDismiss: (i: number) => void;
+  onUndoDismiss: (i: number) => void;
 }
 
 function TierSection({
@@ -987,6 +1011,7 @@ function TierSection({
   setEditingIdx,
   onPosted,
   onDismiss,
+  onUndoDismiss,
 }: TierSectionProps) {
   // Push back low-priority tiers: nit / fyi start collapsed so they never bury
   // the blocking and should-fix findings above them.
@@ -1029,6 +1054,7 @@ function TierSection({
               onCancel={() => setEditingIdx(null)}
               onPosted={() => onPosted(i)}
               onDismiss={() => onDismiss(i)}
+              onUndoDismiss={() => onUndoDismiss(i)}
             />
           ))}
         </ul>
@@ -1051,6 +1077,7 @@ interface FindingRowProps {
   onCancel: () => void;
   onPosted: () => void;
   onDismiss: () => void;
+  onUndoDismiss: () => void;
 }
 
 function FindingRow({
@@ -1067,6 +1094,7 @@ function FindingRow({
   onCancel,
   onPosted,
   onDismiss,
+  onUndoDismiss,
 }: FindingRowProps) {
   const jumpToFinding = () => {
     if (!finding.filePath) return;
@@ -1154,9 +1182,18 @@ function FindingRow({
           {isPosted ? (
             <span class="text-[11px] text-green-600 dark:text-green-400">Posted ✓</span>
           ) : isDismissed ? (
-            <span class="text-[11px] text-gray-500 dark:text-gray-400">
-              Dismissed ✓ <span class="text-gray-400">(suppressed next run)</span>
-            </span>
+            <>
+              <span class="text-[11px] text-gray-500 dark:text-gray-400">
+                Dismissed ✓ <span class="text-gray-400">(suppressed next run)</span>
+              </span>
+              <button
+                onClick={onUndoDismiss}
+                title="Undo dismissal — this finding can be posted or dismissed again"
+                class="text-[11px] px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Undo
+              </button>
+            </>
           ) : (
             <>
               <button

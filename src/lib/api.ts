@@ -539,6 +539,23 @@ export async function recordFindingVerdict(
   });
 }
 
+/// Remove a recorded verdict for a finding. Used to undo a dismissal without
+/// counting the finding as accepted.
+export async function clearFindingVerdict(
+  projectId: string,
+  repoId: string,
+  prId: number,
+  finding: ReviewFinding,
+): Promise<void> {
+  return invoke("clear_finding_verdict", {
+    projectId,
+    repoId,
+    prId,
+    filePath: finding.filePath ?? "",
+    comment: finding.comment,
+  });
+}
+
 export async function getReviewCalibration(): Promise<CalibrationStats> {
   return invoke<CalibrationStats>("get_review_calibration");
 }

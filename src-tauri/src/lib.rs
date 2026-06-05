@@ -143,6 +143,7 @@ pub fn run() {
             commands::review::get_saved_review,
             commands::review::clear_saved_review,
             commands::feedback::record_finding_verdict,
+            commands::feedback::clear_finding_verdict,
             commands::feedback::get_review_calibration,
             commands::feedback::clear_review_feedback,
             commands::feedback::get_diagnostics_dir,

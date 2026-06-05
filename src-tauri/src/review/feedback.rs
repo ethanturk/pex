@@ -121,6 +121,20 @@ pub fn record_verdict(
     Ok(())
 }
 
+/// Remove a recorded verdict for a finding. Used when the reviewer undoes a
+/// dismissal before taking a final action on the finding.
+pub fn clear_verdict(
+    conn: &Connection,
+    pr_key: &str,
+    fingerprint: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM finding_verdicts WHERE pr_key = ?1 AND fingerprint = ?2",
+        rusqlite::params![pr_key, fingerprint],
+    )?;
+    Ok(())
+}
+
 /// The set of fingerprints the reviewer dismissed for this PR. Used to suppress
 /// them on subsequent review runs.
 pub fn dismissed_fingerprints(conn: &Connection, pr_key: &str) -> Result<HashSet<String>, AppError> {
@@ -369,6 +383,21 @@ mod tests {
         record_verdict(&conn, "pr1", &fp, Verdict::Accepted, "a.rs", "minor", "nit", 80, "x", "").unwrap();
         assert!(dismissed_fingerprints(&conn, "pr1").unwrap().is_empty());
         assert_eq!(calibration(&conn).unwrap().accepted, 1);
+    }
+
+    #[test]
+    fn clear_verdict_removes_dismissal_without_accepting() {
+        let conn = mem_db();
+        let fp = fingerprint("a.rs", "x");
+        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 80, "x", "").unwrap();
+
+        clear_verdict(&conn, "pr1", &fp).unwrap();
+
+        assert!(dismissed_fingerprints(&conn, "pr1").unwrap().is_empty());
+        let c = calibration(&conn).unwrap();
+        assert_eq!(c.total, 0);
+        assert_eq!(c.accepted, 0);
+        assert_eq!(c.dismissed, 0);
     }
 
     #[test]

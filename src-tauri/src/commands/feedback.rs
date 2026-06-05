@@ -57,6 +57,26 @@ pub async fn record_finding_verdict(
     .map_err(|e| e.to_string())
 }
 
+/// Remove a recorded verdict for a finding. This is intentionally narrower
+/// than clearing all feedback: undoing a dismissal should make the finding
+/// eligible again without counting it as accepted.
+#[tauri::command]
+pub async fn clear_finding_verdict(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+    file_path: String,
+    comment: String,
+) -> Result<(), String> {
+    let client = get_client(&state)?;
+    let key = pr_key(&client.org_url(), &project_id, &repo_id, pr_id);
+    let fp = feedback::fingerprint(&file_path, &comment);
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    feedback::clear_verdict(&db, &key, &fp).map_err(|e| e.to_string())
+}
+
 /// Aggregate calibration metrics across all recorded verdicts.
 #[tauri::command]
 pub async fn get_review_calibration(
