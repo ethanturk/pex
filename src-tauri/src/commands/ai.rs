@@ -9,10 +9,11 @@ use tauri::State;
 
 #[tauri::command]
 pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoKey, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.conn();
 
-    let (default_provider_id, providers) =
-        crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let (default_provider_id, providers) = crate::ai::read_ai_provider_configs(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
     let providers_no_key = providers
         .iter()
         .map(provider_no_key)
@@ -24,36 +25,47 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         .or_else(|| providers.first())
         .ok_or_else(|| "AI provider list is empty.".to_string())?;
 
-    let hunk_concurrency =
-        crate::ai::read_hunk_concurrency(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let hunk_concurrency = crate::ai::read_hunk_concurrency(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
 
-    let standards_max_chars =
-        crate::ai::read_standards_max_chars(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let standards_max_chars = crate::ai::read_standards_max_chars(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
 
-    let retry_count =
-        crate::ai::read_retry_count(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let retry_count = crate::ai::read_retry_count(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
 
-    let confidence_threshold =
-        crate::ai::read_confidence_threshold(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let confidence_threshold = crate::ai::read_confidence_threshold(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
 
-    let blocking_confidence =
-        crate::ai::read_blocking_confidence(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let blocking_confidence = crate::ai::read_blocking_confidence(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
 
-    let auto_vote_on_blocking =
-        crate::ai::read_auto_vote_on_blocking(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let auto_vote_on_blocking = crate::ai::read_auto_vote_on_blocking(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
 
-    let incremental_review =
-        crate::ai::read_incremental_review(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let incremental_review = crate::ai::read_incremental_review(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
 
-    let auto_review =
-        crate::ai::read_auto_review(&db).map_err(|e: crate::AppError| e.to_string())?;
-    let auto_post_blocking =
-        crate::ai::read_auto_post_blocking(&db).map_err(|e: crate::AppError| e.to_string())?;
-    let auto_post_confidence =
-        crate::ai::read_auto_post_confidence(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let auto_review = crate::ai::read_auto_review(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+    let auto_post_blocking = crate::ai::read_auto_post_blocking(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+    let auto_post_confidence = crate::ai::read_auto_post_confidence(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
 
-    let ai_diagnostics =
-        crate::ai::read_ai_diagnostics(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let ai_diagnostics = crate::ai::read_ai_diagnostics(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
 
     Ok(AiSettingsNoKey {
         default_provider_id,
@@ -181,24 +193,26 @@ fn normalize_provider_config(
     })
 }
 
-fn mirror_default_settings(
-    db: &rusqlite::Connection,
+async fn mirror_default_settings(
+    db: &libsql::Connection,
     provider: &AiProviderConfig,
 ) -> Result<(), crate::AppError> {
-    crate::cache::set_setting(db, "ai_provider", &provider.provider)?;
-    crate::cache::set_setting(db, "ai_endpoint", &provider.endpoint)?;
-    crate::cache::set_setting(db, "ai_model", &provider.model)?;
+    crate::cache::set_setting(db, "ai_provider", &provider.provider).await?;
+    crate::cache::set_setting(db, "ai_endpoint", &provider.endpoint).await?;
+    crate::cache::set_setting(db, "ai_model", &provider.model).await?;
     crate::cache::set_setting(
         db,
         "ai_connect_timeout_secs",
         &provider.connect_timeout_secs.to_string(),
-    )?;
+    )
+    .await?;
     crate::cache::set_setting(
         db,
         "ai_read_timeout_secs",
         &provider.read_timeout_secs.to_string(),
-    )?;
-    let _ = crate::cache::delete_setting(db, "ai_request_timeout_secs");
+    )
+    .await?;
+    let _ = crate::cache::delete_setting(db, "ai_request_timeout_secs").await;
     Ok(())
 }
 
@@ -275,14 +289,16 @@ pub async fn save_ai_defaults(
     let api_key = resolve_api_key(&default_provider.id, kind, &api_key)?;
 
     {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let conn = state.db.conn();
         crate::ai::write_ai_provider_configs(
-            &db,
+            &conn,
             &default_provider.id,
             &[default_provider.clone()],
         )
+        .await
         .map_err(|e: crate::AppError| e.to_string())?;
-        mirror_default_settings(&db, &default_provider)
+        mirror_default_settings(&conn, &default_provider)
+            .await
             .map_err(|e: crate::AppError| e.to_string())?;
     }
 
@@ -309,9 +325,10 @@ pub async fn save_ai_provider_config(
     let resolved_key = resolve_api_key(&provider.id, kind, &api_key)?;
 
     let default_id = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let (current_default_id, mut providers) =
-            crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+        let conn = state.db.conn();
+        let (current_default_id, mut providers) = crate::ai::read_ai_provider_configs(&conn)
+            .await
+            .map_err(|e: crate::AppError| e.to_string())?;
         if let Some(existing) = providers.iter_mut().find(|p| p.id == provider.id) {
             *existing = provider.clone();
         } else {
@@ -326,10 +343,13 @@ pub async fn save_ai_provider_config(
             providers[0].id.clone()
         };
 
-        crate::ai::write_ai_provider_configs(&db, &default_id, &providers)
+        crate::ai::write_ai_provider_configs(&conn, &default_id, &providers)
+            .await
             .map_err(|e: crate::AppError| e.to_string())?;
         if default_id == provider.id {
-            mirror_default_settings(&db, &provider).map_err(|e: crate::AppError| e.to_string())?;
+            mirror_default_settings(&conn, &provider)
+                .await
+                .map_err(|e: crate::AppError| e.to_string())?;
         }
         default_id
     };
@@ -347,9 +367,10 @@ pub async fn remove_ai_provider(
     provider_id: String,
 ) -> Result<(), String> {
     let (new_default, providers) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let (current_default_id, mut providers) =
-            crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+        let conn = state.db.conn();
+        let (current_default_id, mut providers) = crate::ai::read_ai_provider_configs(&conn)
+            .await
+            .map_err(|e: crate::AppError| e.to_string())?;
         if providers.len() <= 1 {
             return Err("At least one AI provider is required.".to_string());
         }
@@ -362,13 +383,15 @@ pub async fn remove_ai_provider(
         } else {
             current_default_id
         };
-        crate::ai::write_ai_provider_configs(&db, &new_default, &providers)
+        crate::ai::write_ai_provider_configs(&conn, &new_default, &providers)
+            .await
             .map_err(|e: crate::AppError| e.to_string())?;
         let default_provider = providers
             .iter()
             .find(|p| p.id == new_default)
             .ok_or_else(|| "Default AI provider not found.".to_string())?;
-        mirror_default_settings(&db, default_provider)
+        mirror_default_settings(&conn, default_provider)
+            .await
             .map_err(|e: crate::AppError| e.to_string())?;
         (new_default, providers)
     };
@@ -408,7 +431,7 @@ pub async fn save_ai_preferences(
     auto_post_confidence: u8,
     ai_diagnostics: bool,
 ) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.conn();
 
     let concurrency = if hunk_concurrency == 0 {
         crate::ai::DEFAULT_HUNK_CONCURRENCY
@@ -423,24 +446,29 @@ pub async fn save_ai_preferences(
             .min(crate::ai::MAX_STANDARDS_MAX_CHARS)
     };
 
-    crate::cache::set_setting(&db, "ai_hunk_concurrency", &concurrency.to_string())
+    crate::cache::set_setting(&conn, "ai_hunk_concurrency", &concurrency.to_string())
+        .await
         .map_err(|e: crate::AppError| e.to_string())?;
     // retry_count: 0 is valid ("do not retry"); just clamp the upper bound.
     let retries = retry_count.min(crate::ai::MAX_RETRY_COUNT);
-    crate::cache::set_setting(&db, "ai_retry_count", &retries.to_string())
+    crate::cache::set_setting(&conn, "ai_retry_count", &retries.to_string())
+        .await
         .map_err(|e: crate::AppError| e.to_string())?;
-    crate::cache::set_setting(&db, "ai_standards_max_chars", &std_chars.to_string())
+    crate::cache::set_setting(&conn, "ai_standards_max_chars", &std_chars.to_string())
+        .await
         .map_err(|e: crate::AppError| e.to_string())?;
     // confidence_threshold: 0 is valid ("surface everything"); clamp upper bound.
     let threshold = confidence_threshold.min(crate::ai::MAX_CONFIDENCE_THRESHOLD);
-    crate::cache::set_setting(&db, "ai_confidence_threshold", &threshold.to_string())
+    crate::cache::set_setting(&conn, "ai_confidence_threshold", &threshold.to_string())
+        .await
         .map_err(|e: crate::AppError| e.to_string())?;
     // blocking_confidence (the "critical line"): 0 is valid; clamp upper bound.
     let blocking = blocking_confidence.min(crate::ai::MAX_BLOCKING_CONFIDENCE);
-    crate::cache::set_setting(&db, "ai_blocking_confidence", &blocking.to_string())
+    crate::cache::set_setting(&conn, "ai_blocking_confidence", &blocking.to_string())
+        .await
         .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(
-        &db,
+        &conn,
         "ai_auto_vote_on_blocking",
         if auto_vote_on_blocking {
             "true"
@@ -448,33 +476,39 @@ pub async fn save_ai_preferences(
             "false"
         },
     )
+    .await
     .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(
-        &db,
+        &conn,
         "ai_incremental_review",
         if incremental_review { "true" } else { "false" },
     )
+    .await
     .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(
-        &db,
+        &conn,
         "ai_auto_review",
         if auto_review { "true" } else { "false" },
     )
+    .await
     .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(
-        &db,
+        &conn,
         "ai_auto_post_blocking",
         if auto_post_blocking { "true" } else { "false" },
     )
+    .await
     .map_err(|e: crate::AppError| e.to_string())?;
     let auto_post_conf = auto_post_confidence.min(crate::ai::MAX_AUTO_POST_CONFIDENCE);
-    crate::cache::set_setting(&db, "ai_auto_post_confidence", &auto_post_conf.to_string())
+    crate::cache::set_setting(&conn, "ai_auto_post_confidence", &auto_post_conf.to_string())
+        .await
         .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(
-        &db,
+        &conn,
         "ai_diagnostics",
         if ai_diagnostics { "true" } else { "false" },
     )
+    .await
     .map_err(|e: crate::AppError| e.to_string())?;
 
     Ok(())
@@ -550,18 +584,23 @@ pub async fn explain_hunk(
 
     // Ensure AI manager is configured + resolve the (possibly user-customized) system prompt.
     let system_prompt = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
-        if ai_mgr_lock.is_none() {
+        let conn = state.db.conn();
+        let needs_configure = state.ai_manager.lock().map_err(|e| e.to_string())?.is_none();
+        if needs_configure {
             let mut mgr = crate::ai::AiManager::new();
             let configured = mgr
-                .try_configure_from_db(&db)
+                .try_configure_from_db(&conn)
+                .await
                 .map_err(|e: crate::AppError| e.to_string())?;
             if configured {
-                *ai_mgr_lock = Some(mgr);
+                let mut ai_mgr_lock = state.ai_manager.lock().map_err(|e| e.to_string())?;
+                if ai_mgr_lock.is_none() {
+                    *ai_mgr_lock = Some(mgr);
+                }
             }
         }
-        crate::ai::prompts::resolve_prompt(&db, crate::ai::prompts::PromptKey::ExplainHunkSystem)
+        crate::ai::prompts::resolve_prompt(&conn, crate::ai::prompts::PromptKey::ExplainHunkSystem)
+            .await
             .map_err(|e: crate::AppError| e.to_string())?
     };
 
@@ -627,11 +666,11 @@ pub struct PromptInfo {
     pub model: Option<String>,
 }
 
-fn prompt_info(
-    conn: &rusqlite::Connection,
+async fn prompt_info(
+    conn: &libsql::Connection,
     key: crate::ai::prompts::PromptKey,
 ) -> Result<PromptInfo, crate::AppError> {
-    let stored = crate::cache::get_setting(conn, &format!("ai_prompt_{}", key.as_str()))?;
+    let stored = crate::cache::get_setting(conn, &format!("ai_prompt_{}", key.as_str())).await?;
     let default_value = key.default_text().to_string();
     let is_customized = stored.as_ref().is_some_and(|s| !s.is_empty());
     let value = stored
@@ -673,7 +712,7 @@ fn prompt_info(
         ),
     };
 
-    let model_override = crate::ai::prompts::resolve_model_override(conn, key)?;
+    let model_override = crate::ai::prompts::resolve_model_override(conn, key).await?;
 
     Ok(PromptInfo {
         key: key.as_str().to_string(),
@@ -709,41 +748,48 @@ pub struct ReviewSpecialistInfo {
 pub async fn get_review_specialists(
     state: State<'_, AppState>,
 ) -> Result<Vec<ReviewSpecialistInfo>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let (default_provider_id, providers) =
-        crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+    let conn = state.db.conn();
+    let (default_provider_id, providers) = crate::ai::read_ai_provider_configs(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
     let default_provider = providers
         .iter()
         .find(|p| p.id == default_provider_id)
         .or_else(|| providers.first())
         .ok_or_else(|| "AI provider list is empty.".to_string())?;
-    crate::ai::prompts::PromptKey::THOROUGH_SPECIALISTS
-        .iter()
-        .map(|k| {
-            let info = prompt_info(&db, *k).map_err(|e: crate::AppError| e.to_string())?;
-            let provider = info
-                .provider_id
-                .as_ref()
-                .and_then(|id| providers.iter().find(|p| p.id == *id))
-                .unwrap_or(default_provider);
-            Ok(ReviewSpecialistInfo {
-                key: info.key,
-                label: info.label,
-                description: info.description,
-                model: info.model.unwrap_or_else(|| provider.model.clone()),
-                provider_name: provider.name.clone(),
-            })
-        })
-        .collect()
+    let mut out = Vec::new();
+    for k in crate::ai::prompts::PromptKey::THOROUGH_SPECIALISTS {
+        let info = prompt_info(&conn, *k)
+            .await
+            .map_err(|e: crate::AppError| e.to_string())?;
+        let provider = info
+            .provider_id
+            .as_ref()
+            .and_then(|id| providers.iter().find(|p| p.id == *id))
+            .unwrap_or(default_provider);
+        out.push(ReviewSpecialistInfo {
+            key: info.key,
+            label: info.label,
+            description: info.description,
+            model: info.model.unwrap_or_else(|| provider.model.clone()),
+            provider_name: provider.name.clone(),
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]
 pub async fn get_ai_prompts(state: State<'_, AppState>) -> Result<Vec<PromptInfo>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::ai::prompts::PromptKey::ALL
-        .iter()
-        .map(|k| prompt_info(&db, *k).map_err(|e: crate::AppError| e.to_string()))
-        .collect()
+    let conn = state.db.conn();
+    let mut out = Vec::new();
+    for k in crate::ai::prompts::PromptKey::ALL {
+        out.push(
+            prompt_info(&conn, *k)
+                .await
+                .map_err(|e: crate::AppError| e.to_string())?,
+        );
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -760,8 +806,9 @@ pub async fn save_ai_prompt(
             "Prompt cannot be empty. Use the Reset button to restore the default.".to_string(),
         );
     }
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::ai::prompts::save_prompt(&db, prompt_key, trimmed)
+    let conn = state.db.conn();
+    crate::ai::prompts::save_prompt(&conn, prompt_key, trimmed)
+        .await
         .map_err(|e: crate::AppError| e.to_string())
 }
 
@@ -769,8 +816,10 @@ pub async fn save_ai_prompt(
 pub async fn reset_ai_prompt(state: State<'_, AppState>, key: String) -> Result<(), String> {
     let prompt_key = crate::ai::prompts::PromptKey::from_str(&key)
         .map_err(|e: crate::AppError| e.to_string())?;
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::ai::prompts::reset_prompt(&db, prompt_key).map_err(|e: crate::AppError| e.to_string())
+    let conn = state.db.conn();
+    crate::ai::prompts::reset_prompt(&conn, prompt_key)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())
 }
 
 #[tauri::command]
@@ -783,23 +832,27 @@ pub async fn save_ai_prompt_model(
     let prompt_key = crate::ai::prompts::PromptKey::from_str(&key)
         .map_err(|e: crate::AppError| e.to_string())?;
     let trimmed = model.trim();
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.conn();
     if trimmed.is_empty() {
         // Empty string means "use the default AI provider/model" — drop the override.
-        crate::ai::prompts::reset_model(&db, prompt_key).map_err(|e: crate::AppError| e.to_string())
+        crate::ai::prompts::reset_model(&conn, prompt_key)
+            .await
+            .map_err(|e: crate::AppError| e.to_string())
     } else {
         let provider_id = provider_id
             .as_deref()
             .map(str::trim)
             .filter(|id| !id.is_empty());
         if let Some(provider_id) = provider_id {
-            let (_, providers) = crate::ai::read_ai_provider_configs(&db)
+            let (_, providers) = crate::ai::read_ai_provider_configs(&conn)
+                .await
                 .map_err(|e: crate::AppError| e.to_string())?;
             if !providers.iter().any(|p| p.id == provider_id) {
                 return Err("Selected AI provider was not found.".to_string());
             }
         }
-        crate::ai::prompts::save_model_override(&db, prompt_key, provider_id, trimmed)
+        crate::ai::prompts::save_model_override(&conn, prompt_key, provider_id, trimmed)
+            .await
             .map_err(|e: crate::AppError| e.to_string())
     }
 }
@@ -808,8 +861,10 @@ pub async fn save_ai_prompt_model(
 pub async fn reset_ai_prompt_model(state: State<'_, AppState>, key: String) -> Result<(), String> {
     let prompt_key = crate::ai::prompts::PromptKey::from_str(&key)
         .map_err(|e: crate::AppError| e.to_string())?;
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::ai::prompts::reset_model(&db, prompt_key).map_err(|e: crate::AppError| e.to_string())
+    let conn = state.db.conn();
+    crate::ai::prompts::reset_model(&conn, prompt_key)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())
 }
 
 /// Returns the list of models available from the configured provider.
@@ -824,15 +879,18 @@ pub async fn list_ai_models(
 
     if !refresh {
         let cached = {
-            let db = state.db.lock().map_err(|e| e.to_string())?;
-            crate::ai::models::get_cached(&db).map_err(|e| e.to_string())?
+            let conn = state.db.conn();
+            crate::ai::models::get_cached(&conn)
+                .await
+                .map_err(|e| e.to_string())?
         };
         if let Some(models) = cached {
             return Ok(models);
         }
     }
 
-    crate::ai::models::fetch_and_cache(&state.db)
+    let conn = state.db.conn();
+    crate::ai::models::fetch_and_cache(&conn)
         .await
         .map_err(|e| e.to_string())
 }
@@ -844,9 +902,10 @@ pub async fn list_ai_provider_models(
     provider_id: String,
 ) -> Result<Vec<String>, String> {
     let (kind, endpoint, api_key) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let (_, providers) =
-            crate::ai::read_ai_provider_configs(&db).map_err(|e: crate::AppError| e.to_string())?;
+        let conn = state.db.conn();
+        let (_, providers) = crate::ai::read_ai_provider_configs(&conn)
+            .await
+            .map_err(|e: crate::AppError| e.to_string())?;
         let provider = providers
             .iter()
             .find(|p| p.id == provider_id)

@@ -101,8 +101,9 @@ pub async fn prefetch_pr_diffs(
     let client = get_client(&state)?;
     let org_url = client.org_url().to_string();
     let concurrency = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        crate::ai::read_hunk_concurrency(&db)
+        let conn = state.db.conn();
+        crate::ai::read_hunk_concurrency(&conn)
+            .await
             .unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY)
             .max(1) as usize
     };
@@ -212,7 +213,7 @@ pub async fn get_file_lines(
 }
 
 #[tauri::command]
-pub fn mark_file_viewed(
+pub async fn mark_file_viewed(
     state: State<'_, AppState>,
     project_id: String,
     repo_id: String,
@@ -220,36 +221,44 @@ pub fn mark_file_viewed(
     file_path: String,
     viewed: bool,
 ) -> Result<(), String> {
-    let client_lock = state.client.lock().unwrap();
-    let client = client_lock.as_ref().ok_or("Not authenticated")?;
-    let org_url = client.org_url();
+    // Resolve the org URL under the client lock, then drop it before awaiting
+    // the DB write (the std Mutex guard isn't Send across an await point).
+    let org_url = {
+        let client_lock = state.client.lock().unwrap();
+        let client = client_lock.as_ref().ok_or("Not authenticated")?;
+        client.org_url().to_string()
+    };
 
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.conn();
     crate::cache::set_viewed(
         &conn,
-        org_url,
+        &org_url,
         &project_id,
         &repo_id,
         pr_id,
         &file_path,
         viewed,
     )
+    .await
     .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_viewed_files(
+pub async fn get_viewed_files(
     state: State<'_, AppState>,
     project_id: String,
     repo_id: String,
     pr_id: i64,
 ) -> Result<Vec<String>, String> {
-    let client_lock = state.client.lock().unwrap();
-    let client = client_lock.as_ref().ok_or("Not authenticated")?;
-    let org_url = client.org_url();
+    let org_url = {
+        let client_lock = state.client.lock().unwrap();
+        let client = client_lock.as_ref().ok_or("Not authenticated")?;
+        client.org_url().to_string()
+    };
 
-    let conn = state.db.lock().unwrap();
-    crate::cache::get_viewed(&conn, org_url, &project_id, &repo_id, pr_id)
+    let conn = state.db.conn();
+    crate::cache::get_viewed(&conn, &org_url, &project_id, &repo_id, pr_id)
+        .await
         .map_err(|e| e.to_string())
 }
 

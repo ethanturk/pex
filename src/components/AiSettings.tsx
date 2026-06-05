@@ -7,6 +7,7 @@ import {
   appFont,
   appTextSize,
   diffTextSize,
+  syncStatus,
   type Theme,
   type DiffView,
   type TextSize,
@@ -26,6 +27,10 @@ import {
   getReviewCalibration,
   clearReviewFeedback,
   getDiagnosticsDir,
+  getSyncStatus,
+  enableSync,
+  disableSync,
+  syncNow,
   type AiProviderConfig,
   type AiPromptInfo,
   type CalibrationStats,
@@ -39,7 +44,7 @@ interface Props {
   standalone?: boolean;
 }
 
-type Tab = "general" | "ai-defaults" | "review" | "prompts" | "calibration" | "pr-list";
+type Tab = "general" | "ai-defaults" | "review" | "prompts" | "calibration" | "sync" | "pr-list";
 
 // Common system font stacks for the appearance dropdown. "" = app default.
 const FONT_OPTIONS: { label: string; value: string }[] = [
@@ -600,6 +605,7 @@ export function AiSettings({ open, onClose, standalone }: Props) {
           <TabButton label="Review" active={tab === "review"} onClick={() => setTab("review")} />
           <TabButton label="Prompts" active={tab === "prompts"} onClick={() => setTab("prompts")} />
           <TabButton label="Calibration" active={tab === "calibration"} onClick={() => setTab("calibration")} />
+          <TabButton label="Sync" active={tab === "sync"} onClick={() => setTab("sync")} />
           <TabButton label="PR List" active={tab === "pr-list"} onClick={() => setTab("pr-list")} />
         </div>
 
@@ -1455,6 +1461,8 @@ export function AiSettings({ open, onClose, standalone }: Props) {
             />
           )}
 
+          {tab === "sync" && <SyncPanel active={open && tab === "sync"} />}
+
           {tab === "pr-list" && (
             <section class="space-y-4">
               <label class="flex items-start gap-3">
@@ -1529,6 +1537,148 @@ function Field({ label, children }: { label: string; children: preact.ComponentC
 
 function formatRate(rate: number | null): string {
   return rate == null ? "—" : `${rate.toFixed(0)}%`;
+}
+
+function SyncPanel({ active }: { active: boolean }) {
+  const status = syncStatus.value;
+  const [url, setUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load current status when the panel becomes visible, and seed the URL field
+  // from whatever's already configured. The token is never echoed back.
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    getSyncStatus()
+      .then((s) => {
+        if (cancelled) return;
+        syncStatus.value = s;
+        setUrl(s.url);
+      })
+      .catch((e) => !cancelled && setError(String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleEnable = () =>
+    run(async () => {
+      syncStatus.value = await enableSync(url.trim(), token);
+      setToken("");
+    });
+  const handleDisable = () =>
+    run(async () => {
+      syncStatus.value = await disableSync();
+    });
+  const handleSyncNow = () =>
+    run(async () => {
+      syncStatus.value = await syncNow();
+    });
+
+  const enabled = status?.enabled ?? false;
+  const lastSync = status?.lastSync
+    ? new Date(status.lastSync).toLocaleString()
+    : "Never";
+
+  return (
+    <section class="space-y-4">
+      <p class="text-xs text-gray-500 dark:text-gray-400">
+        Optionally sync your reviewer state — viewed files, saved connections,
+        AI settings, prompts, and finding verdicts — across your own devices via
+        a private libsql/Turso database. Your local data keeps working unchanged
+        when sync is off. Secrets (PATs, API keys, the sync token) never sync;
+        they stay on each device, so you'll re-enter them once per device.
+      </p>
+
+      <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-3 text-xs space-y-1">
+        <div class="flex items-center justify-between">
+          <span class="text-gray-500 dark:text-gray-400">Status</span>
+          <span class={`font-medium ${enabled ? "text-green-600 dark:text-green-400" : "text-gray-500 dark:text-gray-400"}`}>
+            {status?.syncing ? "Syncing…" : enabled ? "Enabled" : "Disabled"}
+          </span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-gray-500 dark:text-gray-400">Last sync</span>
+          <span class="text-gray-700 dark:text-gray-200">{lastSync}</span>
+        </div>
+        {status?.lastError && (
+          <div class="text-red-600 dark:text-red-400 pt-1 break-words">
+            Last error: {status.lastError}
+          </div>
+        )}
+      </div>
+
+      <Field label="Remote database URL">
+        <input
+          type="text"
+          value={url}
+          onInput={(e) => setUrl(e.currentTarget.value)}
+          placeholder="libsql://your-db.turso.io"
+          spellcheck={false}
+          autocapitalize="off"
+          class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-sm"
+        />
+      </Field>
+
+      <Field label={enabled ? "Auth token (leave blank to keep current)" : "Auth token"}>
+        <input
+          type="password"
+          value={token}
+          onInput={(e) => setToken(e.currentTarget.value)}
+          placeholder={status?.configured ? "••••••••" : "Paste your auth token"}
+          spellcheck={false}
+          autocapitalize="off"
+          class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-sm"
+        />
+      </Field>
+
+      {error && (
+        <p class="text-xs text-red-600 dark:text-red-400 break-words">{error}</p>
+      )}
+
+      <div class="flex items-center gap-2">
+        <button
+          onClick={handleEnable}
+          disabled={busy || !url.trim()}
+          class="px-3 py-1.5 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50"
+        >
+          {enabled ? "Update & sync" : "Enable sync"}
+        </button>
+        {enabled && (
+          <button
+            onClick={handleSyncNow}
+            disabled={busy}
+            class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+          >
+            Sync now
+          </button>
+        )}
+        {enabled && (
+          <button
+            onClick={handleDisable}
+            disabled={busy}
+            class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+          >
+            Disable
+          </button>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function CalibrationPanel({

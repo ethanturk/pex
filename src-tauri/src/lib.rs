@@ -3,6 +3,7 @@ pub mod ai;
 pub mod auth;
 pub mod cache;
 pub mod commands;
+pub mod db;
 pub mod diff;
 pub mod github;
 pub mod provider;
@@ -22,8 +23,10 @@ pub enum AppError {
     Ai(String),
     #[error("Auth error: {0}")]
     Auth(String),
-    #[error("Cache error: {0}")]
-    Cache(#[from] rusqlite::Error),
+    #[error("Database error: {0}")]
+    Db(#[from] libsql::Error),
+    #[error("Storage error: {0}")]
+    Storage(String),
     #[cfg(not(target_os = "android"))]
     #[error("Keyring error: {0}")]
     Keyring(#[from] keyring::Error),
@@ -41,7 +44,7 @@ impl serde::Serialize for AppError {
 }
 
 pub struct AppState {
-    pub db: std::sync::Mutex<rusqlite::Connection>,
+    pub db: db::Store,
     pub client: std::sync::Mutex<Option<provider::GitClient>>,
     pub ai_manager: std::sync::Mutex<Option<ai::AiManager>>,
     pub diff_cache: cache::diff_cache::DiffCache,
@@ -56,7 +59,10 @@ pub struct AppState {
 pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let db = cache::init_db().expect("Failed to initialize database");
+    let store = tauri::async_runtime::block_on(db::Store::open(db::load_sync_config()))
+        .expect("Failed to initialize database");
+    // Periodic offline-first reconcile while sync is enabled. No-op when off.
+    db::spawn_background_sync(store.clone());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -67,10 +73,26 @@ pub fn run() {
             {
                 let window = app.get_webview_window("main").expect("no main window");
                 let win = window.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Reconcile with the remote when the window regains focus, so a
+                // desktop edit shows up promptly after switching back from another
+                // device. No-op when sync is disabled.
+                let focus_store = {
+                    use tauri::Manager;
+                    app.state::<AppState>().db.clone()
+                };
+                window.on_window_event(move |event| match event {
+                    tauri::WindowEvent::CloseRequested { .. } => {
                         window_state::save(&win);
                     }
+                    tauri::WindowEvent::Focused(true) => {
+                        let store = focus_store.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if store.is_synced() {
+                                let _ = store.sync_now().await;
+                            }
+                        });
+                    }
+                    _ => {}
                 });
                 window_state::restore(&window);
             }
@@ -87,7 +109,7 @@ pub fn run() {
             Ok(())
         })
         .manage(AppState {
-            db: std::sync::Mutex::new(db),
+            db: store,
             client: std::sync::Mutex::new(None),
             ai_manager: std::sync::Mutex::new(None),
             diff_cache: cache::diff_cache::DiffCache::new(),
@@ -150,6 +172,10 @@ pub fn run() {
             commands::feedback::get_diagnostics_dir,
             commands::auto::auto_review_candidates,
             commands::auto::auto_post_review_findings,
+            commands::sync::get_sync_status,
+            commands::sync::enable_sync,
+            commands::sync::disable_sync,
+            commands::sync::sync_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

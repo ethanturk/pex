@@ -243,34 +243,34 @@ If you find nothing worth flagging, respond with exactly: No issues found.
 Do not include greetings or sign-offs."#;
 
 /// Resolve a prompt: returns the user override from SQLite if present, otherwise the default.
-pub fn resolve_prompt(conn: &rusqlite::Connection, key: PromptKey) -> Result<String, AppError> {
-    let stored = crate::cache::get_setting(conn, &key.db_key())?;
+pub async fn resolve_prompt(conn: &libsql::Connection, key: PromptKey) -> Result<String, AppError> {
+    let stored = crate::cache::get_setting(conn, &key.db_key()).await?;
     Ok(stored
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| key.default_text().to_string()))
 }
 
 /// Persist a user override for a prompt.
-pub fn save_prompt(
-    conn: &rusqlite::Connection,
+pub async fn save_prompt(
+    conn: &libsql::Connection,
     key: PromptKey,
     value: &str,
 ) -> Result<(), AppError> {
-    crate::cache::set_setting(conn, &key.db_key(), value)
+    crate::cache::set_setting(conn, &key.db_key(), value).await
 }
 
 /// Remove the user override for a prompt (revert to default).
-pub fn reset_prompt(conn: &rusqlite::Connection, key: PromptKey) -> Result<(), AppError> {
-    crate::cache::delete_setting(conn, &key.db_key())
+pub async fn reset_prompt(conn: &libsql::Connection, key: PromptKey) -> Result<(), AppError> {
+    crate::cache::delete_setting(conn, &key.db_key()).await
 }
 
 /// Read the per-prompt provider/model override, if any.
 /// Empty / missing means "use the default provider and model from the AI tab".
-pub fn resolve_model_override(
-    conn: &rusqlite::Connection,
+pub async fn resolve_model_override(
+    conn: &libsql::Connection,
     key: PromptKey,
 ) -> Result<Option<PromptModelOverride>, AppError> {
-    let stored = crate::cache::get_setting(conn, &key.model_db_key())?;
+    let stored = crate::cache::get_setting(conn, &key.model_db_key()).await?;
     let Some(stored) = stored.filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
@@ -285,7 +285,8 @@ pub fn resolve_model_override(
             parsed
         }
         Err(_) => PromptModelOverride {
-            provider_id: crate::cache::get_setting(conn, &key.provider_db_key())?
+            provider_id: crate::cache::get_setting(conn, &key.provider_db_key())
+                .await?
                 .map(|id| id.trim().to_string())
                 .filter(|id| !id.is_empty()),
             model: stored.trim().to_string(),
@@ -300,30 +301,30 @@ pub fn resolve_model_override(
 }
 
 /// Backward-compatible helper for call sites that only need the model string.
-pub fn resolve_model(
-    conn: &rusqlite::Connection,
+pub async fn resolve_model(
+    conn: &libsql::Connection,
     key: PromptKey,
 ) -> Result<Option<String>, AppError> {
-    Ok(resolve_model_override(conn, key)?.map(|o| o.model))
+    Ok(resolve_model_override(conn, key).await?.map(|o| o.model))
 }
 
-pub fn save_model(
-    conn: &rusqlite::Connection,
+pub async fn save_model(
+    conn: &libsql::Connection,
     key: PromptKey,
     model: &str,
 ) -> Result<(), AppError> {
-    save_model_override(conn, key, None, model)
+    save_model_override(conn, key, None, model).await
 }
 
-pub fn save_model_override(
-    conn: &rusqlite::Connection,
+pub async fn save_model_override(
+    conn: &libsql::Connection,
     key: PromptKey,
     provider_id: Option<&str>,
     model: &str,
 ) -> Result<(), AppError> {
     let model = model.trim();
     if model.is_empty() {
-        return reset_model(conn, key);
+        return reset_model(conn, key).await;
     }
     let provider_id = provider_id
         .map(str::trim)
@@ -334,16 +335,16 @@ pub fn save_model_override(
         model: model.to_string(),
     })
     .map_err(|e| AppError::Ai(format!("Failed to serialize prompt model override: {}", e)))?;
-    crate::cache::set_setting(conn, &key.model_db_key(), &payload)?;
+    crate::cache::set_setting(conn, &key.model_db_key(), &payload).await?;
     match provider_id {
-        Some(id) => crate::cache::set_setting(conn, &key.provider_db_key(), &id),
-        None => crate::cache::delete_setting(conn, &key.provider_db_key()),
+        Some(id) => crate::cache::set_setting(conn, &key.provider_db_key(), &id).await,
+        None => crate::cache::delete_setting(conn, &key.provider_db_key()).await,
     }
 }
 
-pub fn reset_model(conn: &rusqlite::Connection, key: PromptKey) -> Result<(), AppError> {
-    crate::cache::delete_setting(conn, &key.model_db_key())?;
-    crate::cache::delete_setting(conn, &key.provider_db_key())
+pub async fn reset_model(conn: &libsql::Connection, key: PromptKey) -> Result<(), AppError> {
+    crate::cache::delete_setting(conn, &key.model_db_key()).await?;
+    crate::cache::delete_setting(conn, &key.provider_db_key()).await
 }
 
 /// Prompt for generating explain-hunk user message.

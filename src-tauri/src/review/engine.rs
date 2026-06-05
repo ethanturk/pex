@@ -944,7 +944,7 @@ pub async fn run_review(
     app: tauri::AppHandle,
     provider: Arc<dyn AiProvider>,
     input: ReviewInput,
-    db: &std::sync::Mutex<rusqlite::Connection>,
+    conn: &libsql::Connection,
     cancel: Arc<AtomicBool>,
     diag: crate::review::diagnostics::Diagnostics,
 ) -> Result<ReviewOutput, AppError> {
@@ -966,33 +966,25 @@ pub async fn run_review(
 
     // Resolved once for the run — changing it mid-run isn't worth the surprise
     // factor, and re-reading per call would just thrash the DB lock.
-    let retry_count = match db.lock() {
-        Ok(c) => crate::ai::read_retry_count(&c).unwrap_or(crate::ai::DEFAULT_RETRY_COUNT),
-        Err(_) => crate::ai::DEFAULT_RETRY_COUNT,
-    };
-    let hunk_concurrency = match db.lock() {
-        Ok(c) => {
-            crate::ai::read_hunk_concurrency(&c).unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY)
-        }
-        Err(_) => crate::ai::DEFAULT_HUNK_CONCURRENCY,
-    }
-    .max(1) as usize;
+    let retry_count = crate::ai::read_retry_count(conn)
+        .await
+        .unwrap_or(crate::ai::DEFAULT_RETRY_COUNT);
+    let hunk_concurrency = crate::ai::read_hunk_concurrency(conn)
+        .await
+        .unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY)
+        .max(1) as usize;
     let llm_permits = Arc::new(Semaphore::new(hunk_concurrency));
 
     // Minimum confidence a finding must reach to survive the deterministic
     // guard applied after each file's adjudication. Resolved once per run.
-    let confidence_threshold = match db.lock() {
-        Ok(c) => crate::ai::read_confidence_threshold(&c)
-            .unwrap_or(crate::ai::DEFAULT_CONFIDENCE_THRESHOLD),
-        Err(_) => crate::ai::DEFAULT_CONFIDENCE_THRESHOLD,
-    };
+    let confidence_threshold = crate::ai::read_confidence_threshold(conn)
+        .await
+        .unwrap_or(crate::ai::DEFAULT_CONFIDENCE_THRESHOLD);
     // The "critical line": confidence at/above which a Critical finding tiers
     // Blocking. Resolved once per run so it stays stable across the synthesis.
-    let blocking_confidence = match db.lock() {
-        Ok(c) => crate::ai::read_blocking_confidence(&c)
-            .unwrap_or(crate::ai::DEFAULT_BLOCKING_CONFIDENCE),
-        Err(_) => crate::ai::DEFAULT_BLOCKING_CONFIDENCE,
-    };
+    let blocking_confidence = crate::ai::read_blocking_confidence(conn)
+        .await
+        .unwrap_or(crate::ai::DEFAULT_BLOCKING_CONFIDENCE);
 
     if diag.is_enabled() {
         diag.event(
@@ -1029,33 +1021,9 @@ pub async fn run_review(
         .as_ref()
         .filter(|v| !v.is_empty())
         .map(|v| v.iter().map(|s| s.as_str()).collect());
-    let (default_prompt_provider_id, prompt_providers) = match db.lock() {
-        Ok(c) => crate::ai::read_ai_provider_configs(&c)
-            .unwrap_or_else(|_| ("default".to_string(), Vec::new())),
-        Err(_) => ("default".to_string(), Vec::new()),
-    };
-    let resolve_specialist = |key: PromptKey| -> Result<SpecialistPrompt, AppError> {
-        let (text, model_override) = match db.lock() {
-            Ok(c) => {
-                let t = resolve_prompt(&c, key).unwrap_or_else(|_| key.default_text().to_string());
-                let m = crate::ai::prompts::resolve_model_override(&c, key).unwrap_or(None);
-                (t, m)
-            }
-            Err(_) => (key.default_text().to_string(), None),
-        };
-        let provider = resolve_prompt_provider(
-            &prompt_providers,
-            &default_prompt_provider_id,
-            model_override.as_ref(),
-            &provider,
-        )?;
-        Ok(SpecialistPrompt {
-            key,
-            system_prompt: text,
-            provider,
-            model_override: model_override.map(|m| m.model),
-        })
-    };
+    let (default_prompt_provider_id, prompt_providers) = crate::ai::read_ai_provider_configs(conn)
+        .await
+        .unwrap_or_else(|_| ("default".to_string(), Vec::new()));
     let specialist_prompts: Vec<SpecialistPrompt> = if input.mode == ReviewMode::Thorough {
         let selected: Vec<PromptKey> = PromptKey::THOROUGH_SPECIALISTS
             .iter()
@@ -1072,9 +1040,28 @@ pub async fn run_review(
         } else {
             selected
         };
-        keys.into_iter()
-            .map(resolve_specialist)
-            .collect::<Result<Vec<_>, _>>()?
+        let mut prompts = Vec::with_capacity(keys.len());
+        for key in keys {
+            let text = resolve_prompt(conn, key)
+                .await
+                .unwrap_or_else(|_| key.default_text().to_string());
+            let model_override = crate::ai::prompts::resolve_model_override(conn, key)
+                .await
+                .unwrap_or(None);
+            let sp_provider = resolve_prompt_provider(
+                &prompt_providers,
+                &default_prompt_provider_id,
+                model_override.as_ref(),
+                &provider,
+            )?;
+            prompts.push(SpecialistPrompt {
+                key,
+                system_prompt: text,
+                provider: sp_provider,
+                model_override: model_override.map(|m| m.model),
+            });
+        }
+        prompts
     } else {
         Vec::new()
     };
@@ -1088,15 +1075,13 @@ pub async fn run_review(
     // meaningless — discard the state and review fresh rather than re-reviewing
     // already-completed files (the "resume just restarts" bug).
     let mut resuming = false;
-    if let Ok(db_lock) = db.lock() {
-        if let Ok(Some(saved)) = state::load_state(&db_lock) {
-            if saved.pr_key == state.pr_key && !saved.is_done() {
-                if align_to_saved_order(&mut file_entries, &saved.file_paths) {
-                    state = saved;
-                    resuming = true;
-                } else {
-                    let _ = state::clear_state(&db_lock);
-                }
+    if let Ok(Some(saved)) = state::load_state(conn).await {
+        if saved.pr_key == state.pr_key && !saved.is_done() {
+            if align_to_saved_order(&mut file_entries, &saved.file_paths) {
+                state = saved;
+                resuming = true;
+            } else {
+                let _ = state::clear_state(conn).await;
             }
         }
     }
@@ -1258,7 +1243,7 @@ pub async fn run_review(
                         );
                         state.current_file_findings.push((hunk_idx + 1, skip_msg));
                         state.current_hunk = hunk_idx + 1;
-                        save_state_to_db(db, &state);
+                        save_state_to_db(conn, &state).await;
                         continue;
                     }
                 };
@@ -1296,14 +1281,14 @@ pub async fn run_review(
                     }),
                 );
 
-                save_state_to_db(db, &state);
+                save_state_to_db(conn, &state).await;
             }
         }
 
         // ---- File Aggregate ----
         if !state.current_file_findings.is_empty() {
             state.phase = "file-aggregate".into();
-            save_state_to_db(db, &state);
+            save_state_to_db(conn, &state).await;
             emit_progress(
                 &app,
                 "file-aggregate",
@@ -1412,7 +1397,7 @@ pub async fn run_review(
             "hunk-review".into()
         };
 
-        save_state_to_db(db, &state);
+        save_state_to_db(conn, &state).await;
     }
 
     // ---- Phase 2: Batch Aggregation ----
@@ -1420,7 +1405,7 @@ pub async fn run_review(
     let total_batches = state.total_batches;
     if state.current_batch <= total_batches {
         state.phase = "batch-aggregate".into();
-        save_state_to_db(db, &state);
+        save_state_to_db(conn, &state).await;
     }
 
     while state.current_batch <= total_batches {
@@ -1492,13 +1477,13 @@ pub async fn run_review(
         state.batch_summaries.push(batch_summary);
         state.current_batch += 1;
 
-        save_state_to_db(db, &state);
+        save_state_to_db(conn, &state).await;
     }
 
     // ---- Phase 3: Final Synthesis ----
     cancelled(&cancel)?;
     state.phase = "synthesis".into();
-    save_state_to_db(db, &state);
+    save_state_to_db(conn, &state).await;
     emit_progress(
         &app,
         "synthesis",
@@ -1541,10 +1526,8 @@ pub async fn run_review(
 
     // Suppression memory: drop findings the reviewer previously dismissed on
     // this PR so they don't re-surface on the next iteration.
-    let dismissed = db
-        .lock()
-        .ok()
-        .and_then(|c| crate::review::feedback::dismissed_fingerprints(&c, &input.pr_key).ok())
+    let dismissed = crate::review::feedback::dismissed_fingerprints(conn, &input.pr_key)
+        .await
         .unwrap_or_default();
     let suppressed = if dismissed.is_empty() {
         0
@@ -1616,7 +1599,7 @@ pub async fn run_review(
 
     state.phase = "done".into();
     state.final_review = Some(final_review.clone());
-    clear_state_from_db(db);
+    clear_state_from_db(conn).await;
 
     if diag.is_enabled() {
         for f in &findings {
@@ -2047,16 +2030,12 @@ fn align_to_saved_order(
     true
 }
 
-fn save_state_to_db(db: &std::sync::Mutex<rusqlite::Connection>, state: &ReviewState) {
-    if let Ok(db_lock) = db.lock() {
-        let _ = state::save_state(&db_lock, state);
-    }
+async fn save_state_to_db(conn: &libsql::Connection, state: &ReviewState) {
+    let _ = state::save_state(conn, state).await;
 }
 
-fn clear_state_from_db(db: &std::sync::Mutex<rusqlite::Connection>) {
-    if let Ok(db_lock) = db.lock() {
-        let _ = state::clear_state(&db_lock);
-    }
+async fn clear_state_from_db(conn: &libsql::Connection) {
+    let _ = state::clear_state(conn).await;
 }
 
 /// Post review findings to ADO as PR comments.

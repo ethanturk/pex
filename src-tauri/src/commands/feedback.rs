@@ -41,9 +41,9 @@ pub async fn record_finding_verdict(
     let key = pr_key(&client.org_url(), &project_id, &repo_id, pr_id);
     let fp = feedback::fingerprint(&file_path, &comment);
 
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.conn();
     feedback::record_verdict(
-        &db,
+        &conn,
         &key,
         &fp,
         verdict,
@@ -54,6 +54,7 @@ pub async fn record_finding_verdict(
         &comment,
         &sources.join(","),
     )
+    .await
     .map_err(|e| e.to_string())
 }
 
@@ -73,8 +74,10 @@ pub async fn clear_finding_verdict(
     let key = pr_key(&client.org_url(), &project_id, &repo_id, pr_id);
     let fp = feedback::fingerprint(&file_path, &comment);
 
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    feedback::clear_verdict(&db, &key, &fp).map_err(|e| e.to_string())
+    let conn = state.db.conn();
+    feedback::clear_verdict(&conn, &key, &fp)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Aggregate calibration metrics across all recorded verdicts.
@@ -82,15 +85,15 @@ pub async fn clear_finding_verdict(
 pub async fn get_review_calibration(
     state: State<'_, AppState>,
 ) -> Result<CalibrationStats, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    feedback::calibration(&db).map_err(|e| e.to_string())
+    let conn = state.db.conn();
+    feedback::calibration(&conn).await.map_err(|e| e.to_string())
 }
 
 /// Clear all recorded verdicts (resets calibration metrics and suppression).
 #[tauri::command]
 pub async fn clear_review_feedback(state: State<'_, AppState>) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    feedback::clear_all(&db).map_err(|e| e.to_string())
+    let conn = state.db.conn();
+    feedback::clear_all(&conn).await.map_err(|e| e.to_string())
 }
 
 /// The directory where opt-in review diagnostic traces are written.

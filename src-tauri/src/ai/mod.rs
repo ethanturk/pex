@@ -306,10 +306,10 @@ pub fn default_model_for_kind(kind: AiProviderKind) -> &'static str {
     }
 }
 
-pub fn read_ai_provider_configs(
-    conn: &rusqlite::Connection,
+pub async fn read_ai_provider_configs(
+    conn: &libsql::Connection,
 ) -> Result<(String, Vec<AiProviderConfig>), AppError> {
-    let configured = match crate::cache::get_setting(conn, AI_PROVIDERS_SETTING)? {
+    let configured = match crate::cache::get_setting(conn, AI_PROVIDERS_SETTING).await? {
         Some(raw) if !raw.trim().is_empty() => {
             serde_json::from_str::<Vec<AiProviderConfig>>(&raw).unwrap_or_default()
         }
@@ -336,38 +336,42 @@ pub fn read_ai_provider_configs(
         .collect::<Vec<_>>();
 
     if providers.is_empty() {
-        let provider =
-            crate::cache::get_setting(conn, "ai_provider")?.unwrap_or_else(|| "openai".to_string());
+        let provider = crate::cache::get_setting(conn, "ai_provider")
+            .await?
+            .unwrap_or_else(|| "openai".to_string());
         let kind = provider.parse().unwrap_or(AiProviderKind::OpenAI);
         providers.push(AiProviderConfig {
             id: "default".to_string(),
             name: "Default".to_string(),
             provider: kind.to_string(),
-            endpoint: crate::cache::get_setting(conn, "ai_endpoint")?
+            endpoint: crate::cache::get_setting(conn, "ai_endpoint")
+                .await?
                 .unwrap_or_else(|| default_endpoint_for_kind(kind).to_string()),
-            model: crate::cache::get_setting(conn, "ai_model")?
+            model: crate::cache::get_setting(conn, "ai_model")
+                .await?
                 .unwrap_or_else(|| default_model_for_kind(kind).to_string()),
-            connect_timeout_secs: read_connect_timeout(conn)?,
-            read_timeout_secs: read_read_timeout(conn)?,
+            connect_timeout_secs: read_connect_timeout(conn).await?,
+            read_timeout_secs: read_read_timeout(conn).await?,
         });
     }
 
-    let default_id = crate::cache::get_setting(conn, AI_DEFAULT_PROVIDER_ID_SETTING)?
+    let default_id = crate::cache::get_setting(conn, AI_DEFAULT_PROVIDER_ID_SETTING)
+        .await?
         .filter(|id| providers.iter().any(|p| p.id == *id))
         .unwrap_or_else(|| providers[0].id.clone());
 
     Ok((default_id, providers))
 }
 
-pub fn write_ai_provider_configs(
-    conn: &rusqlite::Connection,
+pub async fn write_ai_provider_configs(
+    conn: &libsql::Connection,
     default_provider_id: &str,
     providers: &[AiProviderConfig],
 ) -> Result<(), AppError> {
     let payload = serde_json::to_string(providers)
         .map_err(|e| AppError::Ai(format!("Failed to serialize AI providers: {}", e)))?;
-    crate::cache::set_setting(conn, AI_PROVIDERS_SETTING, &payload)?;
-    crate::cache::set_setting(conn, AI_DEFAULT_PROVIDER_ID_SETTING, default_provider_id)?;
+    crate::cache::set_setting(conn, AI_PROVIDERS_SETTING, &payload).await?;
+    crate::cache::set_setting(conn, AI_DEFAULT_PROVIDER_ID_SETTING, default_provider_id).await?;
     Ok(())
 }
 
@@ -422,8 +426,8 @@ pub fn read_ai_provider_api_key(provider: &AiProviderConfig) -> Result<Option<St
 
 /// Read the TCP/TLS connect timeout (seconds), defaulting if missing.
 /// Treats 0 as "use default."
-pub fn read_connect_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_connect_timeout_secs")?;
+pub async fn read_connect_timeout(conn: &libsql::Connection) -> Result<u64, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_connect_timeout_secs").await?;
     Ok(raw
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|n| *n > 0)
@@ -439,15 +443,15 @@ pub fn read_connect_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError
 /// their tuning. This fallback is harmless because the legacy value was
 /// already a total-request timeout — interpreting it as a read timeout is
 /// strictly more lenient (slow generation now succeeds where it used to fail).
-pub fn read_read_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError> {
-    let new_key = crate::cache::get_setting(conn, "ai_read_timeout_secs")?;
+pub async fn read_read_timeout(conn: &libsql::Connection) -> Result<u64, AppError> {
+    let new_key = crate::cache::get_setting(conn, "ai_read_timeout_secs").await?;
     if let Some(n) = new_key
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|n| *n > 0)
     {
         return Ok(n.min(MAX_TIMEOUT_SECS));
     }
-    let legacy = crate::cache::get_setting(conn, "ai_request_timeout_secs")?;
+    let legacy = crate::cache::get_setting(conn, "ai_request_timeout_secs").await?;
     Ok(legacy
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|n| *n > 0)
@@ -456,8 +460,8 @@ pub fn read_read_timeout(conn: &rusqlite::Connection) -> Result<u64, AppError> {
 }
 
 /// Read the configured hunk concurrency (max parallel hunk reviews), clamped to a sane range.
-pub fn read_hunk_concurrency(conn: &rusqlite::Connection) -> Result<u32, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_hunk_concurrency")?;
+pub async fn read_hunk_concurrency(conn: &libsql::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_hunk_concurrency").await?;
     Ok(raw
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|n| *n >= 1)
@@ -468,8 +472,8 @@ pub fn read_hunk_concurrency(conn: &rusqlite::Connection) -> Result<u32, AppErro
 /// Read the configured retry count for failed LLM calls during a PR review.
 /// 0 means "do not retry" — useful for local providers where a "failure" is
 /// often just a slow generation that's still in flight.
-pub fn read_retry_count(conn: &rusqlite::Connection) -> Result<u32, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_retry_count")?;
+pub async fn read_retry_count(conn: &libsql::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_retry_count").await?;
     Ok(raw
         .and_then(|s| s.parse::<u32>().ok())
         .map(|n| n.min(MAX_RETRY_COUNT))
@@ -479,8 +483,8 @@ pub fn read_retry_count(conn: &rusqlite::Connection) -> Result<u32, AppError> {
 /// Read the configured minimum confidence threshold (0–100) for surfacing
 /// findings. Unlike most numeric settings, 0 is a valid, meaningful value
 /// ("surface everything"), so it is not coerced to the default.
-pub fn read_confidence_threshold(conn: &rusqlite::Connection) -> Result<u8, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_confidence_threshold")?;
+pub async fn read_confidence_threshold(conn: &libsql::Connection) -> Result<u8, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_confidence_threshold").await?;
     Ok(raw
         .and_then(|s| s.parse::<u8>().ok())
         .map(|n| n.min(MAX_CONFIDENCE_THRESHOLD))
@@ -490,8 +494,8 @@ pub fn read_confidence_threshold(conn: &rusqlite::Connection) -> Result<u8, AppE
 /// Read the "critical line": the confidence at/above which a Critical finding
 /// is tiered Blocking. 0 means every Critical finding blocks; just clamp the
 /// upper bound.
-pub fn read_blocking_confidence(conn: &rusqlite::Connection) -> Result<u8, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_blocking_confidence")?;
+pub async fn read_blocking_confidence(conn: &libsql::Connection) -> Result<u8, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_blocking_confidence").await?;
     Ok(raw
         .and_then(|s| s.parse::<u8>().ok())
         .map(|n| n.min(MAX_BLOCKING_CONFIDENCE))
@@ -500,8 +504,8 @@ pub fn read_blocking_confidence(conn: &rusqlite::Connection) -> Result<u8, AppEr
 
 /// Read whether posting a review should auto-cast a "wait for author" vote when
 /// there is at least one Blocking finding. Defaults to off.
-pub fn read_auto_vote_on_blocking(conn: &rusqlite::Connection) -> Result<bool, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_auto_vote_on_blocking")?;
+pub async fn read_auto_vote_on_blocking(conn: &libsql::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_vote_on_blocking").await?;
     Ok(raw
         .map(|s| s == "true")
         .unwrap_or(DEFAULT_AUTO_VOTE_ON_BLOCKING))
@@ -512,8 +516,8 @@ pub fn read_auto_vote_on_blocking(conn: &rusqlite::Connection) -> Result<bool, A
 pub const DEFAULT_INCREMENTAL_REVIEW: bool = false;
 
 /// Read whether incremental review is enabled.
-pub fn read_incremental_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_incremental_review")?;
+pub async fn read_incremental_review(conn: &libsql::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_incremental_review").await?;
     Ok(raw
         .map(|s| s == "true")
         .unwrap_or(DEFAULT_INCREMENTAL_REVIEW))
@@ -524,8 +528,8 @@ pub fn read_incremental_review(conn: &rusqlite::Connection) -> Result<bool, AppE
 /// contain source content and full prompts.
 pub const DEFAULT_AI_DIAGNOSTICS: bool = false;
 
-pub fn read_ai_diagnostics(conn: &rusqlite::Connection) -> Result<bool, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_diagnostics")?;
+pub async fn read_ai_diagnostics(conn: &libsql::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_diagnostics").await?;
     Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_AI_DIAGNOSTICS))
 }
 
@@ -544,20 +548,20 @@ pub const DEFAULT_AUTO_POST_BLOCKING: bool = false;
 pub const DEFAULT_AUTO_POST_CONFIDENCE: u8 = 90;
 pub const MAX_AUTO_POST_CONFIDENCE: u8 = 100;
 
-pub fn read_auto_review(conn: &rusqlite::Connection) -> Result<bool, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_auto_review")?;
+pub async fn read_auto_review(conn: &libsql::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_review").await?;
     Ok(raw.map(|s| s == "true").unwrap_or(DEFAULT_AUTO_REVIEW))
 }
 
-pub fn read_auto_post_blocking(conn: &rusqlite::Connection) -> Result<bool, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_auto_post_blocking")?;
+pub async fn read_auto_post_blocking(conn: &libsql::Connection) -> Result<bool, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_post_blocking").await?;
     Ok(raw
         .map(|s| s == "true")
         .unwrap_or(DEFAULT_AUTO_POST_BLOCKING))
 }
 
-pub fn read_auto_post_confidence(conn: &rusqlite::Connection) -> Result<u8, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_auto_post_confidence")?;
+pub async fn read_auto_post_confidence(conn: &libsql::Connection) -> Result<u8, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_auto_post_confidence").await?;
     Ok(raw
         .and_then(|s| s.parse::<u8>().ok())
         .map(|n| n.min(MAX_AUTO_POST_CONFIDENCE))
@@ -565,8 +569,8 @@ pub fn read_auto_post_confidence(conn: &rusqlite::Connection) -> Result<u8, AppE
 }
 
 /// Read the configured per-file size cap for injected AGENTS.md / STYLE.md content.
-pub fn read_standards_max_chars(conn: &rusqlite::Connection) -> Result<u32, AppError> {
-    let raw = crate::cache::get_setting(conn, "ai_standards_max_chars")?;
+pub async fn read_standards_max_chars(conn: &libsql::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_standards_max_chars").await?;
     Ok(raw
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|n| *n >= MIN_STANDARDS_MAX_CHARS)
@@ -619,8 +623,11 @@ impl AiManager {
     }
 
     /// Try to auto-configure from stored settings in SQLite + keyring.
-    pub fn try_configure_from_db(&mut self, conn: &rusqlite::Connection) -> Result<bool, AppError> {
-        let (default_id, providers) = read_ai_provider_configs(conn)?;
+    pub async fn try_configure_from_db(
+        &mut self,
+        conn: &libsql::Connection,
+    ) -> Result<bool, AppError> {
+        let (default_id, providers) = read_ai_provider_configs(conn).await?;
         let Some(default_provider) = providers.iter().find(|p| p.id == default_id) else {
             return Ok(false);
         };

@@ -27,8 +27,9 @@ pub async fn login_pat(
             // `activate_org` can rebuild the client identically on restart.
             crate::auth::keyring_store::KeyringStore::save_pat(&canonical, &pat)
                 .map_err(|e| e.to_string())?;
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.conn();
             crate::cache::save_org(&conn, &canonical, &login, "pat", "github")
+                .await
                 .map_err(|e| e.to_string())?;
             Ok(true)
         }
@@ -43,8 +44,9 @@ pub async fn login_pat(
                 crate::auth::keyring_store::KeyringStore::save_pat(&org_url, &pat)
                     .map_err(|e| e.to_string())?;
 
-                let conn = state.db.lock().unwrap();
+                let conn = state.db.conn();
                 crate::cache::save_org(&conn, &org_url, &name, "pat", "ado")
+                    .await
                     .map_err(|e| e.to_string())?;
 
                 Ok(true)
@@ -75,8 +77,9 @@ pub async fn get_current_user_id(state: State<'_, AppState>) -> Result<String, S
 pub async fn activate_org(state: State<'_, AppState>, org_url: String) -> Result<bool, String> {
     // Look up the saved org to determine provider + token type.
     let (token_type, provider) = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.conn();
         crate::cache::list_orgs(&conn)
+            .await
             .map_err(|e| e.to_string())?
             .into_iter()
             .find(|(url, _, _, _)| url == &org_url)
@@ -139,12 +142,15 @@ pub async fn activate_org(state: State<'_, AppState>, org_url: String) -> Result
     // macOS will still show one OS dialog per keychain item — they just appear back-to-back
     // during the same startup gesture. Errors are non-fatal: AI may simply be unconfigured.
     {
-        let db = state.db.lock().unwrap();
-        let mut ai_mgr_lock = state.ai_manager.lock().unwrap();
-        if ai_mgr_lock.is_none() {
+        let needs_configure = state.ai_manager.lock().unwrap().is_none();
+        if needs_configure {
+            let conn = state.db.conn();
             let mut mgr = crate::ai::AiManager::new();
-            if let Ok(true) = mgr.try_configure_from_db(&db) {
-                *ai_mgr_lock = Some(mgr);
+            if let Ok(true) = mgr.try_configure_from_db(&conn).await {
+                let mut ai_mgr_lock = state.ai_manager.lock().unwrap();
+                if ai_mgr_lock.is_none() {
+                    *ai_mgr_lock = Some(mgr);
+                }
             }
         }
     }
@@ -174,8 +180,10 @@ pub async fn login_oauth(
     *state.client.lock().unwrap() = Some(client);
 
     // Save org to cache
-    let conn = state.db.lock().unwrap();
-    crate::cache::save_org(&conn, &org_url, &org_url, "oauth", "ado").map_err(|e| e.to_string())?;
+    let conn = state.db.conn();
+    crate::cache::save_org(&conn, &org_url, &org_url, "oauth", "ado")
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Store refresh token + client secret for later refresh
     crate::auth::keyring_store::KeyringStore::save_oauth(
@@ -232,9 +240,13 @@ pub async fn refresh_oauth_token(
 }
 
 #[tauri::command]
-pub fn get_saved_orgs(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
-    let conn = state.db.lock().unwrap();
-    let orgs = crate::cache::list_orgs(&conn).map_err(|e| e.to_string())?;
+pub async fn get_saved_orgs(
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let conn = state.db.conn();
+    let orgs = crate::cache::list_orgs(&conn)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(orgs
         .into_iter()
         .map(|(url, name, token_type, provider)| {
@@ -249,9 +261,11 @@ pub fn get_saved_orgs(state: State<'_, AppState>) -> Result<Vec<serde_json::Valu
 }
 
 #[tauri::command]
-pub fn remove_org(state: State<'_, AppState>, org_url: String) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    crate::cache::remove_org(&conn, &org_url).map_err(|e| e.to_string())?;
+pub async fn remove_org(state: State<'_, AppState>, org_url: String) -> Result<(), String> {
+    let conn = state.db.conn();
+    crate::cache::remove_org(&conn, &org_url)
+        .await
+        .map_err(|e| e.to_string())?;
     crate::auth::keyring_store::KeyringStore::delete_pat(&org_url).map_err(|e| e.to_string())?;
     Ok(())
 }

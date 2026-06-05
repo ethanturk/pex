@@ -1,4 +1,5 @@
 import { signal } from "@preact/signals";
+import type { SyncStatus } from "@/lib/api";
 
 // ---- Theme ----
 export type Theme = "system" | "light" | "dark";
@@ -316,3 +317,8 @@ export function updateReviewRun(prId: number, patch: Partial<PRReviewRun> | ((pr
   }
   reviewRuns.value = next;
 }
+
+// ---- Cross-device sync ----
+// Latest known sync status, shared between the desktop settings dialog and the
+// mobile Settings tab. `null` until first loaded from the backend.
+export const syncStatus = signal<SyncStatus | null>(null);

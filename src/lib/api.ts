@@ -816,3 +816,39 @@ export async function getDiffHunks(
 ): Promise<DiffHunk[]> {
   return invoke<DiffHunk[]>("get_diff_hunks", { oldContent, newContent });
 }
+
+// ============= Cross-device sync =============
+
+/**
+ * Status of the optional cross-device sync layer. `lastSync` is an RFC3339
+ * timestamp; `framesSynced` is the count reconciled on the last sync.
+ */
+export interface SyncStatus {
+  enabled: boolean;
+  url: string;
+  configured: boolean;
+  syncing: boolean;
+  lastSync: string | null;
+  lastError: string | null;
+  framesSynced: number | null;
+}
+
+export async function getSyncStatus(): Promise<SyncStatus> {
+  return invoke<SyncStatus>("get_sync_status");
+}
+
+/**
+ * Enable sync against a remote libsql/Turso DB. Pass an empty `token` to keep
+ * the previously stored token (the UI never echoes the real token back).
+ */
+export async function enableSync(url: string, token: string): Promise<SyncStatus> {
+  return invoke<SyncStatus>("enable_sync", { url, token });
+}
+
+export async function disableSync(): Promise<SyncStatus> {
+  return invoke<SyncStatus>("disable_sync");
+}
+
+export async function syncNow(): Promise<SyncStatus> {
+  return invoke<SyncStatus>("sync_now");
+}

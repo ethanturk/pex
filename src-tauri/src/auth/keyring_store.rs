@@ -119,6 +119,11 @@ impl KeyringStore {
         backend::get(service)
     }
 
+    /// Delete a generic token by service name. Missing is not an error.
+    pub fn delete_token(service: &str) -> Result<(), AppError> {
+        backend::delete(service)
+    }
+
     /// Save an AI provider token into one bundled keychain item. Keeping all AI
     /// provider keys under one account avoids one OS prompt per provider key.
     pub fn save_ai_token(provider: &str, token: &str) -> Result<(), AppError> {
