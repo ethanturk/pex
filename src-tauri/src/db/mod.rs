@@ -228,9 +228,7 @@ async fn open_database(cfg: Option<SyncConfig>) -> Result<(Database, Connection,
                 && !std::path::Path::new(&info_path).exists();
 
             if !needs_adopt {
-                let db = Builder::new_synced_database(&path, cfg.url.clone(), cfg.token.clone())
-                    .build()
-                    .await?;
+                let db = build_synced_database(&path, cfg.url.clone(), cfg.token.clone()).await?;
                 let conn = db.connect()?;
                 return Ok((db, conn, true));
             }
@@ -282,13 +280,47 @@ async fn adopt_into_synced(
     cfg: &SyncConfig,
     snapshot: &[TableSnapshot],
 ) -> Result<(Database, Connection), AppError> {
-    let db = Builder::new_synced_database(path, cfg.url.clone(), cfg.token.clone())
-        .build()
-        .await?;
+    let db = build_synced_database(path, cfg.url.clone(), cfg.token.clone()).await?;
     let conn = db.connect()?;
     crate::cache::init_schema(&conn).await?;
     import_snapshot(&conn, snapshot).await?;
     Ok((db, conn))
+}
+
+/// Build a libsql synced-database handle for the given remote.
+///
+/// On Android/iOS the libsql-bundled TLS connector fails: it loads trust roots
+/// via `rustls-native-certs`, which finds no readable cert store on those
+/// platforms ("no valid native root CA certificates"). There we supply our own
+/// HTTPS connector backed by the compiled-in Mozilla **webpki roots**, which
+/// needs no OS trust store. Desktop keeps libsql's default (native-roots)
+/// connector unchanged, so corporate/self-hosted CAs keep working there.
+async fn build_synced_database(
+    path: &str,
+    url: String,
+    token: String,
+) -> Result<Database, AppError> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        // Same hyper/rustls types libsql uses internally (pinned in Cargo.toml),
+        // so this connector satisfies libsql's `Socket` bound.
+        let connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_or_http()
+            .enable_http1()
+            .enable_http2()
+            .build();
+        let db = Builder::new_synced_database(path, url, token)
+            .connector(connector)
+            .build()
+            .await?;
+        Ok(db)
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let db = Builder::new_synced_database(path, url, token).build().await?;
+        Ok(db)
+    }
 }
 
 /// Read every user table (name + columns + rows) from a connection. Internal

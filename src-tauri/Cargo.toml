@@ -43,3 +43,12 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 aes-gcm = "0.10"
 getrandom = "0.2"
 jni = "0.21"
+
+# libsql's bundled TLS connector resolves trust roots via rustls-native-certs,
+# which has no cert store to read on Android/iOS — sync fails with "no valid
+# native root CA certificates". On mobile we build the libsql sync connector
+# ourselves against the compiled-in Mozilla webpki roots instead (see
+# db::build_synced_database). Pinned to libsql's hyper-rustls version so the
+# connector type satisfies libsql's internal `Socket` bound.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+hyper-rustls = { version = "0.25", default-features = false, features = ["webpki-tokio", "http1", "http2", "ring", "tls12"] }
