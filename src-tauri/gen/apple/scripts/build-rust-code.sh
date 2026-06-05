@@ -52,12 +52,24 @@ echo "==> Xcode Cloud: building Rust static library directly"
 # Xcode exports SDKROOT pointing at the iOS SDK. cargo build scripts that compile
 # a HOST tool (e.g. libsql-sqlite3-parser builds `lemon` for the build machine)
 # pick up that iOS sysroot via the cc crate and try to build a macOS-host binary
-# against it — clang then fails with "using sysroot for 'iPhoneOS' but targeting
+# against it — clang fails with "using sysroot for 'iPhoneOS' but targeting
 # 'MacOSX'" → "Unsupported architecture" / unknown type '__int64_t'. Drop the
-# inherited SDK env so cc resolves the right SDK per target via xcrun: macOS for
-# host build-script tools, iOS for the --target build. (This branch never uses
-# SDKROOT itself — it derives the Rust target from PLATFORM_DISPLAY_NAME/ARCHS.)
+# inherited SDK env so the iOS --target build resolves the iOS SDK via xcrun.
+# (This branch never uses SDKROOT itself — it derives the Rust target from
+# PLATFORM_DISPLAY_NAME/ARCHS.)
 unset SDKROOT
+
+# With SDKROOT gone, host build-script tools have no sysroot and fail with
+# "'stdio.h' file not found" (CI's host clang has no default SDK). Point the HOST
+# compiler at the macOS SDK explicitly via cc's per-target CFLAGS (cc reads the
+# underscored host-triple form, e.g. CFLAGS_x86_64_apple_darwin). The iOS
+# --target build is unaffected — it still resolves the iOS SDK through xcrun.
+HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+HOST_ENV_KEY="$(printf '%s' "$HOST_TRIPLE" | tr '-' '_')"
+MACOS_SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+export "CFLAGS_${HOST_ENV_KEY}=-isysroot ${MACOS_SDK_PATH}"
+export "CXXFLAGS_${HOST_ENV_KEY}=-isysroot ${MACOS_SDK_PATH}"
+echo "==> host (${HOST_TRIPLE}) build-script SDK: ${MACOS_SDK_PATH}"
 
 retry() {
   attempts=1
