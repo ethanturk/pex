@@ -13,7 +13,7 @@
 //! issues in the same file.
 
 use crate::AppError;
-use rusqlite::Connection;
+use libsql::{params, Connection};
 use std::collections::HashSet;
 
 /// A reviewer's verdict on a finding.
@@ -90,7 +90,7 @@ pub fn fingerprint(file_path: &str, comment: &str) -> String {
 /// Record (or update) a reviewer's verdict on a finding. The latest verdict for
 /// a given (pr_key, fingerprint) wins.
 #[allow(clippy::too_many_arguments)]
-pub fn record_verdict(
+pub async fn record_verdict(
     conn: &Connection,
     pr_key: &str,
     fingerprint: &str,
@@ -106,7 +106,7 @@ pub fn record_verdict(
         "INSERT OR REPLACE INTO finding_verdicts
             (pr_key, fingerprint, verdict, file_path, severity, tier, confidence, comment, sources, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
-        rusqlite::params![
+        params![
             pr_key,
             fingerprint,
             verdict.as_str(),
@@ -117,34 +117,43 @@ pub fn record_verdict(
             comment,
             sources
         ],
-    )?;
+    )
+    .await?;
     Ok(())
 }
 
 /// Remove a recorded verdict for a finding. Used when the reviewer undoes a
 /// dismissal before taking a final action on the finding.
-pub fn clear_verdict(
+pub async fn clear_verdict(
     conn: &Connection,
     pr_key: &str,
     fingerprint: &str,
 ) -> Result<(), AppError> {
     conn.execute(
         "DELETE FROM finding_verdicts WHERE pr_key = ?1 AND fingerprint = ?2",
-        rusqlite::params![pr_key, fingerprint],
-    )?;
+        params![pr_key, fingerprint],
+    )
+    .await?;
     Ok(())
 }
 
 /// The set of fingerprints the reviewer dismissed for this PR. Used to suppress
 /// them on subsequent review runs.
-pub fn dismissed_fingerprints(conn: &Connection, pr_key: &str) -> Result<HashSet<String>, AppError> {
-    let mut stmt = conn.prepare(
-        "SELECT fingerprint FROM finding_verdicts WHERE pr_key = ?1 AND verdict = 'dismissed'",
-    )?;
-    let rows = stmt
-        .query_map(rusqlite::params![pr_key], |row| row.get::<_, String>(0))?
-        .collect::<Result<HashSet<String>, _>>()?;
-    Ok(rows)
+pub async fn dismissed_fingerprints(
+    conn: &Connection,
+    pr_key: &str,
+) -> Result<HashSet<String>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT fingerprint FROM finding_verdicts WHERE pr_key = ?1 AND verdict = 'dismissed'",
+            params![pr_key],
+        )
+        .await?;
+    let mut out = HashSet::new();
+    while let Some(row) = rows.next().await? {
+        out.insert(row.get::<String>(0)?);
+    }
+    Ok(out)
 }
 
 // ---- Last reviewed iteration (for incremental review) ----
@@ -153,19 +162,20 @@ fn last_iteration_key(pr_key: &str) -> String {
     format!("review_last_iteration:{}", pr_key)
 }
 
-pub fn get_last_reviewed_iteration(conn: &Connection, pr_key: &str) -> Option<i32> {
+pub async fn get_last_reviewed_iteration(conn: &Connection, pr_key: &str) -> Option<i32> {
     crate::cache::get_setting(conn, &last_iteration_key(pr_key))
+        .await
         .ok()
         .flatten()
         .and_then(|s| s.parse::<i32>().ok())
 }
 
-pub fn set_last_reviewed_iteration(
+pub async fn set_last_reviewed_iteration(
     conn: &Connection,
     pr_key: &str,
     iteration: i32,
 ) -> Result<(), AppError> {
-    crate::cache::set_setting(conn, &last_iteration_key(pr_key), &iteration.to_string())
+    crate::cache::set_setting(conn, &last_iteration_key(pr_key), &iteration.to_string()).await
 }
 
 // ---- Calibration ----
@@ -214,19 +224,19 @@ pub struct CalibrationStats {
 }
 
 /// Aggregate every recorded verdict (across all PRs) into calibration metrics.
-pub fn calibration(conn: &Connection) -> Result<CalibrationStats, AppError> {
-    let mut stmt =
-        conn.prepare("SELECT verdict, severity, tier, sources FROM finding_verdicts")?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+pub async fn calibration(conn: &Connection) -> Result<CalibrationStats, AppError> {
+    let mut result_rows = conn
+        .query("SELECT verdict, severity, tier, sources FROM finding_verdicts", ())
+        .await?;
+    let mut rows: Vec<(String, String, String, String)> = Vec::new();
+    while let Some(row) = result_rows.next().await? {
+        rows.push((
+            row.get::<String>(0)?,
+            row.get::<String>(1)?,
+            row.get::<String>(2)?,
+            row.get::<String>(3)?,
+        ));
+    }
 
     let mut stats = CalibrationStats::default();
     let mut sev: std::collections::HashMap<String, BucketStats> = std::collections::HashMap::new();
@@ -315,8 +325,8 @@ pub fn calibration(conn: &Connection) -> Result<CalibrationStats, AppError> {
 }
 
 /// Delete all recorded verdicts (resets both calibration and suppression).
-pub fn clear_all(conn: &Connection) -> Result<(), AppError> {
-    conn.execute("DELETE FROM finding_verdicts", [])?;
+pub async fn clear_all(conn: &Connection) -> Result<(), AppError> {
+    conn.execute("DELETE FROM finding_verdicts", ()).await?;
     Ok(())
 }
 
@@ -341,8 +351,12 @@ mod tests {
         assert_eq!(f1.len(), 16);
     }
 
-    fn mem_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
+    async fn mem_db() -> Connection {
+        let db = libsql::Builder::new_local(":memory:")
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
         conn.execute_batch(
             "CREATE TABLE finding_verdicts (
                 pr_key TEXT NOT NULL, fingerprint TEXT NOT NULL, verdict TEXT NOT NULL,
@@ -353,60 +367,65 @@ mod tests {
                 PRIMARY KEY (pr_key, fingerprint));
              CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )
+        .await
         .unwrap();
+        // `:memory:` databases are per-connection in libsql, so hand back the
+        // same connection the schema was created on rather than a fresh clone.
         conn
     }
 
-    #[test]
-    fn dismissed_are_remembered_per_pr() {
-        let conn = mem_db();
+    #[tokio::test]
+    async fn dismissed_are_remembered_per_pr() {
+        let conn = mem_db().await;
         let fp = fingerprint("a.rs", "nit");
         record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 90, "nit", "")
+            .await
             .unwrap();
         record_verdict(
             &conn, "pr1", &fingerprint("b.rs", "keep"), Verdict::Accepted, "b.rs", "critical",
             "blocking", 95, "keep", "",
         )
+        .await
         .unwrap();
 
-        let dismissed = dismissed_fingerprints(&conn, "pr1").unwrap();
+        let dismissed = dismissed_fingerprints(&conn, "pr1").await.unwrap();
         assert!(dismissed.contains(&fp));
         assert_eq!(dismissed.len(), 1, "only dismissed findings are suppressed");
-        assert!(dismissed_fingerprints(&conn, "pr2").unwrap().is_empty(), "scoped per PR");
+        assert!(dismissed_fingerprints(&conn, "pr2").await.unwrap().is_empty(), "scoped per PR");
     }
 
-    #[test]
-    fn latest_verdict_wins() {
-        let conn = mem_db();
+    #[tokio::test]
+    async fn latest_verdict_wins() {
+        let conn = mem_db().await;
         let fp = fingerprint("a.rs", "x");
-        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 80, "x", "").unwrap();
-        record_verdict(&conn, "pr1", &fp, Verdict::Accepted, "a.rs", "minor", "nit", 80, "x", "").unwrap();
-        assert!(dismissed_fingerprints(&conn, "pr1").unwrap().is_empty());
-        assert_eq!(calibration(&conn).unwrap().accepted, 1);
+        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 80, "x", "").await.unwrap();
+        record_verdict(&conn, "pr1", &fp, Verdict::Accepted, "a.rs", "minor", "nit", 80, "x", "").await.unwrap();
+        assert!(dismissed_fingerprints(&conn, "pr1").await.unwrap().is_empty());
+        assert_eq!(calibration(&conn).await.unwrap().accepted, 1);
     }
 
-    #[test]
-    fn clear_verdict_removes_dismissal_without_accepting() {
-        let conn = mem_db();
+    #[tokio::test]
+    async fn clear_verdict_removes_dismissal_without_accepting() {
+        let conn = mem_db().await;
         let fp = fingerprint("a.rs", "x");
-        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 80, "x", "").unwrap();
+        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 80, "x", "").await.unwrap();
 
-        clear_verdict(&conn, "pr1", &fp).unwrap();
+        clear_verdict(&conn, "pr1", &fp).await.unwrap();
 
-        assert!(dismissed_fingerprints(&conn, "pr1").unwrap().is_empty());
-        let c = calibration(&conn).unwrap();
+        assert!(dismissed_fingerprints(&conn, "pr1").await.unwrap().is_empty());
+        let c = calibration(&conn).await.unwrap();
         assert_eq!(c.total, 0);
         assert_eq!(c.accepted, 0);
         assert_eq!(c.dismissed, 0);
     }
 
-    #[test]
-    fn calibration_counts_and_rates() {
-        let conn = mem_db();
-        record_verdict(&conn, "p", &fingerprint("a", "null deref"), Verdict::Accepted, "a", "critical", "blocking", 95, "null deref", "code-reviewer").unwrap();
-        record_verdict(&conn, "p", &fingerprint("a", "rename this"), Verdict::Edited, "a", "moderate", "should-fix", 85, "rename this", "code-reviewer,silent-failure-hunter").unwrap();
-        record_verdict(&conn, "p", &fingerprint("a", "add a test"), Verdict::Dismissed, "a", "minor", "nit", 80, "add a test", "").unwrap();
-        let c = calibration(&conn).unwrap();
+    #[tokio::test]
+    async fn calibration_counts_and_rates() {
+        let conn = mem_db().await;
+        record_verdict(&conn, "p", &fingerprint("a", "null deref"), Verdict::Accepted, "a", "critical", "blocking", 95, "null deref", "code-reviewer").await.unwrap();
+        record_verdict(&conn, "p", &fingerprint("a", "rename this"), Verdict::Edited, "a", "moderate", "should-fix", 85, "rename this", "code-reviewer,silent-failure-hunter").await.unwrap();
+        record_verdict(&conn, "p", &fingerprint("a", "add a test"), Verdict::Dismissed, "a", "minor", "nit", 80, "add a test", "").await.unwrap();
+        let c = calibration(&conn).await.unwrap();
         assert_eq!(c.total, 3);
         assert_eq!(c.accepted, 1);
         assert_eq!(c.edited, 1);
@@ -422,11 +441,11 @@ mod tests {
         assert!(c.by_specialist.iter().any(|b| b.label == "unattributed"));
     }
 
-    #[test]
-    fn last_iteration_round_trips() {
-        let conn = mem_db();
-        assert_eq!(get_last_reviewed_iteration(&conn, "pr1"), None);
-        set_last_reviewed_iteration(&conn, "pr1", 4).unwrap();
-        assert_eq!(get_last_reviewed_iteration(&conn, "pr1"), Some(4));
+    #[tokio::test]
+    async fn last_iteration_round_trips() {
+        let conn = mem_db().await;
+        assert_eq!(get_last_reviewed_iteration(&conn, "pr1").await, None);
+        set_last_reviewed_iteration(&conn, "pr1", 4).await.unwrap();
+        assert_eq!(get_last_reviewed_iteration(&conn, "pr1").await, Some(4));
     }
 }

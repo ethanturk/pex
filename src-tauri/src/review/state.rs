@@ -95,27 +95,22 @@ impl ReviewState {
 }
 
 /// Save review state to SQLite.
-pub fn save_state(conn: &rusqlite::Connection, state: &ReviewState) -> Result<(), AppError> {
+pub async fn save_state(conn: &libsql::Connection, state: &ReviewState) -> Result<(), AppError> {
     let json = serde_json::to_string(state)
         .map_err(|e| AppError::Ai(format!("Failed to serialize review state: {}", e)))?;
 
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES ('review_state', ?1)",
-        rusqlite::params![json],
-    )?;
+        libsql::params![json],
+    )
+    .await?;
 
     Ok(())
 }
 
 /// Load review state from SQLite (returns None if no saved state).
-pub fn load_state(conn: &rusqlite::Connection) -> Result<Option<ReviewState>, AppError> {
-    let json: Option<String> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = 'review_state'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
+pub async fn load_state(conn: &libsql::Connection) -> Result<Option<ReviewState>, AppError> {
+    let json: Option<String> = crate::cache::get_setting(conn, "review_state").await?;
 
     match json {
         Some(j) => match serde_json::from_str::<ReviewState>(&j) {
@@ -124,14 +119,14 @@ pub fn load_state(conn: &rusqlite::Connection) -> Result<Option<ReviewState>, Ap
             // e.g. its findings predate confidence scoring. Discard it so the
             // next run starts fresh rather than resuming half-old data.
             Ok(state) if state.schema_version < CURRENT_SCHEMA_VERSION => {
-                let _ = clear_state(conn);
+                let _ = clear_state(conn).await;
                 Ok(None)
             }
             Ok(state) => Ok(Some(state)),
             // Schema drift that fails to parse outright: discard rather than
             // erroring out so the user can start a fresh review.
             Err(_) => {
-                let _ = clear_state(conn);
+                let _ = clear_state(conn).await;
                 Ok(None)
             }
         },
@@ -140,8 +135,9 @@ pub fn load_state(conn: &rusqlite::Connection) -> Result<Option<ReviewState>, Ap
 }
 
 /// Clear saved review state.
-pub fn clear_state(conn: &rusqlite::Connection) -> Result<(), AppError> {
-    conn.execute("DELETE FROM settings WHERE key = 'review_state'", [])?;
+pub async fn clear_state(conn: &libsql::Connection) -> Result<(), AppError> {
+    conn.execute("DELETE FROM settings WHERE key = 'review_state'", ())
+        .await?;
     Ok(())
 }
 

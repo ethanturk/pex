@@ -12,14 +12,12 @@ use tauri::{Emitter, State};
 
 const DEFAULT_DIFF_FETCH_CONCURRENCY: usize = 6;
 
-fn read_diff_fetch_concurrency(db: &std::sync::Mutex<rusqlite::Connection>) -> usize {
-    match db.lock() {
-        Ok(c) => {
-            crate::ai::read_hunk_concurrency(&c).unwrap_or(DEFAULT_DIFF_FETCH_CONCURRENCY as u32)
-        }
-        Err(_) => DEFAULT_DIFF_FETCH_CONCURRENCY as u32,
-    }
-    .max(1) as usize
+async fn read_diff_fetch_concurrency(store: &crate::db::Store) -> usize {
+    let conn = store.conn();
+    crate::ai::read_hunk_concurrency(&conn)
+        .await
+        .unwrap_or(DEFAULT_DIFF_FETCH_CONCURRENCY as u32)
+        .max(1) as usize
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -98,12 +96,12 @@ async fn incremental_paths(
     iteration: i32,
     all_paths: Vec<String>,
 ) -> Vec<String> {
-    let (enabled, last) = match state.db.lock() {
-        Ok(db) => (
-            crate::ai::read_incremental_review(&db).unwrap_or(false),
-            crate::review::feedback::get_last_reviewed_iteration(&db, pr_key),
-        ),
-        Err(_) => (false, None),
+    let (enabled, last) = {
+        let conn = state.db.conn();
+        (
+            crate::ai::read_incremental_review(&conn).await.unwrap_or(false),
+            crate::review::feedback::get_last_reviewed_iteration(&conn, pr_key).await,
+        )
     };
     if !enabled {
         return all_paths;
@@ -135,23 +133,23 @@ async fn incremental_paths(
 
 /// Persist the iteration we just reviewed so the next incremental run knows the
 /// baseline. Best-effort: a failure here only means the next run is non-incremental.
-fn remember_reviewed_iteration(state: &AppState, pr_key: &str, iteration: i32) {
-    if let Ok(db) = state.db.lock() {
-        let _ = crate::review::feedback::set_last_reviewed_iteration(&db, pr_key, iteration);
-    }
+async fn remember_reviewed_iteration(state: &AppState, pr_key: &str, iteration: i32) {
+    let conn = state.db.conn();
+    let _ = crate::review::feedback::set_last_reviewed_iteration(&conn, pr_key, iteration).await;
 }
 
 /// Build the diagnostics sink for a run: a JSONL trace when `ai_diagnostics` is
 /// enabled, otherwise a no-op. The run id ties the trace to the PR and a
 /// timestamp so successive runs don't collide.
-fn make_diagnostics(state: &AppState, pr_key: &str) -> crate::review::diagnostics::Diagnostics {
+async fn make_diagnostics(
+    state: &AppState,
+    pr_key: &str,
+) -> crate::review::diagnostics::Diagnostics {
     use crate::review::diagnostics::Diagnostics;
-    let enabled = state
-        .db
-        .lock()
-        .ok()
-        .and_then(|db| crate::ai::read_ai_diagnostics(&db).ok())
-        .unwrap_or(false);
+    let enabled = {
+        let conn = state.db.conn();
+        crate::ai::read_ai_diagnostics(&conn).await.unwrap_or(false)
+    };
     if !enabled {
         return Diagnostics::disabled();
     }
@@ -327,7 +325,7 @@ async fn prepare_review(
         pr_id,
         iteration,
         candidate_paths,
-        read_diff_fetch_concurrency(&state.db),
+        read_diff_fetch_concurrency(&state.db).await,
         emit_skips,
     )
     .await;
@@ -637,7 +635,7 @@ pub async fn start_review(
     };
 
     let pr_key = format!("{}/{}/{}/{}", org_url, project_id, repo_id, pr_id);
-    let diag = make_diagnostics(&state, &pr_key);
+    let diag = make_diagnostics(&state, &pr_key).await;
     let prepared = prepare_review(
         &app,
         &state,
@@ -674,12 +672,14 @@ pub async fn start_review(
     state.review_cancel.store(false, Ordering::SeqCst);
     let cancel = state.review_cancel.clone();
 
-    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel, diag)
+    // Run review — the engine handles all the streaming
+    let conn = state.db.conn();
+    let output = engine::run_review(app.clone(), provider, input, &conn, cancel, diag)
         .await
         .map_err(|e| e.to_string())?;
 
     // Record the baseline for the next incremental run.
-    remember_reviewed_iteration(&state, &pr_key, reviewed_iteration);
+    remember_reviewed_iteration(&state, &pr_key, reviewed_iteration).await;
 
     let _ = app.emit(
         "review-done",
@@ -726,7 +726,7 @@ pub async fn start_review_post(
     };
 
     let pr_key = format!("{}/{}/{}/{}", org_url, project_id, repo_id, pr_id);
-    let diag = make_diagnostics(&state, &pr_key);
+    let diag = make_diagnostics(&state, &pr_key).await;
     let prepared = prepare_review(
         &app,
         &state,
@@ -762,12 +762,13 @@ pub async fn start_review_post(
 
     state.review_cancel.store(false, Ordering::SeqCst);
     let cancel = state.review_cancel.clone();
-    let output = engine::run_review(app.clone(), provider, input, &state.db, cancel, diag)
+    let conn = state.db.conn();
+    let output = engine::run_review(app.clone(), provider, input, &conn, cancel, diag)
         .await
         .map_err(|e| e.to_string())?;
 
     // Record the baseline for the next incremental run.
-    remember_reviewed_iteration(&state, &pr_key, reviewed_iteration);
+    remember_reviewed_iteration(&state, &pr_key, reviewed_iteration).await;
 
     // Post to ADO
     let _ = app.emit(
@@ -793,8 +794,10 @@ pub async fn start_review_post(
     // enabled auto-vote, cast a "wait for author" vote so the PR can't be
     // approved out from under an unaddressed blocker.
     let auto_vote = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        crate::ai::read_auto_vote_on_blocking(&db).unwrap_or(false)
+        let conn = state.db.conn();
+        crate::ai::read_auto_vote_on_blocking(&conn)
+            .await
+            .unwrap_or(false)
     };
     let has_blocking = output
         .findings
@@ -824,8 +827,10 @@ pub async fn start_review_post(
 
     // Clear saved state
     {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        crate::review::state::clear_state(&db).map_err(|e: crate::AppError| e.to_string())?;
+        let conn = state.db.conn();
+        crate::review::state::clear_state(&conn)
+            .await
+            .map_err(|e: crate::AppError| e.to_string())?;
     }
 
     Ok(())
@@ -836,8 +841,10 @@ pub async fn start_review_post(
 #[tauri::command]
 pub async fn cancel_review(state: State<'_, AppState>) -> Result<(), String> {
     state.review_cancel.store(true, Ordering::SeqCst);
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::review::state::clear_state(&db).map_err(|e: crate::AppError| e.to_string())
+    let conn = state.db.conn();
+    crate::review::state::clear_state(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())
 }
 
 /// Check if there's a saved review state that can be resumed.
@@ -845,11 +852,13 @@ pub async fn cancel_review(state: State<'_, AppState>) -> Result<(), String> {
 pub async fn get_saved_review(
     state: State<'_, AppState>,
 ) -> Result<Option<crate::review::state::ReviewState>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.conn();
     let saved =
-        crate::review::state::load_state(&db).map_err(|e: crate::AppError| e.to_string())?;
+        crate::review::state::load_state(&conn).await.map_err(|e: crate::AppError| e.to_string())?;
     if saved.as_ref().map(|s| s.is_done()).unwrap_or(false) {
-        crate::review::state::clear_state(&db).map_err(|e: crate::AppError| e.to_string())?;
+        crate::review::state::clear_state(&conn)
+            .await
+            .map_err(|e: crate::AppError| e.to_string())?;
         return Ok(None);
     }
     Ok(saved)
@@ -858,6 +867,8 @@ pub async fn get_saved_review(
 /// Clear any saved review state.
 #[tauri::command]
 pub async fn clear_saved_review(state: State<'_, AppState>) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::review::state::clear_state(&db).map_err(|e: crate::AppError| e.to_string())
+    let conn = state.db.conn();
+    crate::review::state::clear_state(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())
 }

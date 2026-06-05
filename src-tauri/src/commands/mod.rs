@@ -6,6 +6,7 @@ pub mod feedback;
 pub mod files;
 pub mod pr;
 pub mod review;
+pub mod sync;
 
 // Re-export individual commands for use in lib.rs
 pub use ai::*;
@@ -16,3 +17,4 @@ pub use feedback::*;
 pub use files::*;
 pub use pr::*;
 pub use review::*;
+pub use sync::*;

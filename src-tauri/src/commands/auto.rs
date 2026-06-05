@@ -36,19 +36,18 @@ pub async fn auto_review_candidates(
     repo_id: String,
     prs: Vec<PrIteration>,
 ) -> Result<Vec<i64>, String> {
-    let enabled = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        crate::ai::read_auto_review(&db).map_err(|e: crate::AppError| e.to_string())?
-    };
+    let conn = state.db.conn();
+    let enabled = crate::ai::read_auto_review(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
     if !enabled {
         return Ok(Vec::new());
     }
     let client = get_client(&state)?;
-    let db = state.db.lock().map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for pr in prs {
         let key = pr_key(&client.org_url(), &project_id, &repo_id, pr.pr_id);
-        let last = feedback::get_last_reviewed_iteration(&db, &key);
+        let last = feedback::get_last_reviewed_iteration(&conn, &key).await;
         if should_auto_review(true, last, pr.iteration_count) {
             out.push(pr.pr_id);
         }
@@ -68,14 +67,15 @@ pub async fn auto_post_review_findings(
     pr_id: i64,
     findings: Vec<Finding>,
 ) -> Result<usize, String> {
-    let (enabled, floor) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        (
-            crate::ai::read_auto_post_blocking(&db).map_err(|e: crate::AppError| e.to_string())?,
-            crate::ai::read_auto_post_confidence(&db)
-                .map_err(|e: crate::AppError| e.to_string())?,
-        )
-    };
+    let conn = state.db.conn();
+    let (enabled, floor) = (
+        crate::ai::read_auto_post_blocking(&conn)
+            .await
+            .map_err(|e: crate::AppError| e.to_string())?,
+        crate::ai::read_auto_post_confidence(&conn)
+            .await
+            .map_err(|e: crate::AppError| e.to_string())?,
+    );
     if !enabled {
         return Ok(0);
     }
@@ -95,21 +95,20 @@ pub async fn auto_post_review_findings(
         posted += 1;
         // Auto-posting is an acceptance; record it so calibration sees it and it
         // isn't re-flagged as a fresh candidate next run.
-        if let Ok(db) = state.db.lock() {
-            let fp = feedback::fingerprint(&finding.file_path, &finding.comment);
-            let _ = feedback::record_verdict(
-                &db,
-                &key,
-                &fp,
-                Verdict::Accepted,
-                &finding.file_path,
-                severity_str(finding.severity),
-                tier_str(finding.tier),
-                finding.confidence,
-                &finding.comment,
-                &finding.sources.join(","),
-            );
-        }
+        let fp = feedback::fingerprint(&finding.file_path, &finding.comment);
+        let _ = feedback::record_verdict(
+            &conn,
+            &key,
+            &fp,
+            Verdict::Accepted,
+            &finding.file_path,
+            severity_str(finding.severity),
+            tier_str(finding.tier),
+            finding.confidence,
+            &finding.comment,
+            &finding.sources.join(","),
+        )
+        .await;
     }
     Ok(posted)
 }

@@ -25,12 +25,12 @@ struct CachedModels {
 /// Return the cached models for the currently-configured provider+endpoint,
 /// or `None` if there is no cache, the cache is stale (different provider /
 /// endpoint), or provider settings aren't configured.
-pub fn get_cached(conn: &rusqlite::Connection) -> Result<Option<Vec<String>>, AppError> {
-    let (default_provider_id, providers) = crate::ai::read_ai_provider_configs(conn)?;
+pub async fn get_cached(conn: &libsql::Connection) -> Result<Option<Vec<String>>, AppError> {
+    let (default_provider_id, providers) = crate::ai::read_ai_provider_configs(conn).await?;
     let Some(default_provider) = providers.iter().find(|p| p.id == default_provider_id) else {
         return Ok(None);
     };
-    let raw = crate::cache::get_setting(conn, CACHE_KEY)?;
+    let raw = crate::cache::get_setting(conn, CACHE_KEY).await?;
 
     let Some(raw) = raw else {
         return Ok(None);
@@ -40,7 +40,7 @@ pub fn get_cached(conn: &rusqlite::Connection) -> Result<Option<Vec<String>>, Ap
         Ok(c) => c,
         // Stale schema — drop it so we re-fetch fresh next call.
         Err(_) => {
-            let _ = crate::cache::delete_setting(conn, CACHE_KEY);
+            let _ = crate::cache::delete_setting(conn, CACHE_KEY).await;
             return Ok(None);
         }
     };
@@ -59,16 +59,12 @@ pub fn get_cached(conn: &rusqlite::Connection) -> Result<Option<Vec<String>>, Ap
 
 /// Fetch the live model list from the provider's /models endpoint and persist
 /// it to the cache. Requires AI settings to be fully configured.
-pub async fn fetch_and_cache(
-    conn_mutex: &std::sync::Mutex<rusqlite::Connection>,
-) -> Result<Vec<String>, AppError> {
-    // Read the settings we need under a short lock, then drop the guard before
-    // doing network I/O so other DB consumers aren't blocked on the request.
+pub async fn fetch_and_cache(conn: &libsql::Connection) -> Result<Vec<String>, AppError> {
+    // libsql connections are internally synchronized and cheap to clone, so
+    // there's no exclusive lock to hold across the network call — read the
+    // settings, do the fetch, then persist.
     let (provider_id, kind, endpoint, api_key) = {
-        let conn = conn_mutex
-            .lock()
-            .map_err(|_| AppError::Ai("Failed to acquire DB lock".to_string()))?;
-        let (default_provider_id, providers) = crate::ai::read_ai_provider_configs(&conn)?;
+        let (default_provider_id, providers) = crate::ai::read_ai_provider_configs(conn).await?;
         let provider = providers
             .iter()
             .find(|p| p.id == default_provider_id)
@@ -107,12 +103,7 @@ pub async fn fetch_and_cache(
         models: models.clone(),
     })
     .map_err(|e| AppError::Ai(format!("Failed to serialize models cache: {}", e)))?;
-    {
-        let conn = conn_mutex
-            .lock()
-            .map_err(|_| AppError::Ai("Failed to acquire DB lock".to_string()))?;
-        crate::cache::set_setting(&conn, CACHE_KEY, &payload)?;
-    }
+    crate::cache::set_setting(conn, CACHE_KEY, &payload).await?;
 
     Ok(models)
 }
