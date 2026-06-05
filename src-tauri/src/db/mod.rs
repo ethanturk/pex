@@ -217,24 +217,48 @@ async fn open_database(cfg: Option<SyncConfig>) -> Result<(Database, Connection,
         Some(cfg) if cfg.enabled && !cfg.url.is_empty() => {
             // The libsql sync engine only accepts two on-disk states: both
             // `pex.db` and its `pex.db-info` sidecar present (resume), or neither
-            // present (bootstrap from remote). The first time sync is enabled we
-            // have a plain `pex.db` (from `new_local`) but no `-info`, which it
-            // rejects. Adopt the existing data instead of losing it: snapshot the
-            // local rows, move the plain files aside so the synced DB can
-            // bootstrap from the (possibly empty) remote, then re-import — the
-            // imported rows push up on the next sync.
+            // present (bootstrap from remote).
             let info_path = format!("{path}-info");
-            let needs_adopt = std::path::Path::new(&path).exists()
-                && !std::path::Path::new(&info_path).exists();
+            let db_exists = std::path::Path::new(&path).exists();
+            let info_exists = std::path::Path::new(&info_path).exists();
 
-            if !needs_adopt {
+            // Resume: a previously-synced replica (its `-info` sidecar exists).
+            // Its local generation already tracks the remote, so just open it and
+            // don't force a network round-trip — reads/writes must work offline.
+            if info_exists {
                 let db = build_synced_database(&path, cfg.url.clone(), cfg.token.clone()).await?;
                 let conn = db.connect()?;
                 return Ok((db, conn, true));
             }
 
-            // Read all rows out of the existing local DB, then drop the handle so
-            // the file can be moved.
+            // First-time sync. The local replica MUST pull the remote's history
+            // BEFORE any local write — otherwise those writes form a divergent
+            // generation-1 WAL that the server rejects on push ("sync error:
+            // server returned a conflict: sent=1, got=N"). libsql's offline
+            // SyncedDatabase does not bootstrap on build, so we pull explicitly
+            // before the schema/init writes (which happen in `reconfigure` for
+            // the clean case, and in `adopt_into_synced` for the adopt case).
+            if !db_exists {
+                // Clean bootstrap straight from the remote.
+                let db = build_synced_database(&path, cfg.url.clone(), cfg.token.clone()).await?;
+                let conn = db.connect()?;
+                if let Err(e) = db.sync().await {
+                    // Remove the half-bootstrapped artifacts so a retry starts
+                    // clean — a stale `-info` would send the next open down the
+                    // resume path above onto a generation-1 replica and conflict
+                    // again.
+                    drop(conn);
+                    drop(db);
+                    clear_synced_files(&path);
+                    return Err(AppError::Db(e));
+                }
+                return Ok((db, conn, true));
+            }
+
+            // Adopt an existing local-only DB (plain `pex.db`, no `-info`, from
+            // `new_local`): snapshot its rows, move the plain files aside so the
+            // synced DB can bootstrap clean from the remote, pull, then re-import
+            // — the imported rows push up on the next sync.
             let snapshot = {
                 let db = Builder::new_local(&path).build().await?;
                 let conn = db.connect()?;
@@ -249,9 +273,9 @@ async fn open_database(cfg: Option<SyncConfig>) -> Result<(Database, Connection,
                 }
                 Err(e) => {
                     // Roll back so no local data is lost: remove any partial
-                    // synced artifacts and restore the original files in place.
-                    let _ = std::fs::remove_file(&info_path);
-                    let _ = std::fs::remove_file(&path);
+                    // synced artifacts (file + WAL/SHM + `-info`) and restore the
+                    // original files in place.
+                    clear_synced_files(&path);
                     unstash_local(&path, BACKUP_SUFFIX);
                     Err(e)
                 }
@@ -282,9 +306,23 @@ async fn adopt_into_synced(
 ) -> Result<(Database, Connection), AppError> {
     let db = build_synced_database(path, cfg.url.clone(), cfg.token.clone()).await?;
     let conn = db.connect()?;
+    // Pull the remote's history before writing the schema or importing rows, so
+    // those writes land on top of the remote generation instead of forming a
+    // divergent generation-1 history the server rejects on push ("conflict:
+    // sent=1, got=N").
+    db.sync().await?;
     crate::cache::init_schema(&conn).await?;
     import_snapshot(&conn, snapshot).await?;
     Ok((db, conn))
+}
+
+/// Remove a synced DB and all of its sidecars (`-wal`, `-shm`, `-info`). Used to
+/// wipe a half-bootstrapped replica so a retry starts from a clean slate.
+fn clear_synced_files(path: &str) {
+    for sidecar in DB_SIDECARS {
+        let _ = std::fs::remove_file(format!("{path}{sidecar}"));
+    }
+    let _ = std::fs::remove_file(format!("{path}-info"));
 }
 
 /// Build a libsql synced-database handle for the given remote.
