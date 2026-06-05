@@ -49,6 +49,16 @@ fi
 
 echo "==> Xcode Cloud: building Rust static library directly"
 
+# Xcode exports SDKROOT pointing at the iOS SDK. cargo build scripts that compile
+# a HOST tool (e.g. libsql-sqlite3-parser builds `lemon` for the build machine)
+# pick up that iOS sysroot via the cc crate and try to build a macOS-host binary
+# against it — clang then fails with "using sysroot for 'iPhoneOS' but targeting
+# 'MacOSX'" → "Unsupported architecture" / unknown type '__int64_t'. Drop the
+# inherited SDK env so cc resolves the right SDK per target via xcrun: macOS for
+# host build-script tools, iOS for the --target build. (This branch never uses
+# SDKROOT itself — it derives the Rust target from PLATFORM_DISPLAY_NAME/ARCHS.)
+unset SDKROOT
+
 retry() {
   attempts=1
   max_attempts=5
