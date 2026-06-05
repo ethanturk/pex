@@ -3,12 +3,14 @@ import {
   activeReviewPrId,
   reviewRuns,
   updateReviewRun,
+  reconcilePersistedReviews,
   type PRReviewRun,
   type ReviewProgress,
 } from "@/lib/signals";
 import {
   startReview,
   startReviewPost,
+  listCompletedReviews,
   type ReviewMode,
   type ReviewOutput,
 } from "@/lib/api";
@@ -21,6 +23,14 @@ let initialized = false;
 export async function initReviewBus() {
   if (initialized) return;
   initialized = true;
+
+  // A sync pull may have brought in review rows another device changed (e.g. a
+  // review marked completed on another device). Re-read the persisted reviews
+  // and reconcile them into `reviewRuns` so the badge/Review tab update without
+  // a restart.
+  await listen("db-synced", () => {
+    listCompletedReviews().then(reconcilePersistedReviews).catch(() => {});
+  });
 
   await listen<ReviewProgress>("review-progress", (e) => {
     const id = activeReviewPrId.value;

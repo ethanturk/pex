@@ -76,6 +76,9 @@ struct Inner {
 pub struct Store {
     inner: Arc<RwLock<Inner>>,
     status: Arc<RwLock<SyncStatus>>,
+    /// Set once after Tauri starts so `sync_now` can notify the UI to re-read
+    /// pulled rows. Optional: syncs that run before setup just skip the emit.
+    app: Arc<std::sync::OnceLock<tauri::AppHandle>>,
 }
 
 impl Store {
@@ -118,6 +121,7 @@ impl Store {
                 synced,
             })),
             status: Arc::new(RwLock::new(status)),
+            app: Arc::new(std::sync::OnceLock::new()),
         };
 
         // Initial pull so a fresh device adopts existing remote state up front.
@@ -144,6 +148,12 @@ impl Store {
         self.status.read().expect("status lock poisoned").clone()
     }
 
+    /// Give the store the Tauri handle (once, after setup) so `sync_now` can
+    /// notify the frontend when a pull brings in new rows.
+    pub fn attach_app_handle(&self, app: tauri::AppHandle) {
+        let _ = self.app.set(app);
+    }
+
     /// Reconcile with the remote now. No-op (Ok) when sync is disabled. Updates
     /// the status snapshot with timing, frame count, and any error.
     pub async fn sync_now(&self) -> Result<(), AppError> {
@@ -168,7 +178,18 @@ impl Store {
             Ok(replicated) => {
                 s.last_sync = Some(now_rfc3339());
                 s.last_error = None;
-                s.frames_synced = Some(replicated.frames_synced() as u64);
+                let frames = replicated.frames_synced() as u64;
+                s.frames_synced = Some(frames);
+                drop(s);
+                // A pull may have brought in rows another device wrote (e.g. a
+                // review marked completed). Tell the UI to re-read so it doesn't
+                // keep showing stale in-memory state until the next restart.
+                if frames > 0 {
+                    if let Some(app) = self.app.get() {
+                        use tauri::Emitter;
+                        let _ = app.emit("db-synced", frames);
+                    }
+                }
                 Ok(())
             }
             Err(e) => {

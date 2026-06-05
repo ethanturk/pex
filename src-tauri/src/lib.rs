@@ -72,6 +72,14 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Let the store emit "db-synced" to the UI after a pull brings in
+            // rows from another device.
+            {
+                use tauri::Manager;
+                app.state::<AppState>()
+                    .db
+                    .attach_app_handle(app.handle().clone());
+            }
             #[cfg(not(any(target_os = "linux", mobile)))]
             {
                 let window = app.get_webview_window("main").expect("no main window");

@@ -351,6 +351,39 @@ export function updateReviewRun(prId: number, patch: Partial<PRReviewRun> | ((pr
   reviewRuns.value = next;
 }
 
+// Reconcile persisted reviews into `reviewRuns` after a sync pull, so a status
+// another device changed (e.g. a review marked completed on the iPad) shows up
+// on this device without a restart. Updates existing non-live runs in place —
+// `hydrateReviewRun` alone won't, since it refuses to touch an existing run.
+// Live/in-flight reviews (running/posting) are always left untouched.
+export function reconcilePersistedReviews(stored: StoredReview[]) {
+  const next = new Map(reviewRuns.value);
+  let changed = false;
+  // `stored` is newest-first; if two rows share a prId (e.g. devices computed
+  // different pr_keys) the most recently updated one wins.
+  const seen = new Set<number>();
+  for (const r of stored) {
+    if (seen.has(r.prId)) continue;
+    seen.add(r.prId);
+    const prev = next.get(r.prId);
+    if (prev && (prev.status === "running" || prev.status === "posting")) continue;
+    const status: PRReviewRun["status"] = r.status === "completed" ? "posted" : "done";
+    if (prev && prev.status === status && prev.lifecycle === r.status) continue;
+    next.set(r.prId, {
+      projectId: r.projectId,
+      repoId: r.repoId,
+      prTitle: r.prTitle,
+      status,
+      progress: null,
+      output: r.output,
+      error: null,
+      lifecycle: r.status,
+    });
+    changed = true;
+  }
+  if (changed) reviewRuns.value = next;
+}
+
 // Seed `reviewRuns` from a persisted review so a finished review reappears after
 // a restart (PR-list badge + restored Review tab). Never clobbers an existing
 // run — a live/in-flight review for the same PR always wins.

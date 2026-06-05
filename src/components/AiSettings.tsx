@@ -8,6 +8,7 @@ import {
   appTextSize,
   diffTextSize,
   syncStatus,
+  reconcilePersistedReviews,
   type Theme,
   type DiffView,
   type TextSize,
@@ -31,6 +32,7 @@ import {
   enableSync,
   disableSync,
   syncNow,
+  listCompletedReviews,
   type AiProviderConfig,
   type AiPromptInfo,
   type CalibrationStats,
@@ -1587,6 +1589,10 @@ function SyncPanel({ active }: { active: boolean }) {
   const handleSyncNow = () =>
     run(async () => {
       syncStatus.value = await syncNow();
+      // Reflect any rows the pull brought in (e.g. a review another device
+      // marked completed) immediately, even if this sync reported 0 new frames
+      // because a background sync already pulled them.
+      reconcilePersistedReviews(await listCompletedReviews());
     });
 
   const enabled = status?.enabled ?? false;
