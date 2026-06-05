@@ -1,9 +1,11 @@
 use crate::ai::prompts::{resolve_prompt, PromptKey, PromptModelOverride};
-use crate::ai::{AiProvider, ChatMessage, ChatRole};
+use crate::ai::{AiProvider, ChatMessage, ChatRole, ToolCall, ToolChatMessage, ToolDefinition};
 use crate::diff::engine::extract_hunks;
 use crate::review::prompts;
+use crate::review::rules::ReviewRuleMatch;
 use crate::review::state::{self, ReviewMode, ReviewState};
 use crate::AppError;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -62,6 +64,10 @@ pub struct ReviewInput {
     /// `PromptKey::as_str`) the user chose to run. `None` runs the full set
     /// (used by resume, the eval harness, and any non-interactive caller).
     pub enabled_specialists: Option<Vec<String>>,
+    #[allow(dead_code)]
+    pub rules: HashMap<String, ReviewRuleMatch>,
+    #[allow(dead_code)]
+    pub related_files: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +214,10 @@ pub struct FileAggregateFinding {
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
     pub comment: String,
+    /// Exact current-file snippet used to relocate the inline anchor. Required
+    /// for line-level findings; file-level findings keep this null/empty.
+    #[serde(default)]
+    pub existing_code: Option<String>,
     /// New-side line(s) the adjudicator cited to justify the finding. Used by
     /// the deterministic anchor check and for logging; stripped before posting.
     #[serde(default)]
@@ -255,47 +265,243 @@ pub fn parse_file_aggregate(raw: &str) -> Result<FileAggregateResult, String> {
 }
 
 /// Deterministic, no-LLM precision guards applied to a freshly-adjudicated
-/// file aggregate:
+/// file aggregate. This sync variant is used by tests and headless callers that
+/// do not want a relocation LLM call:
 ///   1. drop findings whose `confidence` is below `threshold`;
-///   2. drop line-anchored findings whose `line_start` falls outside every
-///      reviewed hunk's new-side range — a strong hallucinated-line signal.
-/// File-level findings (`line_start == None`) are exempt from the anchor check.
-/// Returns the number of findings dropped (for logging / tests).
+///   2. for line-level findings, require `existingCode` and resolve it to a
+///      new-side line range by snippet matching hunks first, then the full file.
+/// File-level findings (`line_start == None` and `line_end == None`) are exempt
+/// from anchoring. Returns the number of findings dropped.
 pub fn apply_finding_guards(
     aggregate: &mut FileAggregateResult,
     file_path: &str,
     threshold: u8,
     hunks: &[crate::diff::engine::DiffHunk],
+    new_content: &str,
 ) -> usize {
     let before = aggregate.findings.len();
-    aggregate.findings.retain(|f| {
+    let mut kept = Vec::with_capacity(aggregate.findings.len());
+    for mut f in aggregate.findings.drain(..) {
         if f.confidence < threshold {
             eprintln!(
                 "[review] dropped finding in {} (confidence {} < threshold {})",
                 file_path, f.confidence, threshold
             );
-            return false;
+            continue;
         }
-        if let Some(line) = f.line_start {
-            if !line_in_any_hunk(line, hunks) {
-                eprintln!(
-                    "[review] dropped finding in {} (line {} outside any reviewed hunk — likely hallucinated)",
-                    file_path, line
-                );
-                return false;
-            }
+        if f.line_start.is_none() && f.line_end.is_none() {
+            kept.push(f);
+            continue;
         }
-        true
-    });
+        let Some(existing_code) = f.existing_code.as_deref().filter(|s| !s.trim().is_empty())
+        else {
+            eprintln!(
+                "[review] dropped finding in {} (missing existingCode for line-level finding)",
+                file_path
+            );
+            continue;
+        };
+        if let Some(anchor) = crate::review::anchoring::resolve_existing_code(
+            existing_code,
+            new_content,
+            hunks,
+            f.line_start,
+        ) {
+            f.line_start = Some(anchor.line_start);
+            f.line_end = Some(anchor.line_end);
+            kept.push(f);
+        } else {
+            eprintln!(
+                "[review] dropped finding in {} (existingCode could not be resolved)",
+                file_path
+            );
+        }
+    }
+    aggregate.findings = kept;
     before - aggregate.findings.len()
 }
 
-/// True if `line` (1-based, new-side) falls within any hunk's new-side range.
-/// Hunks with no new-side lines (pure deletions, `new_count == 0`) match nothing.
-fn line_in_any_hunk(line: usize, hunks: &[crate::diff::engine::DiffHunk]) -> bool {
-    hunks
-        .iter()
-        .any(|h| h.new_count > 0 && line >= h.new_start && line < h.new_start + h.new_count)
+#[allow(clippy::too_many_arguments)]
+async fn apply_finding_guards_with_relocation(
+    provider: &Arc<dyn AiProvider>,
+    aggregate: &mut FileAggregateResult,
+    file_path: &str,
+    threshold: u8,
+    hunks: &[crate::diff::engine::DiffHunk],
+    new_content: &str,
+    retry_count: u32,
+    diag: &crate::review::diagnostics::Diagnostics,
+) -> usize {
+    let before = aggregate.findings.len();
+    let mut kept = Vec::with_capacity(aggregate.findings.len());
+
+    for mut f in aggregate.findings.drain(..) {
+        if f.confidence < threshold {
+            emit_anchor_drop(diag, file_path, &f, "below_threshold", None);
+            continue;
+        }
+        if f.line_start.is_none() && f.line_end.is_none() {
+            kept.push(f);
+            continue;
+        }
+        if f.line_start.is_none() || f.line_end.is_none() {
+            emit_anchor_drop(diag, file_path, &f, "invalid_line_range", None);
+            continue;
+        }
+        let Some(existing_code) = f.existing_code.as_deref().filter(|s| !s.trim().is_empty())
+        else {
+            emit_anchor_drop(diag, file_path, &f, "missing_existing_code", None);
+            continue;
+        };
+
+        if let Some(anchor) = crate::review::anchoring::resolve_existing_code(
+            existing_code,
+            new_content,
+            hunks,
+            f.line_start,
+        ) {
+            let original_line = f.line_start;
+            f.line_start = Some(anchor.line_start);
+            f.line_end = Some(anchor.line_end);
+            if diag.is_enabled() {
+                diag.event(
+                    "anchor_resolved",
+                    serde_json::json!({
+                        "filePath": file_path,
+                        "originalLineStart": original_line,
+                        "resolvedLineStart": f.line_start,
+                        "resolvedLineEnd": f.line_end,
+                        "source": format!("{:?}", anchor.source),
+                        "normalized": anchor.normalized,
+                        "confidence": f.confidence,
+                        "comment": f.comment,
+                    }),
+                );
+            }
+            kept.push(f);
+            continue;
+        }
+
+        let started = std::time::Instant::now();
+        match relocate_anchor(provider, file_path, new_content, &f, retry_count).await {
+            Ok(Some(snippet)) => {
+                if let Some(anchor) = crate::review::anchoring::resolve_existing_code(
+                    &snippet,
+                    new_content,
+                    hunks,
+                    f.line_start,
+                ) {
+                    let original_line = f.line_start;
+                    f.existing_code = Some(snippet);
+                    f.line_start = Some(anchor.line_start);
+                    f.line_end = Some(anchor.line_end);
+                    if diag.is_enabled() {
+                        diag.event(
+                            "anchor_relocated",
+                            serde_json::json!({
+                                "filePath": file_path,
+                                "originalLineStart": original_line,
+                                "resolvedLineStart": f.line_start,
+                                "resolvedLineEnd": f.line_end,
+                                "source": format!("{:?}", anchor.source),
+                                "normalized": anchor.normalized,
+                                "latencyMs": started.elapsed().as_millis() as u64,
+                                "confidence": f.confidence,
+                                "comment": f.comment,
+                            }),
+                        );
+                    }
+                    kept.push(f);
+                } else {
+                    emit_anchor_drop(
+                        diag,
+                        file_path,
+                        &f,
+                        "relocation_unresolved",
+                        Some(started.elapsed()),
+                    );
+                }
+            }
+            Ok(None) => emit_anchor_drop(
+                diag,
+                file_path,
+                &f,
+                "relocation_empty",
+                Some(started.elapsed()),
+            ),
+            Err(e) => emit_anchor_drop(
+                diag,
+                file_path,
+                &f,
+                &format!("relocation_failed: {}", e),
+                Some(started.elapsed()),
+            ),
+        }
+    }
+
+    aggregate.findings = kept;
+    before - aggregate.findings.len()
+}
+
+fn emit_anchor_drop(
+    diag: &crate::review::diagnostics::Diagnostics,
+    file_path: &str,
+    finding: &FileAggregateFinding,
+    reason: &str,
+    latency: Option<std::time::Duration>,
+) {
+    if !diag.is_enabled() {
+        return;
+    }
+    let mut payload = serde_json::json!({
+        "filePath": file_path,
+        "severity": finding.severity,
+        "confidence": finding.confidence,
+        "lineStart": finding.line_start,
+        "lineEnd": finding.line_end,
+        "sources": &finding.sources,
+        "comment": &finding.comment,
+        "reason": reason,
+    });
+    if let (Some(obj), Some(latency)) = (payload.as_object_mut(), latency) {
+        obj.insert(
+            "latencyMs".to_string(),
+            serde_json::json!(latency.as_millis() as u64),
+        );
+    }
+    diag.event("anchor_drop", payload);
+}
+
+async fn relocate_anchor(
+    provider: &Arc<dyn AiProvider>,
+    file_path: &str,
+    new_content: &str,
+    finding: &FileAggregateFinding,
+    retry_count: u32,
+) -> Result<Option<String>, AppError> {
+    let messages = vec![
+        ChatMessage {
+            role: ChatRole::System,
+            content: prompts::ANCHOR_RELOCATION_SYSTEM.to_string(),
+        },
+        ChatMessage {
+            role: ChatRole::User,
+            content: prompts::anchor_relocation_user_message(
+                file_path,
+                &finding.comment,
+                finding.evidence.as_deref(),
+                finding.line_start,
+                new_content,
+            ),
+        },
+    ];
+    let raw = chat_with_retries(provider, &messages, retry_count).await?;
+    let snippet = crate::review::anchoring::extract_fenced_snippet(&raw);
+    if snippet.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(snippet))
+    }
 }
 
 /// The canonical specialist labels (the closed vocabulary the adjudicator may
@@ -322,6 +528,399 @@ pub fn normalize_finding_sources(aggregate: &mut FileAggregateResult) {
             }
         }
         f.sources = cleaned;
+    }
+}
+
+fn hunk_changed_lines(hunks: &[crate::diff::engine::DiffHunk]) -> usize {
+    hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .filter(|line| line.kind == "+")
+        .count()
+}
+
+fn format_rule_context(rule: &ReviewRuleMatch) -> String {
+    format!("{}:\n{}", rule.title, rule.rule)
+}
+
+fn format_related_context(related: &[String]) -> Option<String> {
+    if related.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Related changed files for context only: {}",
+            related.join(", ")
+        ))
+    }
+}
+
+fn build_review_guidance(
+    standards: &str,
+    rule_context: Option<&str>,
+    related_context: Option<&str>,
+    file_review_context: Option<&str>,
+) -> String {
+    let mut sections = Vec::new();
+    if !standards.trim().is_empty() {
+        sections.push(format!("Project standards:\n{}", standards.trim()));
+    }
+    if let Some(rule_context) = rule_context.filter(|s| !s.trim().is_empty()) {
+        sections.push(format!(
+            "Path-specific review checklist:\n{}",
+            rule_context.trim()
+        ));
+    }
+    if let Some(related_context) = related_context.filter(|s| !s.trim().is_empty()) {
+        sections.push(related_context.trim().to_string());
+    }
+    if let Some(file_review_context) = file_review_context.filter(|s| !s.trim().is_empty()) {
+        sections.push(format!(
+            "Additional file context gathered before review:\n{}",
+            file_review_context.trim()
+        ));
+    }
+    sections.join("\n\n")
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_file_review_context(
+    provider: &Arc<dyn AiProvider>,
+    file: &FileInput,
+    hunks: &[crate::diff::engine::DiffHunk],
+    file_entries: &[(FileInput, Vec<crate::diff::engine::DiffHunk>)],
+    related_files: &[String],
+    rule_context: Option<&str>,
+    _retry_count: u32,
+    diag: &crate::review::diagnostics::Diagnostics,
+) -> Result<Option<String>, AppError> {
+    let changed_files: HashMap<String, (&FileInput, &[crate::diff::engine::DiffHunk])> =
+        file_entries
+            .iter()
+            .map(|(input, hunks)| (input.path.clone(), (input, hunks.as_slice())))
+            .collect();
+    let mut messages = vec![
+        ToolChatMessage::Message(ChatMessage {
+            role: ChatRole::System,
+            content: "You are planning a bounded code review context pass. Use tools only when they help locate changed-file context for this file. Finish by calling task_done with a concise context summary, or answer with that summary if no tools are needed.".to_string(),
+        }),
+        ToolChatMessage::Message(ChatMessage {
+            role: ChatRole::User,
+            content: file_context_plan_prompt(file, hunks, related_files, rule_context),
+        }),
+    ];
+    let tools = review_tool_definitions();
+    let mut last_content = String::new();
+
+    for round in 0..4 {
+        let started = std::time::Instant::now();
+        let response = match provider.chat_with_tools(&messages, &tools, None).await {
+            Ok(response) => response,
+            Err(e) => {
+                if diag.is_enabled() {
+                    diag.event(
+                        "file_context_plan",
+                        serde_json::json!({
+                            "filePath": file.path,
+                            "round": round,
+                            "latencyMs": started.elapsed().as_millis() as u64,
+                            "error": e.to_string(),
+                        }),
+                    );
+                }
+                return Ok(None);
+            }
+        };
+        if diag.is_enabled() {
+            diag.event(
+                "file_context_plan",
+                serde_json::json!({
+                    "filePath": file.path,
+                    "round": round,
+                    "latencyMs": started.elapsed().as_millis() as u64,
+                    "content": &response.content,
+                    "toolCalls": response.tool_calls.iter().map(|c| &c.name).collect::<Vec<_>>(),
+                }),
+            );
+        }
+        last_content = response.content.clone();
+        if response.tool_calls.is_empty() {
+            return Ok(non_empty_context(&last_content));
+        }
+        messages.push(ToolChatMessage::AssistantToolCalls {
+            content: if response.content.trim().is_empty() {
+                None
+            } else {
+                Some(response.content)
+            },
+            tool_calls: response.tool_calls.clone(),
+        });
+
+        let mut done_summary: Option<String> = None;
+        for call in response.tool_calls {
+            let tool_started = std::time::Instant::now();
+            let result = execute_review_tool(&call, &changed_files);
+            if diag.is_enabled() {
+                let (content_for_diag, error_for_diag) = match &result {
+                    Ok(executed) => (Some(cap_tool_output(&executed.content, 600)), None),
+                    Err(e) => (None, Some(e.to_string())),
+                };
+                diag.event(
+                    "tool_call",
+                    serde_json::json!({
+                        "filePath": file.path,
+                        "name": &call.name,
+                        "arguments": &call.arguments,
+                        "latencyMs": tool_started.elapsed().as_millis() as u64,
+                        "result": content_for_diag,
+                        "error": error_for_diag,
+                    }),
+                );
+            }
+            let content = match result {
+                Ok(executed) => {
+                    if executed.done {
+                        done_summary = non_empty_context(&executed.content);
+                    }
+                    executed.content
+                }
+                Err(e) => format!("tool error: {}", e),
+            };
+            messages.push(ToolChatMessage::ToolResult {
+                tool_call_id: call.id,
+                name: call.name,
+                content,
+            });
+        }
+        if done_summary.is_some() {
+            return Ok(done_summary);
+        }
+    }
+
+    Ok(non_empty_context(&last_content))
+}
+
+fn file_context_plan_prompt(
+    file: &FileInput,
+    hunks: &[crate::diff::engine::DiffHunk],
+    related_files: &[String],
+    rule_context: Option<&str>,
+) -> String {
+    let mut msg = format!(
+        "Review target file: `{}`\nChanged lines: {}\nHunks: {}\n",
+        file.path,
+        hunk_changed_lines(hunks),
+        hunks.len()
+    );
+    if !related_files.is_empty() {
+        msg.push_str(&format!(
+            "Related changed files: {}\n",
+            related_files.join(", ")
+        ));
+    }
+    if let Some(rule_context) = rule_context.filter(|s| !s.trim().is_empty()) {
+        msg.push_str(&format!("\nPath checklist:\n{}\n", rule_context));
+    }
+    msg.push_str(
+        "\nUse changed-file tools to gather only context likely to reduce false positives. Do not review unrelated code. Finish with task_done({\"summary\":\"...\"}).",
+    );
+    msg
+}
+
+fn review_tool_definitions() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            name: "file_read".to_string(),
+            description: "Read a bounded range from a changed file's new-side content.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "startLine": { "type": "integer", "minimum": 1 },
+                    "endLine": { "type": "integer", "minimum": 1 }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
+            name: "file_read_diff".to_string(),
+            description: "Read the structured diff hunks for a changed file.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
+            name: "file_find_changed".to_string(),
+            description: "Find changed file paths containing a substring.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } },
+                "required": ["pattern"]
+            }),
+        },
+        ToolDefinition {
+            name: "code_search_changed".to_string(),
+            description: "Search changed new-side file content for a substring.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "task_done".to_string(),
+            description: "Finish the context pass with a concise summary.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "summary": { "type": "string" } },
+                "required": ["summary"]
+            }),
+        },
+    ]
+}
+
+struct ToolExecution {
+    content: String,
+    done: bool,
+}
+
+fn execute_review_tool(
+    call: &ToolCall,
+    changed_files: &HashMap<String, (&FileInput, &[crate::diff::engine::DiffHunk])>,
+) -> Result<ToolExecution, AppError> {
+    match call.name.as_str() {
+        "file_read" => {
+            let path = tool_arg_str(&call.arguments, "path")?.trim_start_matches('/');
+            let (file, _) = changed_files
+                .get(path)
+                .ok_or_else(|| AppError::Ai(format!("changed file not found: {}", path)))?;
+            let lines: Vec<&str> = file.new_content.lines().collect();
+            let start = tool_arg_usize(&call.arguments, "startLine")
+                .unwrap_or(1)
+                .max(1);
+            let end = tool_arg_usize(&call.arguments, "endLine").unwrap_or(lines.len());
+            let start_idx = start.saturating_sub(1).min(lines.len());
+            let end_idx = end.min(lines.len());
+            let mut out = String::new();
+            for (offset, line) in lines[start_idx..end_idx].iter().enumerate() {
+                out.push_str(&format!("{}\t{}\n", start_idx + offset + 1, line));
+            }
+            Ok(ToolExecution {
+                content: cap_tool_output(&out, 8000),
+                done: false,
+            })
+        }
+        "file_read_diff" => {
+            let path = tool_arg_str(&call.arguments, "path")?.trim_start_matches('/');
+            let (_, hunks) = changed_files
+                .get(path)
+                .ok_or_else(|| AppError::Ai(format!("changed file not found: {}", path)))?;
+            Ok(ToolExecution {
+                content: cap_tool_output(&render_hunks_for_tool(hunks), 8000),
+                done: false,
+            })
+        }
+        "file_find_changed" => {
+            let pattern = tool_arg_str(&call.arguments, "pattern")?.to_ascii_lowercase();
+            let mut matches: Vec<&String> = changed_files
+                .keys()
+                .filter(|path| path.to_ascii_lowercase().contains(&pattern))
+                .collect();
+            matches.sort();
+            Ok(ToolExecution {
+                content: if matches.is_empty() {
+                    "No changed paths matched.".to_string()
+                } else {
+                    matches
+                        .into_iter()
+                        .take(50)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                },
+                done: false,
+            })
+        }
+        "code_search_changed" => {
+            let query = tool_arg_str(&call.arguments, "query")?.to_ascii_lowercase();
+            let mut out = String::new();
+            for (path, (file, _)) in changed_files {
+                for (idx, line) in file.new_content.lines().enumerate() {
+                    if line.to_ascii_lowercase().contains(&query) {
+                        out.push_str(&format!("{}:{}\t{}\n", path, idx + 1, line));
+                        if out.len() > 8000 {
+                            break;
+                        }
+                    }
+                }
+                if out.len() > 8000 {
+                    break;
+                }
+            }
+            Ok(ToolExecution {
+                content: if out.trim().is_empty() {
+                    "No changed content matched.".to_string()
+                } else {
+                    cap_tool_output(&out, 8000)
+                },
+                done: false,
+            })
+        }
+        "task_done" => Ok(ToolExecution {
+            content: tool_arg_str(&call.arguments, "summary")?.to_string(),
+            done: true,
+        }),
+        other => Err(AppError::Ai(format!("unknown review tool: {}", other))),
+    }
+}
+
+fn tool_arg_str<'a>(args: &'a serde_json::Value, key: &str) -> Result<&'a str, AppError> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::trim)
+        .ok_or_else(|| AppError::Ai(format!("missing tool argument `{}`", key)))
+}
+
+fn tool_arg_usize(args: &serde_json::Value, key: &str) -> Option<usize> {
+    args.get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|n| usize::try_from(n).ok())
+}
+
+fn render_hunks_for_tool(hunks: &[crate::diff::engine::DiffHunk]) -> String {
+    let mut out = String::new();
+    for hunk in hunks {
+        out.push_str(&format!("{}\n", hunk.header));
+        for line in &hunk.lines {
+            let line_no = line
+                .new_lineno
+                .or(line.old_lineno)
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            out.push_str(&format!("{}\t{}{}\n", line_no, line.kind, line.content));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn cap_tool_output(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_chars).collect();
+    out.push_str("\n[truncated]");
+    out
+}
+
+fn non_empty_context(content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(cap_tool_output(trimmed, 4000))
     }
 }
 
@@ -537,6 +1136,38 @@ pub async fn run_review(
         // Shared once per file: each hunk pass windows a bounded slice of this
         // for surrounding context, so we clone the Arc, not the string.
         let file_new_content = Arc::new(file.new_content.clone());
+        let rule_context = input.rules.get(&file.path).map(format_rule_context);
+        let related = input
+            .related_files
+            .get(&file.path)
+            .cloned()
+            .unwrap_or_default();
+        let related_context = format_related_context(&related);
+        let file_review_context = if input.mode == ReviewMode::Thorough
+            && (hunk_changed_lines(hunks) >= 50 || hunks.len() > 3)
+        {
+            build_file_review_context(
+                &provider,
+                file,
+                hunks,
+                &file_entries,
+                &related,
+                rule_context.as_deref(),
+                retry_count,
+                &diag,
+            )
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+        let review_guidance = build_review_guidance(
+            &input.standards,
+            rule_context.as_deref(),
+            related_context.as_deref(),
+            file_review_context.as_deref(),
+        );
 
         if state.current_file_hunks == 0 {
             state.current_file_hunks = total_hunks;
@@ -572,7 +1203,7 @@ pub async fn run_review(
                 let provider = provider.clone();
                 let hunk = hunks[hunk_idx].clone();
                 let file_path = file.path.clone();
-                let standards = input.standards.clone();
+                let standards = review_guidance.clone();
                 let specialist_prompts = specialist_prompts.clone();
                 let llm_permits = llm_permits.clone();
                 let file_new_content = file_new_content.clone();
@@ -695,6 +1326,8 @@ pub async fn run_review(
                         &state.current_file_findings,
                         &input.standards,
                         &file.new_content,
+                        rule_context.as_deref(),
+                        file_review_context.as_deref(),
                     ),
                 },
             ];
@@ -729,53 +1362,21 @@ pub async fn run_review(
                 }
             });
 
-            // Deterministic precision guards: drop sub-threshold and
-            // hallucinated-line findings before they reach the reviewer.
+            // Deterministic precision guards: drop sub-threshold findings and
+            // resolve line-level anchors from exact snippets before they reach
+            // the reviewer.
             normalize_finding_sources(&mut aggregate);
-            // Snapshot the parsed findings so we can log which the deterministic
-            // guards kept vs dropped (and why) — the core deterministic-behavior
-            // signal for tuning the threshold and anchor check.
-            let pre_guard: Vec<FileAggregateFinding> = if diag.is_enabled() {
-                aggregate.findings.clone()
-            } else {
-                Vec::new()
-            };
-            apply_finding_guards(&mut aggregate, &file.path, confidence_threshold, hunks);
-            if diag.is_enabled() {
-                for f in &pre_guard {
-                    let kept = aggregate
-                        .findings
-                        .iter()
-                        .any(|s| s.line_start == f.line_start && s.comment == f.comment);
-                    let mut payload = serde_json::json!({
-                        "filePath": file.path,
-                        "severity": f.severity,
-                        "confidence": f.confidence,
-                        "lineStart": f.line_start,
-                        "lineEnd": f.line_end,
-                        "sources": f.sources,
-                        "comment": f.comment,
-                    });
-                    if !kept {
-                        let reason = if f.confidence < confidence_threshold {
-                            "below_threshold"
-                        } else {
-                            "outside_hunk"
-                        };
-                        if let Some(o) = payload.as_object_mut() {
-                            o.insert("reason".into(), serde_json::json!(reason));
-                        }
-                    }
-                    diag.event(
-                        if kept {
-                            "adjudicated_finding"
-                        } else {
-                            "guard_drop"
-                        },
-                        payload,
-                    );
-                }
-            }
+            apply_finding_guards_with_relocation(
+                &provider,
+                &mut aggregate,
+                &file.path,
+                confidence_threshold,
+                hunks,
+                &file.new_content,
+                retry_count,
+                &diag,
+            )
+            .await;
 
             state.completed_files.push((file.path.clone(), aggregate));
         } else {
@@ -1146,6 +1747,8 @@ pub async fn review_single_file(
                 &hunk_findings,
                 standards,
                 &file.new_content,
+                None,
+                None,
             ),
         },
     ];
@@ -1153,7 +1756,13 @@ pub async fn review_single_file(
     let raw = chat_with_retries(&provider, &agg_messages, retry_count).await?;
     let mut aggregate = parse_file_aggregate(&raw).map_err(AppError::Ai)?;
     normalize_finding_sources(&mut aggregate);
-    apply_finding_guards(&mut aggregate, &file.path, confidence_threshold, &hunks);
+    apply_finding_guards(
+        &mut aggregate,
+        &file.path,
+        confidence_threshold,
+        &hunks,
+        &file.new_content,
+    );
     Ok(aggregate)
 }
 
@@ -1674,6 +2283,13 @@ mod tests {
         }
     }
 
+    fn numbered_content(lines: usize) -> String {
+        (1..=lines)
+            .map(|line| format!("line {}", line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn finding(confidence: u8, line_start: Option<usize>) -> FileAggregateFinding {
         FileAggregateFinding {
             severity: Severity::Moderate,
@@ -1681,6 +2297,7 @@ mod tests {
             line_start,
             line_end: line_start,
             comment: "x".into(),
+            existing_code: line_start.map(|line| format!("line {}", line)),
             evidence: None,
             sources: vec![],
         }
@@ -1705,36 +2322,49 @@ mod tests {
     #[test]
     fn guard_drops_below_threshold_keeps_at_or_above() {
         let hunks = [hunk(10, 5)]; // new-side lines 10..=14
+        let new_content = numbered_content(20);
         let mut agg = aggregate(vec![
             finding(79, Some(12)), // below 80 → dropped
             finding(80, Some(12)), // exactly at threshold → kept
             finding(95, Some(13)), // above → kept
         ]);
-        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks, &new_content);
         assert_eq!(dropped, 1);
         assert_eq!(agg.findings.len(), 2);
         assert!(agg.findings.iter().all(|f| f.confidence >= 80));
     }
 
     #[test]
-    fn guard_drops_line_outside_any_hunk() {
-        let hunks = [hunk(10, 5)]; // new-side lines 10..=14
-        let mut agg = aggregate(vec![
-            finding(95, Some(9)),  // just before the hunk → dropped
-            finding(95, Some(14)), // last line of the hunk → kept
-            finding(95, Some(15)), // just after the hunk → dropped
-        ]);
-        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks);
-        assert_eq!(dropped, 2);
+    fn guard_rewrites_line_from_existing_code() {
+        let hunks = [hunk(10, 5)];
+        let new_content = numbered_content(20);
+        let mut f = finding(95, Some(99));
+        f.existing_code = Some("line 14".into());
+        let mut agg = aggregate(vec![f]);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks, &new_content);
+        assert_eq!(dropped, 0);
         assert_eq!(agg.findings.len(), 1);
         assert_eq!(agg.findings[0].line_start, Some(14));
     }
 
     #[test]
+    fn guard_drops_line_level_finding_without_existing_code() {
+        let hunks = [hunk(10, 5)];
+        let new_content = numbered_content(20);
+        let mut f = finding(95, Some(12));
+        f.existing_code = None;
+        let mut agg = aggregate(vec![f]);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks, &new_content);
+        assert_eq!(dropped, 1);
+        assert!(agg.findings.is_empty());
+    }
+
+    #[test]
     fn guard_exempts_file_level_findings_from_anchor_check() {
         let hunks = [hunk(10, 5)];
+        let new_content = numbered_content(20);
         let mut agg = aggregate(vec![finding(90, None)]); // file-level, high confidence
-        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 80, &hunks, &new_content);
         assert_eq!(dropped, 0);
         assert_eq!(agg.findings.len(), 1);
     }
@@ -1742,8 +2372,9 @@ mod tests {
     #[test]
     fn guard_zero_threshold_surfaces_everything_in_range() {
         let hunks = [hunk(1, 100)];
+        let new_content = numbered_content(100);
         let mut agg = aggregate(vec![finding(0, Some(5)), finding(10, Some(6))]);
-        let dropped = apply_finding_guards(&mut agg, "f.rs", 0, &hunks);
+        let dropped = apply_finding_guards(&mut agg, "f.rs", 0, &hunks, &new_content);
         assert_eq!(dropped, 0);
         assert_eq!(agg.findings.len(), 2);
     }

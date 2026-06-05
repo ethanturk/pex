@@ -28,8 +28,9 @@ For every candidate finding:
    - 51–75: valid but low-impact
    - 76–90: important, warrants attention
    - 91–100: critical bug or explicit guideline violation
-4. Record `evidence`: the exact new-side line(s) from the file that justify the finding.
-5. Record `sources`: the specialist label(s) shown in square brackets on the candidate(s) you used (e.g. "code-reviewer", "silent-failure-hunter"). If you merged several candidates into one finding, include every label that raised it. If a candidate has no bracketed label, use an empty array.
+4. Record `existingCode`: an exact snippet copied from the current file content that should receive the inline comment. For every line-level finding this is REQUIRED and must be copied verbatim from the file, without line numbers.
+5. Record `evidence`: the exact new-side line(s) from the file that justify the finding.
+6. Record `sources`: the specialist label(s) shown in square brackets on the candidate(s) you used (e.g. "code-reviewer", "silent-failure-hunter"). If you merged several candidates into one finding, include every label that raised it. If a candidate has no bracketed label, use an empty array.
 
 Respond with ONLY a single JSON object — no prose, no markdown, no code fences. Schema:
 
@@ -42,6 +43,7 @@ Respond with ONLY a single JSON object — no prose, no markdown, no code fences
       "confidence": <integer 0-100>,
       "lineStart":  <integer or null>,
       "lineEnd":    <integer or null>,
+      "existingCode": "exact current-file snippet to anchor this line-level finding, or null for file-level findings",
       "evidence":   "the new-side line(s) that justify this finding",
       "sources":    ["specialist-label", ...],
       "comment":    "One concise paragraph describing the issue and the suggested change. No headings, no bullets, no markdown lists."
@@ -52,6 +54,7 @@ Respond with ONLY a single JSON object — no prose, no markdown, no code fences
 Rules:
 - `sources` must only contain labels that actually appeared in brackets on the candidates; do not invent specialist names.
 - `lineStart` / `lineEnd` are NEW-side line numbers, matching the numbered file content provided. They MUST point at a line that actually exists in that content. If a finding is genuinely file-level (architecture, missing test file, etc.), set both to null.
+- If `lineStart` / `lineEnd` are not null, `existingCode` must be a short exact snippet from the current file content that includes the line(s) that should receive the comment. If the finding is file-level, set `existingCode` to null.
 - `lineEnd >= lineStart`. For a single-line finding, set them equal.
 - Each `comment` must stand alone: a reviewer reading it inline on that line should understand the issue without further context.
 - Merge duplicate or related candidates into one finding.
@@ -113,6 +116,14 @@ Format:
 Do not include a Statistics section; the app appends exact counts from structured findings.
 Do not include greetings or sign-offs."#;
 
+pub const ANCHOR_RELOCATION_SYSTEM: &str = r#"You relocate a code review comment anchor. Given a finding and the current file content, return only the shortest exact snippet from the file that should receive the inline comment.
+
+Rules:
+- Return one fenced code block containing text copied exactly from the file.
+- Do not include line numbers.
+- Do not explain.
+- If no exact snippet in the file supports the finding, return an empty fenced code block."#;
+
 /// Build a user message for a hunk review, including the hunk text and file context.
 pub fn hunk_user_message(
     file_path: &str,
@@ -145,6 +156,8 @@ pub fn file_aggregate_user_message(
     hunk_findings: &[(usize, String)], // (hunk_num, finding_text)
     standards: &str,
     new_content: &str,
+    rule_context: Option<&str>,
+    file_review_context: Option<&str>,
 ) -> String {
     let mut msg = format!(
         "File: `{}`\n\nHere are the per-hunk candidate findings:\n\n",
@@ -167,10 +180,53 @@ pub fn file_aggregate_user_message(
         msg.push_str(&format!("Project standards:\n{}\n", standards));
     }
 
+    if let Some(rule_context) = rule_context.filter(|s| !s.trim().is_empty()) {
+        msg.push_str(&format!(
+            "\nPath-specific review checklist:\n{}\n",
+            rule_context
+        ));
+    }
+
+    if let Some(file_review_context) = file_review_context.filter(|s| !s.trim().is_empty()) {
+        msg.push_str(&format!(
+            "\nAdditional context gathered before review:\n{}\n",
+            file_review_context
+        ));
+    }
+
     msg.push_str(
-        "Verify and adjudicate these candidates into a file-level result following the specified JSON format.",
+        "Verify and adjudicate these candidates into a file-level result following the specified JSON format. Every line-level finding must include `existingCode` copied exactly from the current file content.",
     );
 
+    msg
+}
+
+pub fn anchor_relocation_user_message(
+    file_path: &str,
+    comment: &str,
+    evidence: Option<&str>,
+    original_line_start: Option<usize>,
+    new_content: &str,
+) -> String {
+    let mut msg = format!(
+        "File: `{}`\nOriginal lineStart: {}\n\nFinding comment:\n{}\n",
+        file_path,
+        original_line_start
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        comment
+    );
+    if let Some(evidence) = evidence.filter(|s| !s.trim().is_empty()) {
+        msg.push_str(&format!("\nModel evidence:\n{}\n", evidence));
+    }
+    let numbered = numbered_file(new_content, crate::ai::FILE_CONTEXT_MAX_CHARS);
+    if !numbered.is_empty() {
+        msg.push_str(&format!(
+            "\nCurrent file content (new side, 1-based line numbers):\n```\n{}```\n",
+            numbered
+        ));
+    }
+    msg.push_str("\nReturn only the exact snippet to anchor this finding.");
     msg
 }
 

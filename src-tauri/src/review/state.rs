@@ -18,7 +18,7 @@ pub enum ReviewMode {
 /// state below this version (completed findings are cheap to regenerate; a
 /// half-old resume is not worth the risk). States written before this field
 /// existed deserialize to 0 via `serde(default)` and are therefore discarded.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Serializable progress state for resumable PR reviews.
 /// Persisted to SQLite so the user can continue after cancellation or crash.
