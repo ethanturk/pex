@@ -39,6 +39,15 @@ if ! command -v npm >/dev/null 2>&1; then
   retry brew install node
 fi
 
+# libsql-ffi builds bundled SQLite via cmake. Ensure a modern cmake is present:
+# older/absent cmake omits -arch for apple-ios targets, so the iOS SDK headers
+# fail to parse ("unknown type name '__int64_t'"). build-rust-code.sh also pins
+# an explicit iOS toolchain file so arch/sysroot are correct regardless.
+if ! command -v cmake >/dev/null 2>&1; then
+  echo "==> Installing CMake with Homebrew"
+  retry brew install cmake
+fi
+
 echo "==> Installing npm dependencies"
 retry npm ci
 

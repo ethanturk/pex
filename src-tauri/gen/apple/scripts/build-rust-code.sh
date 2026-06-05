@@ -3,7 +3,38 @@ set -eu
 
 export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# libsql-ffi builds its bundled SQLite (SQLite3MultipleCiphers) through cmake.
+# cmake-rs only auto-sets CMAKE_OSX_ARCHITECTURES for macOS ("darwin") targets,
+# never for apple-ios — so with an older cmake the SQLite sources compile against
+# the iOS SDK with no -arch and clang fails to resolve __int64_t in
+# <sys/_types.h>. Hand cmake an explicit iOS toolchain file (cmake-rs honors
+# CMAKE_TOOLCHAIN_FILE from the env) so the arch/sysroot are always pinned.
+# `arch` = arm64|x86_64, `sysroot` = iphoneos|iphonesimulator.
+setup_ios_cmake_toolchain() {
+  _arch="$1"
+  _sysroot="$2"
+  _deployment="${3:-16.0}"
+  _file="${TMPDIR:-/tmp}/pex-ios-cmake-toolchain.cmake"
+  cat > "$_file" <<EOF
+set(CMAKE_SYSTEM_NAME iOS)
+set(CMAKE_OSX_ARCHITECTURES ${_arch})
+set(CMAKE_OSX_SYSROOT ${_sysroot})
+set(CMAKE_OSX_DEPLOYMENT_TARGET ${_deployment})
+EOF
+  export CMAKE_TOOLCHAIN_FILE="$_file"
+  echo "==> cmake iOS toolchain: arch=${_arch} sysroot=${_sysroot} min=${_deployment} ($_file)"
+}
+
 if [ -z "${CI_XCODE_CLOUD:-}" ]; then
+  # Local/Xcode build phase: derive arch + sysroot from the Xcode-provided env.
+  case "${PLATFORM_DISPLAY_NAME:?}" in
+    *Simulator*) IOS_SDK="iphonesimulator" ;;
+    *) IOS_SDK="iphoneos" ;;
+  esac
+  # ARCHS may be a space-separated list; cmake takes one arch per Rust target.
+  IOS_ARCH="$(printf '%s' "${ARCHS:?}" | awk '{print $1}')"
+  setup_ios_cmake_toolchain "$IOS_ARCH" "$IOS_SDK" "${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
+
   npm run -- tauri ios xcode-script -v \
     --platform "${PLATFORM_DISPLAY_NAME:?}" \
     --sdk-root "${SDKROOT:?}" \
@@ -60,20 +91,26 @@ case "${PLATFORM_DISPLAY_NAME:?}:${ARCHS:?}" in
   "iOS:"*"arm64"*)
     RUST_TARGET="aarch64-apple-ios"
     EXTERNALS_ARCH="arm64"
+    IOS_SDK="iphoneos"
     ;;
   "iOS Simulator:"*"arm64"*)
     RUST_TARGET="aarch64-apple-ios-sim"
     EXTERNALS_ARCH="arm64"
+    IOS_SDK="iphonesimulator"
     ;;
   "iOS Simulator:"*"x86_64"*)
     RUST_TARGET="x86_64-apple-ios"
     EXTERNALS_ARCH="x86_64"
+    IOS_SDK="iphonesimulator"
     ;;
   *)
     echo "Unsupported Xcode platform/architecture: ${PLATFORM_DISPLAY_NAME}:${ARCHS}" >&2
     exit 1
     ;;
 esac
+
+# Pin the cmake iOS toolchain (arch + sysroot) for libsql-ffi's SQLite build.
+setup_ios_cmake_toolchain "$EXTERNALS_ARCH" "$IOS_SDK" "${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
 
 if [ "${CONFIGURATION:?}" = "release" ]; then
   CARGO_PROFILE_FLAG="--release"
