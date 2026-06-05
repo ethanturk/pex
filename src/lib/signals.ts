@@ -182,6 +182,23 @@ export function isPrMetaTab(tab: ActiveTab | null): boolean {
   return tab === PR_SUMMARY_TAB || tab === PR_REVIEW_TAB;
 }
 
+// MRU stack of focused tabs (most-recent last). Lets closeTab return to the
+// previously-active tab (VS Code style) instead of a positional neighbour.
+// Subscribing here captures every activation regardless of which call site set
+// `activeTab` (tab click, file-tree nav, preview/pin, meta-tab focus).
+const tabHistory: ActiveTab[] = [];
+activeTab.subscribe((tab) => {
+  const i = tabHistory.indexOf(tab);
+  if (i !== -1) tabHistory.splice(i, 1);
+  tabHistory.push(tab);
+});
+
+// A tab still "exists" if it's a permanent meta tab, a pinned tab, or the
+// current preview. Reflects live signal state, so call after mutating them.
+function tabExists(tab: ActiveTab): boolean {
+  return isPrMetaTab(tab) || openTabs.value.includes(tab) || previewPath.value === tab;
+}
+
 // Single-click a file: open it as the preview tab (replacing any prior preview,
 // unless it's already pinned) and focus it.
 export function openPreviewTab(path: string) {
@@ -202,9 +219,20 @@ export function closeTab(path: string) {
   const remaining = openTabs.value.filter((p) => p !== path);
   if (remaining.length !== openTabs.value.length) openTabs.value = remaining;
   if (previewPath.value === path) previewPath.value = null;
+  // Drop the closed tab from the MRU history so it can't be re-focused.
+  const hi = tabHistory.indexOf(path);
+  if (hi !== -1) tabHistory.splice(hi, 1);
   if (activeTab.value === path) {
-    // Focus the last pinned tab, else the preview, else fall back to Summary.
-    const next = remaining[remaining.length - 1] ?? previewPath.value ?? PR_SUMMARY_TAB;
+    // Return to the most-recently-active tab that still exists; fall back to
+    // the last pinned tab, then the preview, then Summary.
+    let next: ActiveTab | undefined;
+    for (let i = tabHistory.length - 1; i >= 0; i--) {
+      if (tabHistory[i] !== path && tabExists(tabHistory[i])) {
+        next = tabHistory[i];
+        break;
+      }
+    }
+    next ??= remaining[remaining.length - 1] ?? previewPath.value ?? PR_SUMMARY_TAB;
     activeTab.value = next;
     selectedFile.value = isPrMetaTab(next) ? null : next;
   }
@@ -221,6 +249,7 @@ export function focusPrReviewTab() {
 export function resetTabs() {
   openTabs.value = [];
   previewPath.value = null;
+  tabHistory.length = 0;
   activeTab.value = PR_SUMMARY_TAB;
 }
 
