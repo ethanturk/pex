@@ -63,6 +63,9 @@ pub fn run() {
         .expect("Failed to initialize database");
     // Periodic offline-first reconcile while sync is enabled. No-op when off.
     db::spawn_background_sync(store.clone());
+    // Periodic retention sweep: prunes persisted reviews older than 14 days to
+    // catch orphaned rows the close/merge cleanup never reached.
+    review::persist::spawn_review_cleanup(store.clone());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -165,6 +168,10 @@ pub fn run() {
             commands::review::cancel_review,
             commands::review::get_saved_review,
             commands::review::clear_saved_review,
+            commands::review::get_completed_review,
+            commands::review::list_completed_reviews,
+            commands::review::complete_review,
+            commands::review::delete_completed_review,
             commands::feedback::record_finding_verdict,
             commands::feedback::clear_finding_verdict,
             commands::feedback::get_review_calibration,

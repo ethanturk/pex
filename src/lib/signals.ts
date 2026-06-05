@@ -1,5 +1,5 @@
 import { signal } from "@preact/signals";
-import type { SyncStatus } from "@/lib/api";
+import type { SyncStatus, StoredReview } from "@/lib/api";
 
 // ---- Theme ----
 export type Theme = "system" | "light" | "dark";
@@ -315,6 +315,10 @@ export interface PRReviewRun {
     }[];
   } | null;
   error: string | null;
+  // Set when this run was hydrated from a persisted (durable) review rather than
+  // produced live this session. `undefined` for live runs. Drives the PR-list
+  // "outstanding" badge and the "Mark completed" control.
+  lifecycle?: "outstanding" | "completed";
 }
 
 export const reviewRuns = signal<Map<number, PRReviewRun>>(new Map());
@@ -344,6 +348,25 @@ export function updateReviewRun(prId: number, patch: Partial<PRReviewRun> | ((pr
   } else if (prev) {
     next.set(prId, { ...prev, ...patch });
   }
+  reviewRuns.value = next;
+}
+
+// Seed `reviewRuns` from a persisted review so a finished review reappears after
+// a restart (PR-list badge + restored Review tab). Never clobbers an existing
+// run — a live/in-flight review for the same PR always wins.
+export function hydrateReviewRun(stored: StoredReview) {
+  if (reviewRuns.value.has(stored.prId)) return;
+  const next = new Map(reviewRuns.value);
+  next.set(stored.prId, {
+    projectId: stored.projectId,
+    repoId: stored.repoId,
+    prTitle: stored.prTitle,
+    status: stored.status === "completed" ? "posted" : "done",
+    progress: null,
+    output: stored.output,
+    error: null,
+    lifecycle: stored.status,
+  });
   reviewRuns.value = next;
 }
 

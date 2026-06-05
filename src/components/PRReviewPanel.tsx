@@ -10,6 +10,8 @@ import {
   currentView,
   pendingScrollLine,
   threadsRefreshTick,
+  hydrateReviewRun,
+  updateReviewRun,
   type PRReviewRun,
   type ReviewProgress,
   type ReviewMode,
@@ -23,6 +25,8 @@ import {
   clearFindingVerdict,
   getSavedReview,
   clearSavedReview,
+  getCompletedReview,
+  completeReview,
   type Severity,
   type Tier,
   type ReviewState,
@@ -290,6 +294,21 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
   useEffect(() => {
     getSavedReview().then(setSavedReview);
   }, []);
+
+  // Restore this PR's persisted (durable) review into `reviewRuns` when there's
+  // no live run, so reopening the PR after a restart shows the finished review.
+  // hydrateReviewRun is a no-op if a live run already exists.
+  useEffect(() => {
+    if (reviewRuns.value.has(prId)) return;
+    getCompletedReview(projectId, repoId, prId)
+      .then((stored) => {
+        if (stored) hydrateReviewRun(stored);
+      })
+      .catch(() => {});
+    // Re-run when navigating between PRs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prId, projectId, repoId]);
+
   const savedTarget = savedReview ? parsePrKey(savedReview.prKey) : null;
 
   const handleResume = () => {
@@ -312,6 +331,18 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
   const handleDiscard = async () => {
     await clearSavedReview();
     setSavedReview(null);
+  };
+
+  // Manually mark this PR's persisted review as completed: clears the
+  // outstanding PR-list badge but keeps the findings restorable. (Posting to
+  // ADO auto-completes it; this is the no-post path.)
+  const handleMarkCompleted = async () => {
+    try {
+      await completeReview(projectId, repoId, prId);
+    } catch {
+      // Best-effort: even if persistence update fails, reflect it locally.
+    }
+    updateReviewRun(prId, { status: "posted", lifecycle: "completed" });
   };
 
   const running = run?.status === "running";
@@ -735,6 +766,15 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
               </button>
             );
           })()}
+          {run.status === "done" && run.lifecycle !== "completed" && (
+            <button
+              onClick={handleMarkCompleted}
+              class="px-3 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800"
+              title="Clear the outstanding badge; keep the findings restorable"
+            >
+              Mark completed
+            </button>
+          )}
           {(run.status === "done" || run.status === "error" || run.status === "posted") && (
             <button
               onClick={restart}

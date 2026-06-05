@@ -56,6 +56,19 @@ pub async fn init_schema(conn: &Connection) -> Result<(), AppError> {
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (pr_key, fingerprint)
         );
+
+        CREATE TABLE IF NOT EXISTS pr_reviews (
+            pr_key TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            repo_id TEXT NOT NULL,
+            pr_id INTEGER NOT NULL,
+            pr_title TEXT NOT NULL DEFAULT '',
+            iteration INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'outstanding',
+            output TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
     ",
     )
     .await?;

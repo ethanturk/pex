@@ -777,6 +777,52 @@ export async function clearSavedReview(): Promise<void> {
   return invoke("clear_saved_review");
 }
 
+/// Lifecycle of a persisted completed review.
+/// - `outstanding`: finished, not yet handled (shows a PR-list badge).
+/// - `completed`: marked done by the user, or its findings were posted to ADO.
+export type ReviewLifecycle = "outstanding" | "completed";
+
+/// A completed review persisted in SQLite, surviving restarts until completed.
+export interface StoredReview {
+  prKey: string;
+  projectId: string;
+  repoId: string;
+  prId: number;
+  prTitle: string;
+  iteration: number;
+  status: ReviewLifecycle;
+  output: ReviewOutput;
+  updatedAt: string;
+}
+
+export async function getCompletedReview(
+  projectId: string,
+  repoId: string,
+  prId: number,
+): Promise<StoredReview | null> {
+  return invoke<StoredReview | null>("get_completed_review", { projectId, repoId, prId });
+}
+
+export async function listCompletedReviews(): Promise<StoredReview[]> {
+  return invoke<StoredReview[]>("list_completed_reviews");
+}
+
+export async function completeReview(
+  projectId: string,
+  repoId: string,
+  prId: number,
+): Promise<void> {
+  return invoke("complete_review", { projectId, repoId, prId });
+}
+
+export async function deleteCompletedReview(
+  projectId: string,
+  repoId: string,
+  prId: number,
+): Promise<void> {
+  return invoke("delete_completed_review", { projectId, repoId, prId });
+}
+
 export interface ReviewState {
   prKey: string;
   mode: ReviewMode;

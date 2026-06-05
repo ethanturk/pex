@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "preact/hooks";
-import { currentView, selectedProject, selectedRepo, showPrChecks, reviewRuns } from "@/lib/signals";
-import { listProjects, listRepositories, listPullRequests, getCurrentUserId, getPrChecks, type Project, type Repository, type PullRequest, type PRCheck } from "@/lib/api";
+import { currentView, selectedProject, selectedRepo, showPrChecks, reviewRuns, hydrateReviewRun } from "@/lib/signals";
+import { listProjects, listRepositories, listPullRequests, getCurrentUserId, getPrChecks, listCompletedReviews, deleteCompletedReview, type Project, type Repository, type PullRequest, type PRCheck } from "@/lib/api";
 import { getPrCheckRollup, describeChecksError } from "@/lib/prChecks";
 import { considerAutoReview } from "@/lib/autoReview";
 
@@ -97,6 +97,15 @@ function ReviewBadge({ prId }: { prId: number }) {
       </span>
     );
   }
+  // A completed review (marked done, or its findings posted) is handled — show a
+  // subdued badge rather than the attention-grabbing finding count.
+  if (run.lifecycle === "completed") {
+    return (
+      <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+        ✓ Reviewed
+      </span>
+    );
+  }
   if (run.status === "posted") {
     return (
       <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
@@ -119,6 +128,40 @@ function ReviewBadge({ prId }: { prId: number }) {
       🔍 {blocking > 0 ? `${blocking} blocking` : `${n} finding${n === 1 ? "" : "s"}`}
     </span>
   );
+}
+
+// Reconcile persisted reviews against the freshly-fetched PR list for one repo:
+// hydrate the badge/tab for still-active PRs, and delete stored reviews for PRs
+// that have since closed/merged/abandoned. PRs absent from `list` are left
+// untouched (they may simply not be loaded), so we never delete on a guess.
+async function syncPersistedReviews(
+  projectId: string,
+  repoId: string,
+  list: PullRequest[],
+) {
+  let stored;
+  try {
+    stored = await listCompletedReviews();
+  } catch {
+    return;
+  }
+  const statusById = new Map(list.map((pr) => [pr.pullRequestId, pr.status]));
+  for (const review of stored) {
+    if (review.projectId !== projectId || review.repoId !== repoId) continue;
+    const status = statusById.get(review.prId);
+    if (status === undefined) continue; // PR not in this listing — leave as-is.
+    if (status === "active") {
+      hydrateReviewRun(review);
+    } else {
+      // PR is completed/abandoned: drop the durable review and any badge.
+      void deleteCompletedReview(projectId, repoId, review.prId).catch(() => {});
+      if (reviewRuns.value.has(review.prId)) {
+        const next = new Map(reviewRuns.value);
+        next.delete(review.prId);
+        reviewRuns.value = next;
+      }
+    }
+  }
 }
 
 export function PRList() {
@@ -159,6 +202,11 @@ export function PRList() {
       .then((list) => {
         setPrs(list);
         setError("");
+        // Restore persisted reviews so finished reviews survive restarts: the
+        // PR-list badge (ReviewBadge reads reviewRuns) lights up again, and the
+        // Review tab can rehydrate. Closed/merged/abandoned PRs get their stored
+        // review deleted — a review is only meaningful while the PR is active.
+        void syncPersistedReviews(project, repo, list);
         // Phase 4: let the auto-reviewer consider these PRs (no-op unless the
         // user enabled auto-review). Only reviewable PRs — active, non-draft.
         const reviewable = list

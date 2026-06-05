@@ -230,7 +230,7 @@ pub struct FileAggregateFinding {
 }
 
 /// The complete review output.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReviewOutput {
     pub summary: String,
     pub findings: Vec<Finding>,

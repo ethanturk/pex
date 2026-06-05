@@ -654,6 +654,7 @@ pub async fn start_review(
     }
 
     let reviewed_iteration = prepared.iteration;
+    let pr_title_for_persist = pr_title.clone();
     let input = ReviewInput {
         pr_key: prepared.pr_key.clone(),
         pr_title,
@@ -680,6 +681,25 @@ pub async fn start_review(
 
     // Record the baseline for the next incremental run.
     remember_reviewed_iteration(&state, &pr_key, reviewed_iteration).await;
+
+    // Persist the finished review so it survives restarts and stays visible
+    // until completed. Best-effort: a storage failure only loses persistence,
+    // not the live result the caller already has.
+    {
+        let conn = state.db.conn();
+        let _ = crate::review::persist::save_review(
+            &conn,
+            &pr_key,
+            &project_id,
+            &repo_id,
+            pr_id,
+            &pr_title_for_persist,
+            reviewed_iteration,
+            crate::review::persist::STATUS_OUTSTANDING,
+            &output,
+        )
+        .await;
+    }
 
     let _ = app.emit(
         "review-done",
@@ -745,6 +765,7 @@ pub async fn start_review_post(
     }
 
     let reviewed_iteration = prepared.iteration;
+    let pr_title_for_persist = pr_title.clone();
     let input = ReviewInput {
         pr_key: prepared.pr_key.clone(),
         pr_title,
@@ -817,6 +838,25 @@ pub async fn start_review_post(
         }
     }
 
+    // Persist the posted review as completed — posting is one of the two ways a
+    // stored review reaches the "completed" lifecycle (the other is the manual
+    // "Mark completed" button). Best-effort.
+    {
+        let conn = state.db.conn();
+        let _ = crate::review::persist::save_review(
+            &conn,
+            &pr_key,
+            &project_id,
+            &repo_id,
+            pr_id,
+            &pr_title_for_persist,
+            reviewed_iteration,
+            crate::review::persist::STATUS_COMPLETED,
+            &output,
+        )
+        .await;
+    }
+
     let _ = app.emit(
         "review-post-done",
         serde_json::json!({
@@ -825,7 +865,7 @@ pub async fn start_review_post(
         }),
     );
 
-    // Clear saved state
+    // Clear saved (resume) state — the durable result now lives in `pr_reviews`.
     {
         let conn = state.db.conn();
         crate::review::state::clear_state(&conn)
@@ -869,6 +909,79 @@ pub async fn get_saved_review(
 pub async fn clear_saved_review(state: State<'_, AppState>) -> Result<(), String> {
     let conn = state.db.conn();
     crate::review::state::clear_state(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())
+}
+
+/// Build the canonical `pr_key` (`{org_url}/{project}/{repo}/{pr_id}`) for the
+/// currently-connected org, matching the format used when reviews are saved.
+fn pr_key_for(
+    state: &AppState,
+    project_id: &str,
+    repo_id: &str,
+    pr_id: i64,
+) -> Result<String, String> {
+    let ado = state.client.lock().map_err(|e| e.to_string())?;
+    let org_url = ado
+        .as_ref()
+        .ok_or_else(|| "Not logged in.".to_string())?
+        .org_url()
+        .to_string();
+    Ok(format!("{}/{}/{}/{}", org_url, project_id, repo_id, pr_id))
+}
+
+/// Load the persisted completed review for a PR, if any.
+#[tauri::command]
+pub async fn get_completed_review(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+) -> Result<Option<crate::review::persist::StoredReview>, String> {
+    let pr_key = pr_key_for(&state, &project_id, &repo_id, pr_id)?;
+    let conn = state.db.conn();
+    crate::review::persist::get_review(&conn, &pr_key)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())
+}
+
+/// List every persisted review (outstanding + completed), newest first.
+#[tauri::command]
+pub async fn list_completed_reviews(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::review::persist::StoredReview>, String> {
+    let conn = state.db.conn();
+    crate::review::persist::list_reviews(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())
+}
+
+/// Mark a persisted review as completed (manual "Mark completed" action).
+#[tauri::command]
+pub async fn complete_review(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+) -> Result<(), String> {
+    let pr_key = pr_key_for(&state, &project_id, &repo_id, pr_id)?;
+    let conn = state.db.conn();
+    crate::review::persist::mark_completed(&conn, &pr_key)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())
+}
+
+/// Delete a persisted review outright (PR closed/merged/abandoned).
+#[tauri::command]
+pub async fn delete_completed_review(
+    state: State<'_, AppState>,
+    project_id: String,
+    repo_id: String,
+    pr_id: i64,
+) -> Result<(), String> {
+    let pr_key = pr_key_for(&state, &project_id, &repo_id, pr_id)?;
+    let conn = state.db.conn();
+    crate::review::persist::delete_review(&conn, &pr_key)
         .await
         .map_err(|e: crate::AppError| e.to_string())
 }
