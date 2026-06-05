@@ -1243,7 +1243,7 @@ pub async fn run_review(
                         );
                         state.current_file_findings.push((hunk_idx + 1, skip_msg));
                         state.current_hunk = hunk_idx + 1;
-                        save_state_to_db(db, &state);
+                        save_state_to_db(conn, &state).await;
                         continue;
                     }
                 };
@@ -1281,14 +1281,14 @@ pub async fn run_review(
                     }),
                 );
 
-                save_state_to_db(db, &state);
+                save_state_to_db(conn, &state).await;
             }
         }
 
         // ---- File Aggregate ----
         if !state.current_file_findings.is_empty() {
             state.phase = "file-aggregate".into();
-            save_state_to_db(db, &state);
+            save_state_to_db(conn, &state).await;
             emit_progress(
                 &app,
                 "file-aggregate",
@@ -1397,7 +1397,7 @@ pub async fn run_review(
             "hunk-review".into()
         };
 
-        save_state_to_db(db, &state);
+        save_state_to_db(conn, &state).await;
     }
 
     // ---- Phase 2: Batch Aggregation ----
@@ -1405,7 +1405,7 @@ pub async fn run_review(
     let total_batches = state.total_batches;
     if state.current_batch <= total_batches {
         state.phase = "batch-aggregate".into();
-        save_state_to_db(db, &state);
+        save_state_to_db(conn, &state).await;
     }
 
     while state.current_batch <= total_batches {
@@ -1477,13 +1477,13 @@ pub async fn run_review(
         state.batch_summaries.push(batch_summary);
         state.current_batch += 1;
 
-        save_state_to_db(db, &state);
+        save_state_to_db(conn, &state).await;
     }
 
     // ---- Phase 3: Final Synthesis ----
     cancelled(&cancel)?;
     state.phase = "synthesis".into();
-    save_state_to_db(db, &state);
+    save_state_to_db(conn, &state).await;
     emit_progress(
         &app,
         "synthesis",
@@ -1599,7 +1599,7 @@ pub async fn run_review(
 
     state.phase = "done".into();
     state.final_review = Some(final_review.clone());
-    clear_state_from_db(db);
+    clear_state_from_db(conn).await;
 
     if diag.is_enabled() {
         for f in &findings {
