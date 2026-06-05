@@ -750,6 +750,8 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
       {confirmOpen && (
         <ReviewConfirmDialog
           initialMode={mode}
+          projectId={projectId}
+          repoId={repoId}
           prId={prId}
           prTitle={prTitle}
           busyElsewhere={busyElsewhere}

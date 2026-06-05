@@ -1,4 +1,6 @@
-use crate::ai::{AiProvider, ChatMessage};
+use crate::ai::{
+    AiProvider, ChatMessage, ToolCall, ToolChatMessage, ToolChatResponse, ToolDefinition,
+};
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +72,85 @@ struct OpenAiResponseMessage {
     content: String,
 }
 
+#[derive(Serialize)]
+struct OpenAiToolRequest {
+    model: String,
+    messages: Vec<OpenAiToolMessage>,
+    tools: Vec<OpenAiToolDefinition>,
+}
+
+#[derive(Serialize)]
+struct OpenAiToolMessage {
+    role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAiOutboundToolCall>>,
+}
+
+#[derive(Serialize)]
+struct OpenAiOutboundToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    call_type: &'static str,
+    function: OpenAiOutboundToolFunction,
+}
+
+#[derive(Serialize)]
+struct OpenAiOutboundToolFunction {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+struct OpenAiToolDefinition {
+    #[serde(rename = "type")]
+    tool_type: &'static str,
+    function: OpenAiFunctionDefinition,
+}
+
+#[derive(Serialize)]
+struct OpenAiFunctionDefinition {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct OpenAiToolResponse {
+    choices: Vec<OpenAiToolChoice>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiToolChoice {
+    message: OpenAiToolResponseMessage,
+}
+
+#[derive(Deserialize)]
+struct OpenAiToolResponseMessage {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<OpenAiInboundToolCall>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiInboundToolCall {
+    id: String,
+    function: OpenAiInboundToolFunction,
+}
+
+#[derive(Deserialize)]
+struct OpenAiInboundToolFunction {
+    name: String,
+    #[serde(default)]
+    arguments: String,
+}
+
 #[async_trait::async_trait]
 impl AiProvider for OpenAiProvider {
     async fn chat_with_model(
@@ -127,5 +208,120 @@ impl AiProvider for OpenAiProvider {
             .unwrap_or_default();
 
         Ok(content)
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[ToolChatMessage],
+        tools: &[ToolDefinition],
+        model_override: Option<&str>,
+    ) -> Result<ToolChatResponse, AppError> {
+        let body = OpenAiToolRequest {
+            model: model_override.unwrap_or(&self.model).to_string(),
+            messages: messages.iter().map(openai_tool_message).collect(),
+            tools: tools
+                .iter()
+                .map(|tool| OpenAiToolDefinition {
+                    tool_type: "function",
+                    function: OpenAiFunctionDefinition {
+                        name: tool.name.clone(),
+                        description: tool.description.clone(),
+                        parameters: tool.parameters.clone(),
+                    },
+                })
+                .collect(),
+        };
+
+        let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Ai(format!("OpenAI tool request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(AppError::Ai(format!(
+                "OpenAI tool request returned {}: {}",
+                status, text
+            )));
+        }
+
+        let parsed: OpenAiToolResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Ai(format!("Failed to parse OpenAI tool response: {}", e)))?;
+        let message = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|choice| choice.message)
+            .unwrap_or(OpenAiToolResponseMessage {
+                content: None,
+                tool_calls: Vec::new(),
+            });
+
+        Ok(ToolChatResponse {
+            content: message.content.unwrap_or_default(),
+            tool_calls: message
+                .tool_calls
+                .into_iter()
+                .map(|call| ToolCall {
+                    id: call.id,
+                    name: call.function.name,
+                    arguments: serde_json::from_str(&call.function.arguments)
+                        .unwrap_or_else(|_| serde_json::json!({ "raw": call.function.arguments })),
+                })
+                .collect(),
+        })
+    }
+}
+
+fn openai_tool_message(message: &ToolChatMessage) -> OpenAiToolMessage {
+    match message {
+        ToolChatMessage::Message(chat) => OpenAiToolMessage {
+            role: chat.role.as_str().to_string(),
+            content: Some(chat.content.clone()),
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
+        },
+        ToolChatMessage::AssistantToolCalls {
+            content,
+            tool_calls,
+        } => OpenAiToolMessage {
+            role: "assistant".to_string(),
+            content: content.clone(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: Some(
+                tool_calls
+                    .iter()
+                    .map(|call| OpenAiOutboundToolCall {
+                        id: call.id.clone(),
+                        call_type: "function",
+                        function: OpenAiOutboundToolFunction {
+                            name: call.name.clone(),
+                            arguments: call.arguments.to_string(),
+                        },
+                    })
+                    .collect(),
+            ),
+        },
+        ToolChatMessage::ToolResult {
+            tool_call_id,
+            name,
+            content,
+        } => OpenAiToolMessage {
+            role: "tool".to_string(),
+            content: Some(content.clone()),
+            tool_call_id: Some(tool_call_id.clone()),
+            name: Some(name.clone()),
+            tool_calls: None,
+        },
     }
 }
