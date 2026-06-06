@@ -1101,6 +1101,12 @@ pub async fn run_review(
     // Announce the full, ordered worklist up front so the UI can render every
     // file (and tick them off as they complete). `completedCount` lets a resumed
     // run mark already-finished files as done without re-emitting each one.
+    // `ruleTitles` carries the deterministic checklist each file matched so the
+    // matched rule is visible during the run, not just in the pre-run preview.
+    let rule_titles: std::collections::HashMap<&str, &str> = file_paths
+        .iter()
+        .filter_map(|p| input.rules.get(p).map(|r| (p.as_str(), r.title.as_str())))
+        .collect();
     emit_progress(
         &app,
         "plan",
@@ -1109,6 +1115,7 @@ pub async fn run_review(
             "files": file_paths.clone(),
             "totalFiles": file_entries.len(),
             "completedCount": state.current_file_idx,
+            "ruleTitles": rule_titles,
         }),
     );
 
@@ -1285,6 +1292,11 @@ pub async fn run_review(
             }
         }
 
+        // Per-file deterministic anchoring rollup, surfaced on `file-done`.
+        let mut kept_count = 0usize;
+        let mut anchored_count = 0usize;
+        let mut dropped_count = 0usize;
+
         // ---- File Aggregate ----
         if !state.current_file_findings.is_empty() {
             state.phase = "file-aggregate".into();
@@ -1351,7 +1363,7 @@ pub async fn run_review(
             // resolve line-level anchors from exact snippets before they reach
             // the reviewer.
             normalize_finding_sources(&mut aggregate);
-            apply_finding_guards_with_relocation(
+            dropped_count = apply_finding_guards_with_relocation(
                 &provider,
                 &mut aggregate,
                 &file.path,
@@ -1362,6 +1374,14 @@ pub async fn run_review(
                 &diag,
             )
             .await;
+            // Surviving line-level findings are the ones the anchoring step
+            // resolved to a concrete new-side line range.
+            anchored_count = aggregate
+                .findings
+                .iter()
+                .filter(|f| f.line_start.is_some())
+                .count();
+            kept_count = aggregate.findings.len();
 
             state.completed_files.push((file.path.clone(), aggregate));
         } else {
@@ -1378,12 +1398,18 @@ pub async fn run_review(
         emit_progress(
             &app,
             "file-done",
-            &format!("Reviewed {}", file.path),
+            &format!(
+                "Reviewed {} — {} finding(s), {} anchored, {} dropped",
+                file.path, kept_count, anchored_count, dropped_count
+            ),
             serde_json::json!({
                 "fileIndex": state.current_file_idx,
                 "fileNum": state.current_file_idx + 1,
                 "totalFiles": file_entries.len(),
                 "durationMs": file_started.elapsed().as_millis() as u64,
+                "keptFindings": kept_count,
+                "anchoredFindings": anchored_count,
+                "droppedFindings": dropped_count,
             }),
         );
 

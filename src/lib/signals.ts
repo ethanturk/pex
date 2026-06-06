@@ -275,9 +275,22 @@ export interface ReviewProgress {
   // `plan` event: the full ordered worklist + how many were already done (resume).
   files?: string[];
   completedCount?: number;
-  // `file-done` event: which file finished, and how long it took.
+  // `file-done` event: which file finished, how long it took, and the
+  // deterministic anchoring rollup for that file.
   fileIndex?: number;
   durationMs?: number;
+  keptFindings?: number;
+  anchoredFindings?: number;
+  droppedFindings?: number;
+  // `plan` event: matched deterministic checklist title per file path.
+  ruleTitles?: Record<string, string>;
+}
+
+// Per-file deterministic anchoring rollup, keyed by file index.
+export interface FileAnchorStats {
+  kept: number;
+  anchored: number;
+  dropped: number;
 }
 
 export type PRReviewStatus = "running" | "done" | "posting" | "posted" | "error";
@@ -298,6 +311,10 @@ export interface PRReviewRun {
   fileList?: string[];
   /// Completed-file durations in ms, keyed by file index.
   fileDurations?: Record<number, number>;
+  /// Matched deterministic checklist title per file path (from the `plan` event).
+  ruleTitles?: Record<string, string>;
+  /// Per-file anchoring rollup, keyed by file index (from `file-done` events).
+  fileAnchors?: Record<number, FileAnchorStats>;
   /// Files already finished before this session started (resumed runs).
   preCompletedCount?: number;
   /// Index of the file currently under review (for the live timer + spinner).

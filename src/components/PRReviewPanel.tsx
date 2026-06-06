@@ -810,6 +810,8 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
 function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
   const files = run.fileList ?? [];
   const durations = run.fileDurations ?? {};
+  const ruleTitles = run.ruleTitles ?? {};
+  const anchors = run.fileAnchors ?? {};
   const pre = run.preCompletedCount ?? 0;
   const isDone = (i: number) => durations[i] != null || i < pre;
   const completed = files.reduce((acc, _f, i) => acc + (isDone(i) ? 1 : 0), 0);
@@ -849,16 +851,31 @@ function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
                   <span class="text-gray-300 dark:text-gray-600">○</span>
                 )}
               </span>
-              <span
-                class={`min-w-0 flex-1 truncate ${
-                  done
-                    ? "text-gray-400 dark:text-gray-500"
-                    : active
-                      ? "text-gray-800 dark:text-gray-100 font-medium"
-                      : "text-gray-500 dark:text-gray-400"
-                }`}
-              >
-                {fileName(path)}
+              <span class="min-w-0 flex-1 flex flex-col leading-tight">
+                <span
+                  class={`truncate ${
+                    done
+                      ? "text-gray-400 dark:text-gray-500"
+                      : active
+                        ? "text-gray-800 dark:text-gray-100 font-medium"
+                        : "text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  {fileName(path)}
+                </span>
+                {(ruleTitles[path] || anchors[i]) && (
+                  <span class="truncate text-[10px] text-gray-400 dark:text-gray-500">
+                    {ruleTitles[path] ?? "Review"}
+                    {anchors[i] && (
+                      <>
+                        {" · "}
+                        {anchors[i].kept} finding{anchors[i].kept === 1 ? "" : "s"}
+                        {anchors[i].anchored > 0 && ` · ${anchors[i].anchored} anchored`}
+                        {anchors[i].dropped > 0 && ` · ${anchors[i].dropped} dropped`}
+                      </>
+                    )}
+                  </span>
+                )}
               </span>
               {elapsed && (
                 <span
