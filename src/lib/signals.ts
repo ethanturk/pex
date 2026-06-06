@@ -260,6 +260,11 @@ export function resetTabs() {
 export interface ReviewProgress {
   phase: string;
   detail: string;
+  // `preflight` event: which deterministic stage is running, plus the
+  // review/skip split once filtering completes.
+  stage?: string;
+  reviewableFiles?: number;
+  skippedFiles?: number;
   fileNum?: number;
   totalFiles?: number;
   hunk?: number;

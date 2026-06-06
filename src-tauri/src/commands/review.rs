@@ -248,9 +248,42 @@ async fn prepare_review(
         })
         .collect();
 
+    if emit_skips {
+        let _ = app.emit(
+            "review-progress",
+            serde_json::json!({
+                "phase": "preflight",
+                "stage": "rules",
+                "detail": "Resolving review rules…",
+            }),
+        );
+    }
     let resolver =
         load_rule_resolver(client, project_id, repo_id, &pr_files_result.commit_id).await?;
+
+    if emit_skips {
+        let _ = app.emit(
+            "review-progress",
+            serde_json::json!({
+                "phase": "preflight",
+                "stage": "group",
+                "detail": "Grouping related files…",
+            }),
+        );
+    }
     let related_files = related_file_groups(&paths);
+
+    if emit_skips {
+        let _ = app.emit(
+            "review-progress",
+            serde_json::json!({
+                "phase": "preflight",
+                "stage": "filter",
+                "detail": format!("Applying rules to {} changed file(s)…", paths.len()),
+                "totalFiles": paths.len(),
+            }),
+        );
+    }
 
     let mut preview_files = Vec::new();
     let mut candidate_paths = Vec::new();
@@ -313,6 +346,23 @@ async fn prepare_review(
                 });
             }
         }
+    }
+
+    if emit_skips {
+        let reviewable = candidate_paths.len();
+        let skipped = preview_files.len().saturating_sub(reviewable);
+        let _ = app.emit(
+            "review-progress",
+            serde_json::json!({
+                "phase": "preflight",
+                "stage": "filtered",
+                "detail": format!(
+                    "Rules applied — {reviewable} file(s) to review, {skipped} skipped"
+                ),
+                "reviewableFiles": reviewable,
+                "skippedFiles": skipped,
+            }),
+        );
     }
 
     let fetched_inputs = fetch_file_inputs(

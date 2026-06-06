@@ -179,6 +179,7 @@ function progressText(p: ReviewProgress | null): string {
   if (!p) return "Starting review...";
   switch (p.phase) {
     case "resume": return "Resuming from saved progress...";
+    case "preflight": return p.detail;
     case "diff-fetch": return p.detail;
     case "hunk-review": return `Reviewing ${p.detail} — hunk ${p.hunk}/${p.totalHunks}`;
     case "file-aggregate":
