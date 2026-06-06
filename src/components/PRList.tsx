@@ -180,7 +180,14 @@ export function PRList() {
   const [userId, setUserId] = useState<string>("");
 
   useEffect(() => {
-    listProjects().then(setProjects);
+    listProjects().then((list) => {
+      setProjects(list);
+      // With a single project there's nothing to choose — auto-select it so the
+      // user lands straight on its repos instead of picking from a list of one.
+      if (list.length === 1 && !selectedProject.value) {
+        selectedProject.value = list[0].id;
+      }
+    });
     getCurrentUserId().then(setUserId).catch(() => setUserId(""));
   }, []);
 

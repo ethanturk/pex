@@ -944,6 +944,10 @@ fn emit_progress(app: &tauri::AppHandle, phase: &str, detail: &str, extra: serde
 }
 
 /// Run the full multi-pass review.
+///
+/// `resume` carries the caller's intent: `true` continues from any saved
+/// progress for this PR, `false` starts fresh (and discards stale saved state,
+/// e.g. left behind by a cancelled run) so a fresh start never silently resumes.
 pub async fn run_review(
     app: tauri::AppHandle,
     provider: Arc<dyn AiProvider>,
@@ -951,6 +955,7 @@ pub async fn run_review(
     conn: &libsql::Connection,
     cancel: Arc<AtomicBool>,
     diag: crate::review::diagnostics::Diagnostics,
+    resume: bool,
 ) -> Result<ReviewOutput, AppError> {
     // ---- Prepare: sort files by hunk count (largest first) ----
     let mut file_entries: Vec<(FileInput, Vec<crate::diff::engine::DiffHunk>)> = input
@@ -1079,15 +1084,21 @@ pub async fn run_review(
     // meaningless — discard the state and review fresh rather than re-reviewing
     // already-completed files (the "resume just restarts" bug).
     let mut resuming = false;
-    if let Ok(Some(saved)) = state::load_state(conn).await {
-        if saved.pr_key == state.pr_key && !saved.is_done() {
-            if align_to_saved_order(&mut file_entries, &saved.file_paths) {
-                state = saved;
-                resuming = true;
-            } else {
-                let _ = state::clear_state(conn).await;
+    if resume {
+        if let Ok(Some(saved)) = state::load_state(conn).await {
+            if saved.pr_key == state.pr_key && !saved.is_done() {
+                if align_to_saved_order(&mut file_entries, &saved.file_paths) {
+                    state = saved;
+                    resuming = true;
+                } else {
+                    let _ = state::clear_state(conn).await;
+                }
             }
         }
+    } else {
+        // Fresh start requested — drop any stale saved state up front so a prior
+        // (e.g. cancelled) run for this PR can't silently resume underneath us.
+        let _ = state::clear_state(conn).await;
     }
     if resuming {
         emit_progress(

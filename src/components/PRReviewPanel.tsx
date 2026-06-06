@@ -290,6 +290,7 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
     });
   };
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [resumeChoiceOpen, setResumeChoiceOpen] = useState(false);
   const [mode, setMode] = useState<ReviewMode>(() => loadReviewMode());
   const [savedReview, setSavedReview] = useState<ReviewState | null>(null);
   useEffect(() => {
@@ -374,8 +375,23 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
 
   // Open the pre-review confirmation dialog. The actual run is kicked off from
   // the dialog's Start button (which also carries the chosen specialist set).
-  const restart = () => {
+  // First re-check for resumable saved progress (the mount-time fetch can be
+  // stale after a run/cancel): if this PR has saved progress, ask whether to
+  // resume or start fresh rather than silently doing either.
+  const restart = async () => {
     if (busyElsewhere) return;
+    let saved = savedReview;
+    try {
+      saved = await getSavedReview();
+      setSavedReview(saved);
+    } catch {
+      // Network/storage hiccup — fall back to the last known saved state.
+    }
+    const target = saved ? parsePrKey(saved.prKey) : null;
+    if (saved && target?.prId === prId) {
+      setResumeChoiceOpen(true);
+      return;
+    }
     setConfirmOpen(true);
   };
 
@@ -788,6 +804,23 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
         </div>
       )}
 
+      {resumeChoiceOpen && savedReview && (
+        <ResumeChoiceDialog
+          prId={prId}
+          saved={savedReview}
+          busyElsewhere={busyElsewhere}
+          onResume={() => {
+            setResumeChoiceOpen(false);
+            handleResume();
+          }}
+          onStartFresh={() => {
+            setResumeChoiceOpen(false);
+            setConfirmOpen(true);
+          }}
+          onClose={() => setResumeChoiceOpen(false)}
+        />
+      )}
+
       {confirmOpen && (
         <ReviewConfirmDialog
           initialMode={mode}
@@ -800,6 +833,72 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
           onClose={() => setConfirmOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+// Shown when the user starts a review on a PR that already has resumable saved
+// progress (e.g. a prior run they navigated away from or cancelled): let them
+// pick up where it left off, or discard it and start a fresh review.
+function ResumeChoiceDialog({
+  prId,
+  saved,
+  busyElsewhere,
+  onResume,
+  onStartFresh,
+  onClose,
+}: {
+  prId: number;
+  saved: ReviewState;
+  busyElsewhere: boolean;
+  onResume: () => void;
+  onStartFresh: () => void;
+  onClose: () => void;
+}) {
+  const pct = savedProgressPercent(saved);
+  const pctSuffix = pct != null ? ` (${pct}% done)` : "";
+  return (
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl w-[420px] max-w-[94vw]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div class="px-5 pt-4 pb-3 border-b border-gray-200 dark:border-gray-700">
+          <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Resume saved review?
+          </div>
+        </div>
+        <div class="px-5 py-4 text-sm text-gray-600 dark:text-gray-300">
+          This PR has saved progress from an earlier review{pctSuffix}. Resume
+          where it left off, or discard it and start a fresh review?
+        </div>
+        <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            class="px-3 py-1.5 rounded text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onStartFresh}
+            class="px-3 py-1.5 rounded text-xs font-medium border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+          >
+            Start fresh
+          </button>
+          <button
+            onClick={onResume}
+            disabled={busyElsewhere}
+            autofocus
+            title={busyElsewhere ? `Another review is running (PR #${activeReviewPrId.value})` : `Resume the saved review for PR #${prId}`}
+            class="px-3 py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Resume
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

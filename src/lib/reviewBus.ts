@@ -127,7 +127,9 @@ export function startBackgroundReview(
   });
   reviewRuns.value = next;
 
-  startReview(projectId, repoId, prId, prTitle, mode, enabledSpecialists)
+  // `resuming` is the caller's intent, not just a UI hint: pass it through so
+  // the engine continues from saved progress only when the user chose to resume.
+  startReview(projectId, repoId, prId, prTitle, mode, enabledSpecialists, resuming)
     .then((output) => {
       updateReviewRun(prId, { status: "done", output, progress: null });
     })
