@@ -68,6 +68,10 @@ pub struct ReviewInput {
     pub rules: HashMap<String, ReviewRuleMatch>,
     #[allow(dead_code)]
     pub related_files: HashMap<String, Vec<String>>,
+    /// Compiled deterministic AST rules from the repo's `.pex/ast-rules.yml`,
+    /// run alongside the built-in stock rules. `None` if the repo has none.
+    /// `Arc` so `ReviewInput` stays cheap to clone (the matchers aren't `Clone`).
+    pub ast_rules: Option<std::sync::Arc<crate::review::deterministic::CompiledRuleSet>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1400,8 +1404,12 @@ pub async fn run_review(
         // skip the LLM anchoring step entirely. Merge them into this file's
         // aggregate so they flow through tiering, ordering, and suppression
         // alongside the model's findings.
-        let det_findings =
-            crate::review::deterministic::check_file(&file.path, &file.new_content, hunks);
+        let det_findings = crate::review::deterministic::check_file(
+            &file.path,
+            &file.new_content,
+            hunks,
+            input.ast_rules.as_deref(),
+        );
         let deterministic_count = det_findings.len();
         if let Some((_, agg)) = state.completed_files.last_mut() {
             agg.findings.extend(det_findings);

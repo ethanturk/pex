@@ -108,30 +108,72 @@ take precedence over all built-ins.
    rules above. These are deterministic *scoping and guidance*: they pick which
    files to review and what checklist text to hand the LLM. They do **not**
    produce findings; the findings come from the LLM.
-2. **Deterministic findings** (`deterministic.rs`) — tree-sitter AST checks that
+2. **Deterministic findings** (`deterministic.rs`) — **ast-grep** AST checks that
    produce real findings with **no LLM**, scoped to lines the diff added. These
    are reproducible run-to-run and run in both Fast and Thorough modes. They
    merge into the same pipeline as the LLM findings and are tagged
    `sources: ["deterministic:<rule-id>"]` (shown with a "rule" badge in the UI).
 
-### Deterministic AST rules (`deterministic.rs`) — v1
+   Matching uses `ast-grep-core`/`ast-grep-config` wrapping our own 5 tree-sitter
+   grammars (no `ast-grep-language` bundle) — pure Rust on top of grammars that
+   cross-compile to Android. Rules are ast-grep YAML.
+
+### Built-in stock rules (`deterministic.rs`, always loaded)
 
 | Lang | Rule id | Severity | Flags |
 |------|---------|----------|-------|
 | Rust | `rust-unwrap` | minor | `.unwrap()`/`.expect()` (skipped in tests) |
 | Rust | `rust-dbg` | minor | `dbg!` |
 | Rust | `rust-todo` | moderate | `todo!`/`unimplemented!` |
+| JS/JSX | `js-console` | minor | `console.log`/`console.debug` (skipped in tests) |
+| JS/JSX | `js-debugger` | moderate | `debugger` |
+| JS/JSX | `js-eval` | moderate | `eval()` |
 | TS/TSX | `ts-console` | minor | `console.log`/`console.debug` (skipped in tests) |
 | TS/TSX | `ts-debugger` | moderate | `debugger` |
 | TS/TSX | `ts-any` | minor | `any` type |
 | TS/TSX | `ts-ignore` | moderate | `@ts-ignore`/`@ts-nocheck` |
+| TS/TSX | `ts-eval` | moderate | `eval()` |
 | Python | `py-bare-except` | moderate | bare `except:` |
 | Python | `py-eval-exec` | critical | `eval()`/`exec()` |
 | Python | `py-print` | minor | `print()` (skipped in tests) |
+| C# | `cs-console-writeline` | minor | `Console.WriteLine`/`Write` (skipped in tests) |
+| C# | `cs-throw-base-exception` | moderate | `throw new Exception(...)` (+ App/System) |
+| C# | `cs-debugger-break` | moderate | `Debugger.Break()`/`Launch()` |
 
-Findings only fire when the matched AST node overlaps an **added** line, so
-pre-existing issues aren't flagged. New languages/rules are added by extending
-the per-language rule tables.
+Findings only fire when the match overlaps an **added** line, so pre-existing
+issues aren't flagged. TypeScript rules also compile against the TSX grammar.
+
+### Dynamic repo rules (`.pex/ast-rules.yml`)
+
+A repo can add its own deterministic rules in `.pex/ast-rules.yml` (or `.yaml`),
+fetched at the PR commit and merged with the built-ins (built-ins always run).
+Each rule carries metadata plus a standard ast-grep rule body (`rule`, with
+optional `constraints`/`utils`/`transform`):
+
+```yaml
+rules:
+  - id: no-foo
+    language: rust          # rust | javascript | typescript | tsx | python | csharp
+    severity: moderate      # critical | moderate | minor
+    message: "Don't call foo() — use baz()."
+    skipInTests: false      # optional
+    rule:
+      pattern: foo($$$)
+  - id: no-any-in-src
+    language: typescript    # also applies to tsx automatically
+    severity: minor
+    message: "Avoid `any`."
+    rule:
+      kind: predefined_type
+      regex: '^any$'
+```
+
+Notes:
+- Limited to the 5 compiled-in grammars; a repo **cannot add a new language**.
+- Use `kind:`+`regex:` (not `pattern:`) for node-shaped matches like types and
+  Rust macros (ast-grep patterns don't reach inside macro token-trees).
+- Bad manifests/rules are skipped with warnings (surfaced in the run), never
+  fatal; repo rule count is capped at 500.
 
 ## Coverage gaps / observations (for discussion)
 
