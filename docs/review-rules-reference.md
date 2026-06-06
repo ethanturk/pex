@@ -40,17 +40,23 @@ First match wins within each list; repo config always beats built-ins.
 | 13 | `**/*.bicepparam` | Azure Bicep parameters | parameter names/types match the Bicep template, secret handling, env-specific values, deployment safety |
 | 14 | `src/**/*.tsx` | Preact UI | state/signal ownership, async loading and cancellation, mobile touch ergonomics, accessibility labels, text overflow, dark-mode Tailwind classes |
 | 15 | `src/**/*.ts` | TypeScript frontend | API type parity with Tauri commands, signal updates, error handling, local-storage compatibility, mobile/desktop platform branching |
-| 16 | `src/styles/**/*.css` | Responsive CSS | mobile safe areas, touch targets, text overflow, dark mode, consistency with the app's utilitarian review workflow |
-| 17 | `src-tauri/tauri.conf.json` | Tauri configuration | bundle identifiers, platform config, permissions, updater settings, desktop/mobile target compatibility |
-| 18 | `src-tauri/android/**/*.kt` | Android shell | WebView lifecycle, asset loading, IPC bridge assumptions, keyboard resizing, API level constraints, Rust library loading |
-| 19 | `src-tauri/ios/**/*.swift` | iOS shell | WKWebView lifecycle, safe areas, Tauri IPC bridge assumptions, bundle paths, keychain behavior, iOS deployment target compatibility |
-| 20 | `**/*.toml` | Manifest | dependency feature flags, platform-specific dependencies, package metadata, CI/build compatibility |
-| 21 | `**/*.json` | Configuration | schema compatibility, generated-vs-source ownership, platform-specific fields, release/build impact |
-| 22 | `**/*.yml` | Workflow | secret handling, reproducibility, platform setup, artifact paths, release trigger behavior |
-| 23 | `**/*.yaml` | Workflow | (same as #22) |
-| 24 | `**/*.md` | Documentation | instructions actionable, current with referenced code paths, no conflict with platform-specific setup |
-| 25 | `**/*.sh` | Shell script | idempotency, quoting, platform assumptions, exit behavior, generated-file ownership |
-| 26 | `**/*.ps1` | PowerShell script | idempotency, quoting/escaping, error action behavior, platform assumptions, secret handling, deployment side effects |
+| 16 | `**/*.tsx` | React/JSX UI | component state and effect cleanup, async loading and cancellation, prop and key correctness, accessibility labels, escaping of untrusted data, type parity with backend contracts |
+| 17 | `**/*.ts` | TypeScript | type soundness and any/unknown usage, async error handling, module import/export correctness, API/contract compatibility, data validation, build/tooling config impact |
+| 18 | `**/*.jsx` | JavaScript/JSX UI | component state and effect cleanup, async loading and cancellation, prop and key correctness, accessibility labels, event handler wiring, escaping of untrusted data |
+| 19 | `**/*.js` | JavaScript | runtime errors and null/undefined handling, async/promise error propagation, module format and import/export correctness, input validation and security-sensitive handling, dependency behavior, browser-vs-Node assumptions, missing tests |
+| 20 | `**/*.mjs` | JavaScript | (same as #19, ESM import/export) |
+| 21 | `**/*.cjs` | JavaScript | (same as #19, CommonJS require/export) |
+| 22 | `src/styles/**/*.css` | Responsive CSS | mobile safe areas, touch targets, text overflow, dark mode, consistency with the app's utilitarian review workflow |
+| 23 | `src-tauri/tauri.conf.json` | Tauri configuration | bundle identifiers, platform config, permissions, updater settings, desktop/mobile target compatibility |
+| 24 | `src-tauri/android/**/*.kt` | Android shell | WebView lifecycle, asset loading, IPC bridge assumptions, keyboard resizing, API level constraints, Rust library loading |
+| 25 | `src-tauri/ios/**/*.swift` | iOS shell | WKWebView lifecycle, safe areas, Tauri IPC bridge assumptions, bundle paths, keychain behavior, iOS deployment target compatibility |
+| 26 | `**/*.toml` | Manifest | dependency feature flags, platform-specific dependencies, package metadata, CI/build compatibility |
+| 27 | `**/*.json` | Configuration | schema compatibility, generated-vs-source ownership, platform-specific fields, release/build impact |
+| 28 | `**/*.yml` | Workflow | secret handling, reproducibility, platform setup, artifact paths, release trigger behavior |
+| 29 | `**/*.yaml` | Workflow | (same as #28) |
+| 30 | `**/*.md` | Documentation | instructions actionable, current with referenced code paths, no conflict with platform-specific setup |
+| 31 | `**/*.sh` | Shell script | idempotency, quoting, platform assumptions, exit behavior, generated-file ownership |
+| 32 | `**/*.ps1` | PowerShell script | idempotency, quoting/escaping, error action behavior, platform assumptions, secret handling, deployment side effects |
 
 ## Generic fallback (rules.rs:141)
 
@@ -98,11 +104,15 @@ take precedence over all built-ins.
 
 ## Coverage gaps / observations (for discussion)
 
-- **No dedicated rule** for: `.js`/`.jsx`/`.mjs`/`.cjs`, `.go` (only via generic
-  fallback), `.java`/`.kt`/`.rb`/`.php`/`.cpp`/`.c` (generic fallback only),
-  `.sql`, `.html`, `.scss`/`.less`, `.proto`, `.graphql`, Dockerfile (generic).
-- `**/*.json` (#21) is broad and sits after the Azure-specific JSON rules, so
+- JS/TS gap **closed**: `.ts`/`.tsx` now covered everywhere (rules #16–#17,
+  after the `src/**` frontend rules #14–#15 which keep precedence), and
+  `.js`/`.jsx`/`.mjs`/`.cjs` are now first-class (#18–#21) instead of being
+  skipped as `unsupportedPath`.
+- **Still no dedicated rule** for: `.go`, `.java`/`.kt`/`.rb`/`.php`/`.cpp`/`.c`
+  (generic fallback only), `.sql`, `.html`, `.scss`/`.less`, `.proto`,
+  `.graphql`, Dockerfile (generic).
+- `**/*.json` (#27) is broad and sits after the Azure-specific JSON rules, so
   ordering matters if new JSON rules are added.
 - CSS rule is scoped to `src/styles/**` only; CSS elsewhere falls through.
-- `.kt` matches both the Android shell rule (#18, path-scoped) and the generic
+- `.kt` matches both the Android shell rule (#24, path-scoped) and the generic
   fallback; outside `src-tauri/android/**` it gets the generic checklist.

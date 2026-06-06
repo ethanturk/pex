@@ -254,6 +254,36 @@ fn builtin_rules() -> &'static [(&'static str, &'static str, &'static str)] {
             "Check API type parity with Tauri commands, signal updates, error handling, local-storage compatibility, and mobile/desktop platform branching.",
         ),
         (
+            "**/*.tsx",
+            "React/JSX UI checklist",
+            "Check component state and effect cleanup, async loading and cancellation, prop and key correctness, accessibility labels, escaping of untrusted data, and type parity with backend contracts.",
+        ),
+        (
+            "**/*.ts",
+            "TypeScript checklist",
+            "Check type soundness and any/unknown usage, async error handling, module import/export correctness, API/contract compatibility, data validation, and build/tooling config impact.",
+        ),
+        (
+            "**/*.jsx",
+            "JavaScript/JSX UI checklist",
+            "Check component state and effect cleanup, async loading and cancellation, prop and key correctness, accessibility labels, event handler wiring, and escaping of untrusted data.",
+        ),
+        (
+            "**/*.js",
+            "JavaScript checklist",
+            "Check runtime errors and null/undefined handling, async/promise error propagation, module format and import/export correctness, input validation and security-sensitive handling, dependency behavior, browser-vs-Node assumptions, and missing tests.",
+        ),
+        (
+            "**/*.mjs",
+            "JavaScript checklist",
+            "Check runtime errors and null/undefined handling, async/promise error propagation, ESM import/export correctness, input validation and security-sensitive handling, dependency behavior, browser-vs-Node assumptions, and missing tests.",
+        ),
+        (
+            "**/*.cjs",
+            "JavaScript checklist",
+            "Check runtime errors and null/undefined handling, async/promise error propagation, CommonJS require/export correctness, input validation and security-sensitive handling, dependency behavior, browser-vs-Node assumptions, and missing tests.",
+        ),
+        (
             "src/styles/**/*.css",
             "Responsive CSS checklist",
             "Check mobile safe areas, touch targets, text overflow, dark mode, and that visual changes remain consistent with the app's utilitarian review workflow.",
@@ -517,6 +547,38 @@ mod tests {
             };
             assert_eq!(rule.title, expected_title);
         }
+    }
+
+    #[test]
+    fn builtin_matches_js_and_ts_outside_src() {
+        let resolver = ReviewRuleResolver::default();
+        let cases = [
+            ("vite.config.ts", "TypeScript checklist"),
+            ("tools/gen.tsx", "React/JSX UI checklist"),
+            ("tailwind.config.js", "JavaScript checklist"),
+            ("scripts/build.mjs", "JavaScript checklist"),
+            ("postcss.config.cjs", "JavaScript checklist"),
+            ("components/Widget.jsx", "JavaScript/JSX UI checklist"),
+        ];
+        for (path, expected_title) in cases {
+            let RuleDecision::Review(rule) = resolver.resolve(path, "edit") else {
+                panic!("expected review for {path}");
+            };
+            assert_eq!(rule.title, expected_title, "for {path}");
+        }
+    }
+
+    #[test]
+    fn src_frontend_rules_take_precedence_over_general_ts() {
+        let resolver = ReviewRuleResolver::default();
+        let RuleDecision::Review(ts) = resolver.resolve("src/lib/api.ts", "edit") else {
+            panic!("expected review");
+        };
+        assert_eq!(ts.title, "TypeScript frontend checklist");
+        let RuleDecision::Review(tsx) = resolver.resolve("src/components/App.tsx", "edit") else {
+            panic!("expected review");
+        };
+        assert_eq!(tsx.title, "Preact UI checklist");
     }
 
     #[test]
