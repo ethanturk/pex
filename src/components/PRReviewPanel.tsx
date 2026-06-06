@@ -179,6 +179,7 @@ function progressText(p: ReviewProgress | null): string {
   if (!p) return "Starting review...";
   switch (p.phase) {
     case "resume": return "Resuming from saved progress...";
+    case "preflight": return p.detail;
     case "diff-fetch": return p.detail;
     case "hunk-review": return `Reviewing ${p.detail} — hunk ${p.hunk}/${p.totalHunks}`;
     case "file-aggregate":
@@ -809,6 +810,8 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
 function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
   const files = run.fileList ?? [];
   const durations = run.fileDurations ?? {};
+  const ruleTitles = run.ruleTitles ?? {};
+  const anchors = run.fileAnchors ?? {};
   const pre = run.preCompletedCount ?? 0;
   const isDone = (i: number) => durations[i] != null || i < pre;
   const completed = files.reduce((acc, _f, i) => acc + (isDone(i) ? 1 : 0), 0);
@@ -848,16 +851,33 @@ function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
                   <span class="text-gray-300 dark:text-gray-600">○</span>
                 )}
               </span>
-              <span
-                class={`min-w-0 flex-1 truncate ${
-                  done
-                    ? "text-gray-400 dark:text-gray-500"
-                    : active
-                      ? "text-gray-800 dark:text-gray-100 font-medium"
-                      : "text-gray-500 dark:text-gray-400"
-                }`}
-              >
-                {fileName(path)}
+              <span class="min-w-0 flex-1 flex flex-col leading-tight">
+                <span
+                  class={`truncate ${
+                    done
+                      ? "text-gray-400 dark:text-gray-500"
+                      : active
+                        ? "text-gray-800 dark:text-gray-100 font-medium"
+                        : "text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  {fileName(path)}
+                </span>
+                {(ruleTitles[path] || anchors[i]) && (
+                  <span class="truncate text-[10px] text-gray-400 dark:text-gray-500">
+                    {ruleTitles[path] ?? "Review"}
+                    {anchors[i] && (
+                      <>
+                        {" · "}
+                        {anchors[i].kept + anchors[i].deterministic} finding
+                        {anchors[i].kept + anchors[i].deterministic === 1 ? "" : "s"}
+                        {anchors[i].anchored > 0 && ` · ${anchors[i].anchored} anchored`}
+                        {anchors[i].deterministic > 0 && ` · ${anchors[i].deterministic} deterministic`}
+                        {anchors[i].dropped > 0 && ` · ${anchors[i].dropped} dropped`}
+                      </>
+                    )}
+                  </span>
+                )}
               </span>
               {elapsed && (
                 <span
@@ -1184,6 +1204,16 @@ function FindingRow({
                 title={`${severityLabel(finding.severity)} · ${finding.confidence}% confidence`}
               >
                 {finding.confidence}%
+              </span>
+            )}
+            {(finding.sources ?? []).some((s) => s.startsWith("deterministic:")) && (
+              <span
+                class="shrink-0 text-[9px] uppercase tracking-wide font-semibold px-1 py-px rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                title={`Deterministic rule: ${(finding.sources ?? [])
+                  .find((s) => s.startsWith("deterministic:"))
+                  ?.slice("deterministic:".length)}`}
+              >
+                rule
               </span>
             )}
           </div>

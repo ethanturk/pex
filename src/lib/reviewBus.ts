@@ -44,6 +44,8 @@ export async function initReviewBus() {
     if (p.phase === "plan" && Array.isArray(p.files)) {
       patch.fileList = p.files;
       patch.fileDurations = {};
+      patch.fileAnchors = {};
+      patch.ruleTitles = p.ruleTitles ?? {};
       patch.preCompletedCount = p.completedCount ?? 0;
       patch.activeFileIndex = undefined;
       patch.activeFileStartMs = undefined;
@@ -58,6 +60,15 @@ export async function initReviewBus() {
       patch.fileDurations = {
         ...(run?.fileDurations ?? {}),
         [p.fileIndex]: p.durationMs ?? 0,
+      };
+      patch.fileAnchors = {
+        ...(run?.fileAnchors ?? {}),
+        [p.fileIndex]: {
+          kept: p.keptFindings ?? 0,
+          anchored: p.anchoredFindings ?? 0,
+          dropped: p.droppedFindings ?? 0,
+          deterministic: p.deterministicFindings ?? 0,
+        },
       };
       // Clear the active marker; the next hunk-review event sets the next file.
       patch.activeFileIndex = undefined;

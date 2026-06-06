@@ -56,6 +56,7 @@ struct PreparedReview {
     rules: HashMap<String, ReviewRuleMatch>,
     related_files: HashMap<String, Vec<String>>,
     standards: String,
+    ast_rules: Option<crate::review::deterministic::CompiledRuleSet>,
 }
 
 fn normalize_review_path(path: &str) -> String {
@@ -197,6 +198,30 @@ async fn load_rule_resolver(
     }
 }
 
+/// Load and compile the repo's deterministic AST rules from
+/// `.pex/ast-rules.yml` (or `.yaml`) at the PR commit. Returns the compiled set
+/// (if any) plus any human-readable compile warnings. Best-effort: a missing or
+/// invalid manifest yields `None`/warnings, never an error.
+async fn load_ast_rules(
+    client: &crate::provider::GitClient,
+    project_id: &str,
+    repo_id: &str,
+    commit_id: &str,
+) -> (Option<crate::review::deterministic::CompiledRuleSet>, Vec<String>) {
+    for path in [".pex/ast-rules.yml", ".pex/ast-rules.yaml"] {
+        if let Ok(Some(raw)) = client
+            .get_file_at_commit(project_id, repo_id, commit_id, path)
+            .await
+        {
+            if !raw.trim().is_empty() {
+                let (set, warnings) = crate::review::deterministic::compile_repo_rules(&raw);
+                return (Some(set), warnings);
+            }
+        }
+    }
+    (None, Vec::new())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prepare_review(
     app: &tauri::AppHandle,
@@ -248,9 +273,70 @@ async fn prepare_review(
         })
         .collect();
 
+    if emit_skips {
+        let _ = app.emit(
+            "review-progress",
+            serde_json::json!({
+                "phase": "preflight",
+                "stage": "rules",
+                "detail": "Resolving review rules…",
+            }),
+        );
+    }
     let resolver =
         load_rule_resolver(client, project_id, repo_id, &pr_files_result.commit_id).await?;
+
+    if emit_skips {
+        let _ = app.emit(
+            "review-progress",
+            serde_json::json!({
+                "phase": "preflight",
+                "stage": "group",
+                "detail": "Grouping related files…",
+            }),
+        );
+    }
     let related_files = related_file_groups(&paths);
+
+    // Deterministic AST rules: built-ins always run; the repo may add more via
+    // .pex/ast-rules.yml. Compile-time warnings are surfaced to the user.
+    let (ast_rules, ast_warnings) =
+        load_ast_rules(client, project_id, repo_id, &pr_files_result.commit_id).await;
+    for w in &ast_warnings {
+        eprintln!("[review] .pex/ast-rules.yml: {w}");
+    }
+    if emit_skips {
+        let repo_count = ast_rules.as_ref().map(|s| s.len()).unwrap_or(0);
+        if repo_count > 0 || !ast_warnings.is_empty() {
+            let _ = app.emit(
+                "review-progress",
+                serde_json::json!({
+                    "phase": "preflight",
+                    "stage": "astRules",
+                    "detail": format!(
+                        "Loaded {repo_count} repo AST rule(s){}",
+                        if ast_warnings.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {} warning(s)", ast_warnings.len())
+                        }
+                    ),
+                }),
+            );
+        }
+    }
+
+    if emit_skips {
+        let _ = app.emit(
+            "review-progress",
+            serde_json::json!({
+                "phase": "preflight",
+                "stage": "filter",
+                "detail": format!("Applying rules to {} changed file(s)…", paths.len()),
+                "totalFiles": paths.len(),
+            }),
+        );
+    }
 
     let mut preview_files = Vec::new();
     let mut candidate_paths = Vec::new();
@@ -313,6 +399,23 @@ async fn prepare_review(
                 });
             }
         }
+    }
+
+    if emit_skips {
+        let reviewable = candidate_paths.len();
+        let skipped = preview_files.len().saturating_sub(reviewable);
+        let _ = app.emit(
+            "review-progress",
+            serde_json::json!({
+                "phase": "preflight",
+                "stage": "filtered",
+                "detail": format!(
+                    "Rules applied — {reviewable} file(s) to review, {skipped} skipped"
+                ),
+                "reviewableFiles": reviewable,
+                "skippedFiles": skipped,
+            }),
+        );
     }
 
     let fetched_inputs = fetch_file_inputs(
@@ -413,6 +516,7 @@ async fn prepare_review(
         rules,
         related_files,
         standards,
+        ast_rules,
     })
 }
 
@@ -667,6 +771,7 @@ pub async fn start_review(
         enabled_specialists,
         rules: prepared.rules,
         related_files: prepared.related_files,
+        ast_rules: prepared.ast_rules.map(std::sync::Arc::new),
     };
 
     // Clear any prior cancel signal before starting a fresh run.
@@ -779,6 +884,7 @@ pub async fn start_review_post(
         enabled_specialists: None,
         rules: prepared.rules,
         related_files: prepared.related_files,
+        ast_rules: prepared.ast_rules.map(std::sync::Arc::new),
     };
 
     state.review_cancel.store(false, Ordering::SeqCst);

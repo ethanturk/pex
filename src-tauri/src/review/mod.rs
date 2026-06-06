@@ -1,4 +1,5 @@
 pub mod anchoring;
+pub mod deterministic;
 pub mod diagnostics;
 pub mod engine;
 pub mod feedback;
