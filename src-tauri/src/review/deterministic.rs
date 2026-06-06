@@ -11,14 +11,15 @@
 //! (`FileAggregateFinding`), but because they already carry exact line numbers
 //! they bypass the LLM anchoring/relocation step entirely.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
 
 use crate::diff::engine::DiffHunk;
 use crate::review::engine::{FileAggregateFinding, Severity};
 
 /// Languages with an AST checker. Scoped intentionally small for v1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Lang {
     Rust,
     TypeScript,
@@ -195,9 +196,42 @@ const PYTHON_RULES: &[DetRule] = &[
     },
 ];
 
+/// A rule with its query compiled once, against a specific grammar.
+struct CompiledRule {
+    rule: &'static DetRule,
+    query: Query,
+}
+
+/// A grammar plus its compiled rule queries.
+struct CompiledLang {
+    language: Language,
+    rules: Vec<CompiledRule>,
+}
+
+/// Tree-sitter `Query` compilation is more expensive than running the query, so
+/// compile every rule once at first use and reuse across files. `Query` is
+/// `Send + Sync`, so a process-wide cache is safe.
+static COMPILED: LazyLock<HashMap<Lang, CompiledLang>> = LazyLock::new(|| {
+    let mut map = HashMap::new();
+    for lang in [Lang::Rust, Lang::TypeScript, Lang::Tsx, Lang::Python] {
+        let language = lang.ts_language();
+        let mut rules = Vec::new();
+        for rule in rules_for(lang) {
+            match Query::new(&language, rule.query) {
+                Ok(query) => rules.push(CompiledRule { rule, query }),
+                // A malformed built-in query is a programming error: make it
+                // loud in tests/debug, but never abort a real review for it.
+                Err(e) => debug_assert!(false, "invalid query for {}: {e}", rule.id),
+            }
+        }
+        map.insert(lang, CompiledLang { language, rules });
+    }
+    map
+});
+
 /// Run the deterministic AST checks for `path` against its new content, scoped
-/// to the lines the diff actually added. Never panics: a parse/query failure
-/// for one file yields no findings rather than aborting the review.
+/// to the lines the diff actually added. Never panics: a parse failure for one
+/// file yields no findings rather than aborting the review.
 pub fn check_file(
     path: &str,
     new_content: &str,
@@ -206,15 +240,17 @@ pub fn check_file(
     let Some(lang) = Lang::detect(path) else {
         return Vec::new();
     };
+    let Some(compiled) = COMPILED.get(&lang) else {
+        return Vec::new();
+    };
     let added = added_lines(hunks);
     if added.is_empty() {
         return Vec::new();
     }
     let is_test = is_test_file(path);
 
-    let language = lang.ts_language();
     let mut parser = Parser::new();
-    if parser.set_language(&language).is_err() {
+    if parser.set_language(&compiled.language).is_err() {
         return Vec::new();
     }
     let Some(tree) = parser.parse(new_content, None) else {
@@ -224,18 +260,13 @@ pub fn check_file(
     let src = new_content.as_bytes();
 
     let mut findings = Vec::new();
-    for rule in rules_for(lang) {
+    for CompiledRule { rule, query } in &compiled.rules {
         if rule.skip_in_tests && is_test {
             continue;
         }
-        let Ok(query) = Query::new(&language, rule.query) else {
-            // A malformed query is a programming error; skip it rather than
-            // failing the whole review.
-            continue;
-        };
         let names = query.capture_names();
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, root, src);
+        let mut matches = cursor.matches(query, root, src);
         while let Some(m) = matches.next() {
             let Some(node) = evaluate_match(rule, &names, m.captures, src) else {
                 continue;
