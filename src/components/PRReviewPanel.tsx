@@ -869,8 +869,10 @@ function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
                     {anchors[i] && (
                       <>
                         {" · "}
-                        {anchors[i].kept} finding{anchors[i].kept === 1 ? "" : "s"}
+                        {anchors[i].kept + anchors[i].deterministic} finding
+                        {anchors[i].kept + anchors[i].deterministic === 1 ? "" : "s"}
                         {anchors[i].anchored > 0 && ` · ${anchors[i].anchored} anchored`}
+                        {anchors[i].deterministic > 0 && ` · ${anchors[i].deterministic} deterministic`}
                         {anchors[i].dropped > 0 && ` · ${anchors[i].dropped} dropped`}
                       </>
                     )}
@@ -1202,6 +1204,16 @@ function FindingRow({
                 title={`${severityLabel(finding.severity)} · ${finding.confidence}% confidence`}
               >
                 {finding.confidence}%
+              </span>
+            )}
+            {(finding.sources ?? []).some((s) => s.startsWith("deterministic:")) && (
+              <span
+                class="shrink-0 text-[9px] uppercase tracking-wide font-semibold px-1 py-px rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                title={`Deterministic rule: ${(finding.sources ?? [])
+                  .find((s) => s.startsWith("deterministic:"))
+                  ?.slice("deterministic:".length)}`}
+              >
+                rule
               </span>
             )}
           </div>

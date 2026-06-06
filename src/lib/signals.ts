@@ -282,15 +282,17 @@ export interface ReviewProgress {
   keptFindings?: number;
   anchoredFindings?: number;
   droppedFindings?: number;
+  deterministicFindings?: number;
   // `plan` event: matched deterministic checklist title per file path.
   ruleTitles?: Record<string, string>;
 }
 
-// Per-file deterministic anchoring rollup, keyed by file index.
+// Per-file anchoring + deterministic-check rollup, keyed by file index.
 export interface FileAnchorStats {
   kept: number;
   anchored: number;
   dropped: number;
+  deterministic: number;
 }
 
 export type PRReviewStatus = "running" | "done" | "posting" | "posted" | "error";

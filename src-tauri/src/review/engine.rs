@@ -1395,12 +1395,24 @@ pub async fn run_review(
             ));
         }
 
+        // Deterministic AST checks: produce findings with no LLM, scoped to
+        // lines the diff added. They already carry exact line ranges, so they
+        // skip the LLM anchoring step entirely. Merge them into this file's
+        // aggregate so they flow through tiering, ordering, and suppression
+        // alongside the model's findings.
+        let det_findings =
+            crate::review::deterministic::check_file(&file.path, &file.new_content, hunks);
+        let deterministic_count = det_findings.len();
+        if let Some((_, agg)) = state.completed_files.last_mut() {
+            agg.findings.extend(det_findings);
+        }
+
         emit_progress(
             &app,
             "file-done",
             &format!(
-                "Reviewed {} — {} finding(s), {} anchored, {} dropped",
-                file.path, kept_count, anchored_count, dropped_count
+                "Reviewed {} — {} finding(s), {} anchored, {} dropped, {} deterministic",
+                file.path, kept_count, anchored_count, dropped_count, deterministic_count
             ),
             serde_json::json!({
                 "fileIndex": state.current_file_idx,
@@ -1410,6 +1422,7 @@ pub async fn run_review(
                 "keptFindings": kept_count,
                 "anchoredFindings": anchored_count,
                 "droppedFindings": dropped_count,
+                "deterministicFindings": deterministic_count,
             }),
         );
 

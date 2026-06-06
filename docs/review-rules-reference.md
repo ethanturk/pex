@@ -102,6 +102,37 @@ msi, dll, so, dylib, a, wasm, woff, woff2, ttf, otf
 `defaultRule` may also be a bare string. Repo `rules` are first-match-wins and
 take precedence over all built-ins.
 
+## Two distinct layers (don't conflate them)
+
+1. **Deterministic preflight** (`rules.rs`, `related.rs`, `anchoring.rs`) — the
+   rules above. These are deterministic *scoping and guidance*: they pick which
+   files to review and what checklist text to hand the LLM. They do **not**
+   produce findings; the findings come from the LLM.
+2. **Deterministic findings** (`deterministic.rs`) — tree-sitter AST checks that
+   produce real findings with **no LLM**, scoped to lines the diff added. These
+   are reproducible run-to-run and run in both Fast and Thorough modes. They
+   merge into the same pipeline as the LLM findings and are tagged
+   `sources: ["deterministic:<rule-id>"]` (shown with a "rule" badge in the UI).
+
+### Deterministic AST rules (`deterministic.rs`) — v1
+
+| Lang | Rule id | Severity | Flags |
+|------|---------|----------|-------|
+| Rust | `rust-unwrap` | minor | `.unwrap()`/`.expect()` (skipped in tests) |
+| Rust | `rust-dbg` | minor | `dbg!` |
+| Rust | `rust-todo` | moderate | `todo!`/`unimplemented!` |
+| TS/TSX | `ts-console` | minor | `console.log`/`console.debug` (skipped in tests) |
+| TS/TSX | `ts-debugger` | moderate | `debugger` |
+| TS/TSX | `ts-any` | minor | `any` type |
+| TS/TSX | `ts-ignore` | moderate | `@ts-ignore`/`@ts-nocheck` |
+| Python | `py-bare-except` | moderate | bare `except:` |
+| Python | `py-eval-exec` | critical | `eval()`/`exec()` |
+| Python | `py-print` | minor | `print()` (skipped in tests) |
+
+Findings only fire when the matched AST node overlaps an **added** line, so
+pre-existing issues aren't flagged. New languages/rules are added by extending
+the per-language rule tables.
+
 ## Coverage gaps / observations (for discussion)
 
 - JS/TS gap **closed**: `.ts`/`.tsx` now covered everywhere (rules #16–#17,

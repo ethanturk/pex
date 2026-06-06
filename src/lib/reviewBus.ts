@@ -67,6 +67,7 @@ export async function initReviewBus() {
           kept: p.keptFindings ?? 0,
           anchored: p.anchoredFindings ?? 0,
           dropped: p.droppedFindings ?? 0,
+          deterministic: p.deterministicFindings ?? 0,
         },
       };
       // Clear the active marker; the next hunk-review event sets the next file.

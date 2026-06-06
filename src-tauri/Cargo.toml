@@ -32,6 +32,10 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 async-trait = "0.1"
 url = "2"
+tree-sitter = "0.26.9"
+tree-sitter-rust = "0.24.2"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-python = "0.25.0"
 
 # Credential storage backends are platform-specific. Desktop/iOS use the OS
 # keyring; Android (no keyring backend) uses an AES-GCM file with an
