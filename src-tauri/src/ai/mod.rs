@@ -100,6 +100,25 @@ pub struct ToolChatResponse {
     pub tool_calls: Vec<ToolCall>,
 }
 
+/// Token accounting for a single LLM call, as reported by the provider.
+/// `None` on a `ChatResponse` means the provider didn't return usage stats
+/// (some OpenAI-compatible local servers omit the `usage` object).
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+/// A chat completion plus the provider-reported token usage. The plain-text
+/// `chat`/`chat_with_model` helpers discard the usage; the review engine uses
+/// `chat_full` so it can meter token cost.
+#[derive(Debug, Clone, Default)]
+pub struct ChatResponse {
+    pub content: String,
+    pub usage: Option<TokenUsage>,
+}
+
 /// AI provider trait — implemented by OpenAI and Anthropic backends.
 #[async_trait::async_trait]
 pub trait AiProvider: Send + Sync {
@@ -110,11 +129,25 @@ pub trait AiProvider: Send + Sync {
 
     /// Send a chat request, optionally overriding the model for this single call.
     /// `None` means "use the provider's configured model" — same behavior as `chat`.
+    /// Returns only the text; callers that need token usage use `chat_full`.
     async fn chat_with_model(
         &self,
         messages: &[ChatMessage],
         model_override: Option<&str>,
-    ) -> Result<String, AppError>;
+    ) -> Result<String, AppError> {
+        Ok(self.chat_full(messages, model_override, None).await?.content)
+    }
+
+    /// Send a chat request, capping output at `max_tokens` (when the provider
+    /// supports it) and returning the provider-reported token usage alongside
+    /// the text. `max_tokens = None` falls back to the provider's own default
+    /// ceiling. This is the one method providers must implement.
+    async fn chat_full(
+        &self,
+        messages: &[ChatMessage],
+        model_override: Option<&str>,
+        max_tokens: Option<u32>,
+    ) -> Result<ChatResponse, AppError>;
 
     /// Send a tool-enabled chat request. Providers that do not support native
     /// tool calls return an error; callers should treat that as a signal to
@@ -124,6 +157,7 @@ pub trait AiProvider: Send + Sync {
         _messages: &[ToolChatMessage],
         _tools: &[ToolDefinition],
         _model_override: Option<&str>,
+        _max_tokens: Option<u32>,
     ) -> Result<ToolChatResponse, AppError> {
         Err(AppError::Ai(
             "Tool calls are not supported by this provider".to_string(),
@@ -187,6 +221,40 @@ pub const MAX_BLOCKING_CONFIDENCE: u8 = 100;
 /// large files while still letting reviewers see definitions / callers that
 /// kill the most common false positives. Not user-configurable in Phase 1.
 pub const FILE_CONTEXT_MAX_CHARS: usize = 12000;
+
+// ---- Per-stage output token caps ----
+//
+// The OpenAI-compatible path previously sent NO `max_tokens`, so a verbose
+// local model could generate until EOS on every call — the dominant token cost
+// of a review. These caps bound generation per stage. They're deliberately
+// stage-aware: the hunk passes ask for "2-4 bullet points" and need very
+// little, while the adjudicator and synthesis emit structured JSON/Markdown
+// that must not be truncated mid-document.
+//
+// The two stages that dominate cost are user-configurable (`ai_hunk_max_tokens`
+// / `ai_aggregate_max_tokens`); the cheap, fixed-shape stages stay constant.
+// Raise a cap if a stage's output is being clipped.
+//
+/// Default cap for per-hunk passes (Fast single-pass and each Thorough
+/// specialist). Bounds the runaway generation that drives review cost on local
+/// models. User-configurable via `ai_hunk_max_tokens`.
+pub const DEFAULT_HUNK_MAX_TOKENS: u32 = 768;
+/// Default cap for the aggregation stages — file adjudicator (JSON), batch and
+/// final synthesis (Markdown). Large enough that structured output isn't
+/// truncated. User-configurable via `ai_aggregate_max_tokens`.
+pub const DEFAULT_AGGREGATE_MAX_TOKENS: u32 = 2048;
+/// Floor / ceiling clamps for the two configurable caps. The floor keeps a
+/// fat-fingered tiny value from truncating every response into uselessness; the
+/// ceiling keeps a runaway value from defeating the point of a cap.
+pub const MIN_MAX_TOKENS: u32 = 64;
+pub const MAX_MAX_TOKENS: u32 = 32768;
+/// Cap for the pre-review file-context gather (Thorough, large files).
+pub const MAX_TOKENS_CONTEXT: u32 = 1024;
+/// Cap for anchor relocation — a single short snippet.
+pub const MAX_TOKENS_ANCHOR: u32 = 256;
+/// Fallback ceiling when a caller passes `max_tokens = None`. Matches the value
+/// the Anthropic path historically hardcoded.
+pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 /// Whether posting a review with at least one Blocking finding also casts a
 /// "wait for author" reviewer vote. Off by default — auto-voting is a visible
@@ -254,6 +322,10 @@ pub struct AiSettingsNoKey {
     /// time — a slow model that keeps the connection alive will not be killed.
     pub read_timeout_secs: u64,
     pub hunk_concurrency: u32,
+    /// Output token cap for per-hunk passes (Fast / each Thorough specialist).
+    pub hunk_max_tokens: u32,
+    /// Output token cap for the aggregation stages (adjudicate + synthesis).
+    pub aggregate_max_tokens: u32,
     pub standards_max_chars: u32,
     /// Number of retries the review engine performs after a failed LLM call.
     /// 0 = no retries (recommended for local providers).
@@ -467,6 +539,29 @@ pub async fn read_hunk_concurrency(conn: &libsql::Connection) -> Result<u32, App
         .filter(|n| *n >= 1)
         .map(|n| n.min(MAX_HUNK_CONCURRENCY))
         .unwrap_or(DEFAULT_HUNK_CONCURRENCY))
+}
+
+/// Clamp a configured output-token cap to `[MIN_MAX_TOKENS, MAX_MAX_TOKENS]`,
+/// falling back to `default` when unset or unparseable.
+fn read_max_tokens_setting(raw: Option<String>, default: u32) -> u32 {
+    raw.and_then(|s| s.parse::<u32>().ok())
+        .map(|n| n.clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS))
+        .unwrap_or(default)
+}
+
+/// Read the per-hunk output token cap (Fast pass / each Thorough specialist).
+/// This is the dominant lever on review token cost for verbose local models.
+pub async fn read_hunk_max_tokens(conn: &libsql::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_hunk_max_tokens").await?;
+    Ok(read_max_tokens_setting(raw, DEFAULT_HUNK_MAX_TOKENS))
+}
+
+/// Read the output token cap for the aggregation stages (file adjudication,
+/// batch and final synthesis). Higher than the hunk cap so structured
+/// JSON/Markdown isn't truncated mid-document.
+pub async fn read_aggregate_max_tokens(conn: &libsql::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_aggregate_max_tokens").await?;
+    Ok(read_max_tokens_setting(raw, DEFAULT_AGGREGATE_MAX_TOKENS))
 }
 
 /// Read the configured retry count for failed LLM calls during a PR review.

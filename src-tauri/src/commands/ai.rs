@@ -29,6 +29,14 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         .await
         .map_err(|e: crate::AppError| e.to_string())?;
 
+    let hunk_max_tokens = crate::ai::read_hunk_max_tokens(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+
+    let aggregate_max_tokens = crate::ai::read_aggregate_max_tokens(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+
     let standards_max_chars = crate::ai::read_standards_max_chars(&conn)
         .await
         .map_err(|e: crate::AppError| e.to_string())?;
@@ -77,6 +85,8 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         connect_timeout_secs: default_provider.connect_timeout_secs,
         read_timeout_secs: default_provider.read_timeout_secs,
         hunk_concurrency,
+        hunk_max_tokens,
+        aggregate_max_tokens,
         standards_max_chars,
         retry_count,
         confidence_threshold,
@@ -420,6 +430,8 @@ pub async fn remove_ai_provider(
 pub async fn save_ai_preferences(
     state: State<'_, AppState>,
     hunk_concurrency: u32,
+    hunk_max_tokens: u32,
+    aggregate_max_tokens: u32,
     standards_max_chars: u32,
     retry_count: u32,
     confidence_threshold: u8,
@@ -447,6 +459,23 @@ pub async fn save_ai_preferences(
     };
 
     crate::cache::set_setting(&conn, "ai_hunk_concurrency", &concurrency.to_string())
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+    // Output token caps: clamp to a sane range, falling back to the default for
+    // a 0 / fat-fingered value so a cap can never truncate every response.
+    let clamp_tokens = |n: u32, default: u32| {
+        if n == 0 {
+            default
+        } else {
+            n.clamp(crate::ai::MIN_MAX_TOKENS, crate::ai::MAX_MAX_TOKENS)
+        }
+    };
+    let hunk_tokens = clamp_tokens(hunk_max_tokens, crate::ai::DEFAULT_HUNK_MAX_TOKENS);
+    crate::cache::set_setting(&conn, "ai_hunk_max_tokens", &hunk_tokens.to_string())
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+    let agg_tokens = clamp_tokens(aggregate_max_tokens, crate::ai::DEFAULT_AGGREGATE_MAX_TOKENS);
+    crate::cache::set_setting(&conn, "ai_aggregate_max_tokens", &agg_tokens.to_string())
         .await
         .map_err(|e: crate::AppError| e.to_string())?;
     // retry_count: 0 is valid ("do not retry"); just clamp the upper bound.
@@ -740,6 +769,9 @@ pub struct ReviewSpecialistInfo {
     pub model: String,
     /// The concrete provider this specialist will use.
     pub provider_name: String,
+    /// Whether this specialist is selected by default in the dialog. The lean
+    /// default set keeps per-hunk token cost down; the rest stay opt-in.
+    pub default_enabled: bool,
 }
 
 /// The Thorough-mode specialist roster, in run order, each annotated with the
@@ -773,6 +805,7 @@ pub async fn get_review_specialists(
             description: info.description,
             model: info.model.unwrap_or_else(|| provider.model.clone()),
             provider_name: provider.name.clone(),
+            default_enabled: k.is_default_specialist(),
         });
     }
     Ok(out)

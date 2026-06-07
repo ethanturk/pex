@@ -134,6 +134,8 @@ export function AiSettings({ open, onClose, standalone }: Props) {
 
   // ---- Review preferences tab (autosaved) ----
   const [hunkConcurrency, setHunkConcurrency] = useState(1);
+  const [hunkMaxTokens, setHunkMaxTokens] = useState(768);
+  const [aggregateMaxTokens, setAggregateMaxTokens] = useState(2048);
   const [standardsMaxChars, setStandardsMaxChars] = useState(String(DEFAULT_STANDARDS_MAX_CHARS));
   const [retryCount, setRetryCount] = useState(1);
   const [confidenceThreshold, setConfidenceThreshold] = useState(80);
@@ -252,6 +254,8 @@ export function AiSettings({ open, onClose, standalone }: Props) {
       setProviderModelsError(null);
       setProviderSaveStatus(null);
       setHunkConcurrency(settings.hunkConcurrency || 1);
+      setHunkMaxTokens(settings.hunkMaxTokens || 768);
+      setAggregateMaxTokens(settings.aggregateMaxTokens || 2048);
       setStandardsMaxChars(String(settings.standardsMaxChars || DEFAULT_STANDARDS_MAX_CHARS));
       // retryCount of 0 is valid ("no retries"), so don't fall back to a default
       // when the user has explicitly chosen 0.
@@ -311,6 +315,8 @@ export function AiSettings({ open, onClose, standalone }: Props) {
     let cancelled = false;
     saveAiPreferences({
       hunkConcurrency,
+      hunkMaxTokens,
+      aggregateMaxTokens,
       standardsMaxChars: normalized,
       retryCount,
       confidenceThreshold,
@@ -333,6 +339,8 @@ export function AiSettings({ open, onClose, standalone }: Props) {
     };
   }, [
     hunkConcurrency,
+    hunkMaxTokens,
+    aggregateMaxTokens,
     standardsMaxChars,
     retryCount,
     confidenceThreshold,
@@ -978,6 +986,48 @@ export function AiSettings({ open, onClose, standalone }: Props) {
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Maximum number of hunks a PR review sends to the model at once. Default 1 = sequential. Increase only if your provider can handle parallel requests.
+                  </p>
+                </Field>
+
+                <Field label="Per-hunk output cap (tokens)">
+                  <input
+                    type="number"
+                    min={64}
+                    max={32768}
+                    value={hunkMaxTokens}
+                    onInput={(e) => {
+                      const n = parseInt(e.currentTarget.value, 10);
+                      setHunkMaxTokens(Number.isFinite(n) && n > 0 ? n : 768);
+                    }}
+                    onBlur={() =>
+                      setHunkMaxTokens((v) => Math.min(32768, Math.max(64, v || 768)))
+                    }
+                    placeholder="768"
+                    class={INPUT_CLASS}
+                  />
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Max tokens each per-hunk pass (Fast, and every Thorough specialist) may generate. The biggest lever on review cost with verbose local models — the hunk prompts only ask for a few bullet points. Lower to go faster; raise if hunk findings look cut off.
+                  </p>
+                </Field>
+
+                <Field label="Aggregation output cap (tokens)">
+                  <input
+                    type="number"
+                    min={64}
+                    max={32768}
+                    value={aggregateMaxTokens}
+                    onInput={(e) => {
+                      const n = parseInt(e.currentTarget.value, 10);
+                      setAggregateMaxTokens(Number.isFinite(n) && n > 0 ? n : 2048);
+                    }}
+                    onBlur={() =>
+                      setAggregateMaxTokens((v) => Math.min(32768, Math.max(64, v || 2048)))
+                    }
+                    placeholder="2048"
+                    class={INPUT_CLASS}
+                  />
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Max tokens for the structured stages — per-file adjudication (JSON) and the batch / final synthesis (Markdown). Keep this comfortably high; too low truncates the summary or drops findings.
                   </p>
                 </Field>
 

@@ -884,8 +884,15 @@ pub async fn start_review_post(
         repo_id: repo_id.clone(),
         pr_id,
         mode,
-        // The auto/post path runs the full specialist roster.
-        enabled_specialists: None,
+        // The auto/post path runs unattended, so it uses the lean default
+        // roster (not the full set) to keep token cost down. `None` would mean
+        // "run everything"; pass the default specialist keys explicitly.
+        enabled_specialists: Some(
+            crate::ai::prompts::PromptKey::DEFAULT_THOROUGH_SPECIALISTS
+                .iter()
+                .map(|k| k.as_str().to_string())
+                .collect(),
+        ),
         rules: prepared.rules,
         related_files: prepared.related_files,
         ast_rules: prepared.ast_rules.map(std::sync::Arc::new),

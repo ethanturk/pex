@@ -22,11 +22,12 @@ Every line has `ts` (RFC3339), `runId`, and `kind`, plus kind-specific fields.
 | `run_start` | once, at the top | `prKey`, `prTitle`, `mode`, `fileCount`, `settings` (`confidenceThreshold`, `blockingConfidence`, `retryCount`, `hunkConcurrency`) |
 | `hunk_candidate` | per surfaced hunk finding | `filePath`, `hunk`, `text` (the raw per-hunk specialist prose, `[label]`-tagged in Thorough) |
 | `llm_call` | per adjudicate / batch / synthesis call | `stage`, `latencyMs`, `messages` (full prompt sent), `response` (raw model output), `filePath`/`batch` where relevant |
+| `token_usage` | per LLM call that reported usage | `stage` (`hunk`, `specialist:<label>`, `adjudicate`, `batch`, `synthesis`, `anchor`), `inputTokens`, `outputTokens` |
 | `adjudicated_finding` | per parsed finding the guards **kept** | `filePath`, `severity`, `confidence`, `lineStart`/`lineEnd`, `sources`, `comment` |
 | `guard_drop` | per parsed finding the guards **dropped** | same as above **plus** `reason` = `below_threshold` \| `outside_hunk` |
 | `suppressed` | per finding dropped by suppression memory | `filePath`, `fingerprint`, `lineStart`, `tier`, `comment` |
 | `finding_final` | per surviving finding | `severity`, `confidence`, `tier`, `lineStart`/`lineEnd`, `sources`, `comment`, **`fingerprint`** |
-| `run_done` | once, at the end | `totalFiles`, `findings`, `suppressed`, `blocking`/`shouldFix`/`nit`/`fyi` |
+| `run_done` | once, at the end | `totalFiles`, `findings`, `suppressed`, `blocking`/`shouldFix`/`nit`/`fyi`, `inputTokens`, `outputTokens`, `llmCalls`, `callsWithoutUsage` |
 
 ## Deterministic vs non-deterministic coverage
 
@@ -38,6 +39,23 @@ Every line has `ts` (RFC3339), `runId`, and `kind`, plus kind-specific fields.
   `reason`), `suppressed`, and `finding_final` record every threshold, anchor,
   tier, and suppression decision — the signal for tuning the confidence
   threshold, the critical line, and the anchor check.
+
+## Evaluating token cost
+
+The `token_usage` events plus the `run_done` totals make a trace a record of
+what a review *cost*. To turn a directory of traces into a per-stage / per-run
+token report (and the derived output-tokens-per-file figure), run the bundled
+evaluator:
+
+```bash
+cd src-tauri
+cargo run --example eval_traces                 # scans the default diagnostics dir
+cargo run --example eval_traces -- run-a.jsonl run-b.jsonl
+```
+
+It reads existing traces only (never calls an LLM), so it's the way to confirm
+a prompt / cap / specialist-roster change actually moved token cost rather than
+estimating from tokens/sec.
 
 ## The join that makes it training data
 

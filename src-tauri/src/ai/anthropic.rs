@@ -1,5 +1,6 @@
 use crate::ai::{
-    AiProvider, ChatMessage, ChatRole, ToolCall, ToolChatMessage, ToolChatResponse, ToolDefinition,
+    AiProvider, ChatMessage, ChatResponse, ChatRole, TokenUsage, ToolCall, ToolChatMessage,
+    ToolChatResponse, ToolDefinition,
 };
 use crate::AppError;
 use serde::Serialize;
@@ -41,11 +42,12 @@ impl AnthropicProvider {
 
 #[async_trait::async_trait]
 impl AiProvider for AnthropicProvider {
-    async fn chat_with_model(
+    async fn chat_full(
         &self,
         messages: &[ChatMessage],
         model_override: Option<&str>,
-    ) -> Result<String, AppError> {
+        max_tokens: Option<u32>,
+    ) -> Result<ChatResponse, AppError> {
         let url = format!("{}/v1/messages", self.endpoint.trim_end_matches('/'));
 
         // Anthropic API separates system message from the messages array.
@@ -76,7 +78,7 @@ impl AiProvider for AnthropicProvider {
         let model = model_override.unwrap_or(&self.model);
         let mut request_body = AnthropicRequest {
             model,
-            max_tokens: 4096,
+            max_tokens: max_tokens.unwrap_or(crate::ai::DEFAULT_MAX_TOKENS),
             messages: anthropic_messages,
             system: None,
         };
@@ -121,6 +123,10 @@ impl AiProvider for AnthropicProvider {
         let response: AnthropicResponse = serde_json::from_str(&body)
             .map_err(|e| AppError::Ai(format!("Failed to parse Anthropic response: {}", e)))?;
 
+        let usage = response.usage.as_ref().map(|u| TokenUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+        });
         let content = response
             .content
             .into_iter()
@@ -131,7 +137,7 @@ impl AiProvider for AnthropicProvider {
             .collect::<Vec<_>>()
             .join("");
 
-        Ok(content)
+        Ok(ChatResponse { content, usage })
     }
 
     async fn chat_with_tools(
@@ -139,6 +145,7 @@ impl AiProvider for AnthropicProvider {
         messages: &[ToolChatMessage],
         tools: &[ToolDefinition],
         model_override: Option<&str>,
+        max_tokens: Option<u32>,
     ) -> Result<ToolChatResponse, AppError> {
         let url = format!("{}/v1/messages", self.endpoint.trim_end_matches('/'));
 
@@ -158,7 +165,7 @@ impl AiProvider for AnthropicProvider {
 
         let mut request_body = AnthropicToolRequest {
             model: model_override.unwrap_or(&self.model).to_string(),
-            max_tokens: 4096,
+            max_tokens: max_tokens.unwrap_or(crate::ai::DEFAULT_MAX_TOKENS),
             messages: anthropic_messages,
             tools: tools
                 .iter()
@@ -311,6 +318,16 @@ enum AnthropicToolContentBlock {
 #[derive(serde::Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicContentBlock>,
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
+}
+
+#[derive(serde::Deserialize)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: u32,
+    #[serde(default)]
+    output_tokens: u32,
 }
 
 #[derive(serde::Deserialize)]

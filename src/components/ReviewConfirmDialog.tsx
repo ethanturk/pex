@@ -103,9 +103,11 @@ export function ReviewConfirmDialog({
       .then((list) => {
         if (cancelled) return;
         const available = new Set(list.map((s) => s.key));
+        const defaults = list.filter((s) => s.defaultEnabled).map((s) => s.key);
         const stored = loadEnabledSpecialists();
-        let initial = stored ? stored.filter((k) => available.has(k)) : list.map((s) => s.key);
-        if (initial.length === 0) initial = list.map((s) => s.key);
+        // No stored choice → the lean default roster, not everything.
+        let initial = stored ? stored.filter((k) => available.has(k)) : defaults;
+        if (initial.length === 0) initial = defaults.length > 0 ? defaults : list.map((s) => s.key);
         setSpecialists(list);
         setSelected(new Set(initial));
       })

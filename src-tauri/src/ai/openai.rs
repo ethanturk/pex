@@ -1,5 +1,6 @@
 use crate::ai::{
-    AiProvider, ChatMessage, ToolCall, ToolChatMessage, ToolChatResponse, ToolDefinition,
+    AiProvider, ChatMessage, ChatResponse, TokenUsage, ToolCall, ToolChatMessage, ToolChatResponse,
+    ToolDefinition,
 };
 use crate::AppError;
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,8 @@ impl OpenAiProvider {
 struct OpenAiRequest<'a> {
     model: &'a str,
     messages: Vec<OpenAiMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -59,6 +62,17 @@ struct OpenAiMessage<'a> {
 #[derive(Deserialize)]
 struct OpenAiResponse {
     choices: Vec<OpenAiChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+}
+
+/// OpenAI-compatible usage block. Optional because some local servers omit it.
+#[derive(Deserialize)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens: u32,
+    #[serde(default)]
+    completion_tokens: u32,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +91,8 @@ struct OpenAiToolRequest {
     model: String,
     messages: Vec<OpenAiToolMessage>,
     tools: Vec<OpenAiToolDefinition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -153,11 +169,12 @@ struct OpenAiInboundToolFunction {
 
 #[async_trait::async_trait]
 impl AiProvider for OpenAiProvider {
-    async fn chat_with_model(
+    async fn chat_full(
         &self,
         messages: &[ChatMessage],
         model_override: Option<&str>,
-    ) -> Result<String, AppError> {
+        max_tokens: Option<u32>,
+    ) -> Result<ChatResponse, AppError> {
         let openai_messages: Vec<OpenAiMessage> = messages
             .iter()
             .map(|m| OpenAiMessage {
@@ -174,6 +191,7 @@ impl AiProvider for OpenAiProvider {
         let body = OpenAiRequest {
             model,
             messages: openai_messages,
+            max_tokens,
         };
 
         let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
@@ -200,6 +218,10 @@ impl AiProvider for OpenAiProvider {
             .await
             .map_err(|e| AppError::Ai(format!("Failed to parse OpenAI response: {}", e)))?;
 
+        let usage = parsed.usage.as_ref().map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+        });
         let content = parsed
             .choices
             .into_iter()
@@ -207,7 +229,7 @@ impl AiProvider for OpenAiProvider {
             .map(|c| c.message.content)
             .unwrap_or_default();
 
-        Ok(content)
+        Ok(ChatResponse { content, usage })
     }
 
     async fn chat_with_tools(
@@ -215,6 +237,7 @@ impl AiProvider for OpenAiProvider {
         messages: &[ToolChatMessage],
         tools: &[ToolDefinition],
         model_override: Option<&str>,
+        max_tokens: Option<u32>,
     ) -> Result<ToolChatResponse, AppError> {
         let body = OpenAiToolRequest {
             model: model_override.unwrap_or(&self.model).to_string(),
@@ -230,6 +253,7 @@ impl AiProvider for OpenAiProvider {
                     },
                 })
                 .collect(),
+            max_tokens,
         };
 
         let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
