@@ -100,6 +100,25 @@ pub struct ToolChatResponse {
     pub tool_calls: Vec<ToolCall>,
 }
 
+/// Token accounting for a single LLM call, as reported by the provider.
+/// `None` on a `ChatResponse` means the provider didn't return usage stats
+/// (some OpenAI-compatible local servers omit the `usage` object).
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+/// A chat completion plus the provider-reported token usage. The plain-text
+/// `chat`/`chat_with_model` helpers discard the usage; the review engine uses
+/// `chat_full` so it can meter token cost.
+#[derive(Debug, Clone, Default)]
+pub struct ChatResponse {
+    pub content: String,
+    pub usage: Option<TokenUsage>,
+}
+
 /// AI provider trait — implemented by OpenAI and Anthropic backends.
 #[async_trait::async_trait]
 pub trait AiProvider: Send + Sync {
@@ -110,11 +129,25 @@ pub trait AiProvider: Send + Sync {
 
     /// Send a chat request, optionally overriding the model for this single call.
     /// `None` means "use the provider's configured model" — same behavior as `chat`.
+    /// Returns only the text; callers that need token usage use `chat_full`.
     async fn chat_with_model(
         &self,
         messages: &[ChatMessage],
         model_override: Option<&str>,
-    ) -> Result<String, AppError>;
+    ) -> Result<String, AppError> {
+        Ok(self.chat_full(messages, model_override, None).await?.content)
+    }
+
+    /// Send a chat request, capping output at `max_tokens` (when the provider
+    /// supports it) and returning the provider-reported token usage alongside
+    /// the text. `max_tokens = None` falls back to the provider's own default
+    /// ceiling. This is the one method providers must implement.
+    async fn chat_full(
+        &self,
+        messages: &[ChatMessage],
+        model_override: Option<&str>,
+        max_tokens: Option<u32>,
+    ) -> Result<ChatResponse, AppError>;
 
     /// Send a tool-enabled chat request. Providers that do not support native
     /// tool calls return an error; callers should treat that as a signal to
@@ -124,6 +157,7 @@ pub trait AiProvider: Send + Sync {
         _messages: &[ToolChatMessage],
         _tools: &[ToolDefinition],
         _model_override: Option<&str>,
+        _max_tokens: Option<u32>,
     ) -> Result<ToolChatResponse, AppError> {
         Err(AppError::Ai(
             "Tool calls are not supported by this provider".to_string(),
@@ -187,6 +221,32 @@ pub const MAX_BLOCKING_CONFIDENCE: u8 = 100;
 /// large files while still letting reviewers see definitions / callers that
 /// kill the most common false positives. Not user-configurable in Phase 1.
 pub const FILE_CONTEXT_MAX_CHARS: usize = 12000;
+
+// ---- Per-stage output token caps ----
+//
+// The OpenAI-compatible path previously sent NO `max_tokens`, so a verbose
+// local model could generate until EOS on every call — the dominant token cost
+// of a review. These caps bound generation per stage. They're deliberately
+// stage-aware: the hunk passes ask for "2-4 bullet points" and need very
+// little, while the adjudicator and synthesis emit structured JSON/Markdown
+// that must not be truncated mid-document. Tuned for local LLM throughput;
+// raise them if a stage's output is being clipped (a clipped response is logged
+// at the call site).
+//
+/// Cap for per-hunk passes (Fast single-pass and each Thorough specialist).
+/// Bounds the runaway generation that drives review cost on local models.
+pub const MAX_TOKENS_HUNK: u32 = 768;
+/// Cap for the file adjudicator — must fit a JSON object with several findings.
+pub const MAX_TOKENS_ADJUDICATE: u32 = 2048;
+/// Cap for batch + final synthesis Markdown.
+pub const MAX_TOKENS_SYNTHESIS: u32 = 2048;
+/// Cap for the pre-review file-context gather (Thorough, large files).
+pub const MAX_TOKENS_CONTEXT: u32 = 1024;
+/// Cap for anchor relocation — a single short snippet.
+pub const MAX_TOKENS_ANCHOR: u32 = 256;
+/// Fallback ceiling when a caller passes `max_tokens = None`. Matches the value
+/// the Anthropic path historically hardcoded.
+pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 /// Whether posting a review with at least one Blocking finding also casts a
 /// "wait for author" reviewer vote. Off by default — auto-voting is a visible

@@ -37,7 +37,9 @@ impl PromptKey {
     ];
 
     /// Specialist prompts used by Thorough multi-pass review. Order here is the
-    /// order specialists are run per hunk.
+    /// order specialists are run per hunk. This is the full roster the
+    /// confirmation dialog offers as toggles; `DEFAULT_THOROUGH_SPECIALISTS`
+    /// picks which are enabled by default.
     pub const THOROUGH_SPECIALISTS: &'static [PromptKey] = &[
         PromptKey::ReviewCodeReviewerSystem,
         PromptKey::ReviewSilentFailureSystem,
@@ -47,6 +49,23 @@ impl PromptKey {
         PromptKey::ReviewDesignPrinciplesSystem,
         PromptKey::ReviewCodeSimplifierSystem,
     ];
+
+    /// The specialists enabled by default in the review confirmation dialog.
+    /// A deliberately lean set of three high-signal lenses — correctness/style,
+    /// error-handling bugs, and structural design — to keep per-hunk token cost
+    /// (and latency on local models) down. The other specialists in
+    /// `THOROUGH_SPECIALISTS` remain available as toggles for a deeper pass.
+    pub const DEFAULT_THOROUGH_SPECIALISTS: &'static [PromptKey] = &[
+        PromptKey::ReviewCodeReviewerSystem,
+        PromptKey::ReviewSilentFailureSystem,
+        PromptKey::ReviewDesignPrinciplesSystem,
+    ];
+
+    /// Whether this specialist is enabled by default (see
+    /// `DEFAULT_THOROUGH_SPECIALISTS`).
+    pub fn is_default_specialist(self) -> bool {
+        Self::DEFAULT_THOROUGH_SPECIALISTS.contains(&self)
+    }
 
     pub fn as_str(self) -> &'static str {
         match self {

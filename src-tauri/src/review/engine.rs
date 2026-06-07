@@ -5,8 +5,10 @@ use crate::review::prompts;
 use crate::review::rules::ReviewRuleMatch;
 use crate::review::state::{self, ReviewMode, ReviewState};
 use crate::AppError;
+use crate::ai::TokenUsage;
+use crate::review::diagnostics::Diagnostics;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Semaphore;
@@ -17,6 +19,58 @@ struct SpecialistPrompt {
     system_prompt: String,
     provider: Arc<dyn AiProvider>,
     model_override: Option<String>,
+}
+
+/// Accumulates provider-reported token usage across every LLM call in a review
+/// run. Cheap to share across the engine's spawned tasks (atomics behind an
+/// `Arc`). Per-call detail goes to the diagnostics trace; the run total is
+/// emitted on completion so the cost of a review is observable instead of
+/// guessed at.
+#[derive(Default)]
+pub struct TokenMeter {
+    input: AtomicU64,
+    output: AtomicU64,
+    calls: AtomicU64,
+    /// Calls whose response carried no `usage` object (common with some local
+    /// servers); their tokens are uncounted, so the totals are a lower bound.
+    missing_usage: AtomicU64,
+}
+
+impl TokenMeter {
+    /// Record one completed call. `stage` labels the pipeline phase for the
+    /// per-call diagnostics event.
+    fn record(&self, stage: &str, usage: Option<TokenUsage>, diag: &Diagnostics) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        match usage {
+            Some(u) => {
+                self.input.fetch_add(u.input_tokens as u64, Ordering::Relaxed);
+                self.output.fetch_add(u.output_tokens as u64, Ordering::Relaxed);
+                if diag.is_enabled() {
+                    diag.event(
+                        "token_usage",
+                        serde_json::json!({
+                            "stage": stage,
+                            "inputTokens": u.input_tokens,
+                            "outputTokens": u.output_tokens,
+                        }),
+                    );
+                }
+            }
+            None => {
+                self.missing_usage.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// `(input, output, calls, calls_without_usage)`.
+    fn snapshot(&self) -> (u64, u64, u64, u64) {
+        (
+            self.input.load(Ordering::Relaxed),
+            self.output.load(Ordering::Relaxed),
+            self.calls.load(Ordering::Relaxed),
+            self.missing_usage.load(Ordering::Relaxed),
+        )
+    }
 }
 
 fn cancelled(flag: &AtomicBool) -> Result<(), AppError> {
@@ -344,6 +398,7 @@ async fn apply_finding_guards_with_relocation(
     hunks: &[crate::diff::engine::DiffHunk],
     new_content: &str,
     retry_count: u32,
+    meter: &TokenMeter,
     diag: &crate::review::diagnostics::Diagnostics,
 ) -> usize {
     let before = aggregate.findings.len();
@@ -397,7 +452,8 @@ async fn apply_finding_guards_with_relocation(
         }
 
         let started = std::time::Instant::now();
-        match relocate_anchor(provider, file_path, new_content, &f, retry_count).await {
+        match relocate_anchor(provider, file_path, new_content, &f, retry_count, meter, diag).await
+        {
             Ok(Some(snippet)) => {
                 if let Some(anchor) = crate::review::anchoring::resolve_existing_code(
                     &snippet,
@@ -492,6 +548,8 @@ async fn relocate_anchor(
     new_content: &str,
     finding: &FileAggregateFinding,
     retry_count: u32,
+    meter: &TokenMeter,
+    diag: &Diagnostics,
 ) -> Result<Option<String>, AppError> {
     let messages = vec![
         ChatMessage {
@@ -509,7 +567,16 @@ async fn relocate_anchor(
             ),
         },
     ];
-    let raw = chat_with_retries(provider, &messages, retry_count).await?;
+    let raw = chat_with_retries(
+        provider,
+        &messages,
+        Some(crate::ai::MAX_TOKENS_ANCHOR),
+        retry_count,
+        meter,
+        "anchor",
+        diag,
+    )
+    .await?;
     let snippet = crate::review::anchoring::extract_fenced_snippet(&raw);
     if snippet.trim().is_empty() {
         Ok(None)
@@ -627,7 +694,10 @@ async fn build_file_review_context(
 
     for round in 0..4 {
         let started = std::time::Instant::now();
-        let response = match provider.chat_with_tools(&messages, &tools, None).await {
+        let response = match provider
+            .chat_with_tools(&messages, &tools, None, Some(crate::ai::MAX_TOKENS_CONTEXT))
+            .await
+        {
             Ok(response) => response,
             Err(e) => {
                 if diag.is_enabled() {
@@ -993,6 +1063,8 @@ pub async fn run_review(
         .unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY)
         .max(1) as usize;
     let llm_permits = Arc::new(Semaphore::new(hunk_concurrency));
+    // Accumulates token usage across every LLM call in this run.
+    let token_meter = Arc::new(TokenMeter::default());
 
     // Minimum confidence a finding must reach to survive the deterministic
     // guard applied after each file's adjudication. Resolved once per run.
@@ -1226,6 +1298,8 @@ pub async fn run_review(
                 let file_new_content = file_new_content.clone();
                 let mode = input.mode;
                 let cancel = cancel.clone();
+                let meter = token_meter.clone();
+                let diag = diag.clone();
                 handles.push((
                     hunk_idx,
                     tokio::spawn(async move {
@@ -1242,6 +1316,8 @@ pub async fn run_review(
                             llm_permits,
                             file_new_content,
                             cancel,
+                            meter,
+                            diag,
                         )
                         .await
                     }),
@@ -1363,7 +1439,15 @@ pub async fn run_review(
 
             let agg_started = std::time::Instant::now();
             let raw = tokio::select! {
-                r = chat_with_retries(&provider, &agg_messages, retry_count) =>
+                r = chat_with_retries(
+                    &provider,
+                    &agg_messages,
+                    Some(crate::ai::MAX_TOKENS_ADJUDICATE),
+                    retry_count,
+                    &token_meter,
+                    "adjudicate",
+                    &diag,
+                ) =>
                     r.unwrap_or_else(|e| format!("[aggregate failed — {}]", e)),
                 _ = wait_cancelled(&cancel) =>
                     return Err(AppError::Provider("Review cancelled".into())),
@@ -1406,6 +1490,7 @@ pub async fn run_review(
                 hunks,
                 &file.new_content,
                 retry_count,
+                &token_meter,
                 &diag,
             )
             .await;
@@ -1537,7 +1622,15 @@ pub async fn run_review(
 
         let batch_started = std::time::Instant::now();
         let batch_summary = tokio::select! {
-            r = chat_with_retries(&provider, &batch_messages, retry_count) =>
+            r = chat_with_retries(
+                &provider,
+                &batch_messages,
+                Some(crate::ai::MAX_TOKENS_SYNTHESIS),
+                retry_count,
+                &token_meter,
+                "batch",
+                &diag,
+            ) =>
                 r.unwrap_or_else(|e| format!("[batch aggregate failed — {}]", e)),
             _ = wait_cancelled(&cancel) =>
                 return Err(AppError::Provider("Review cancelled".into())),
@@ -1663,7 +1756,15 @@ pub async fn run_review(
 
     let synth_started = std::time::Instant::now();
     let final_review = tokio::select! {
-        r = chat_with_retries(&provider, &final_messages, retry_count) =>
+        r = chat_with_retries(
+            &provider,
+            &final_messages,
+            Some(crate::ai::MAX_TOKENS_SYNTHESIS),
+            retry_count,
+            &token_meter,
+            "synthesis",
+            &diag,
+        ) =>
             r.unwrap_or_else(|e| format!("[final synthesis failed — {}]", e)),
         _ = wait_cancelled(&cancel) =>
             return Err(AppError::Provider("Review cancelled".into())),
@@ -1684,6 +1785,19 @@ pub async fn run_review(
     state.phase = "done".into();
     state.final_review = Some(final_review.clone());
     clear_state_from_db(conn).await;
+
+    // Surface the run's token cost. `missing` counts calls whose provider gave
+    // no usage block (so the totals are a lower bound); printed even without
+    // diagnostics enabled so cost is visible from the console.
+    let (in_tokens, out_tokens, llm_calls, missing) = token_meter.snapshot();
+    eprintln!(
+        "[review] tokens — input: {in_tokens}, output: {out_tokens}, llm_calls: {llm_calls}{}",
+        if missing > 0 {
+            format!(" ({missing} call(s) reported no usage)")
+        } else {
+            String::new()
+        }
+    );
 
     if diag.is_enabled() {
         for f in &findings {
@@ -1712,6 +1826,10 @@ pub async fn run_review(
                 "shouldFix": findings.iter().filter(|f| f.tier == Tier::ShouldFix).count(),
                 "nit": findings.iter().filter(|f| f.tier == Tier::Nit).count(),
                 "fyi": findings.iter().filter(|f| f.tier == Tier::Fyi).count(),
+                "inputTokens": in_tokens,
+                "outputTokens": out_tokens,
+                "llmCalls": llm_calls,
+                "callsWithoutUsage": missing,
             }),
         );
     }
@@ -1724,6 +1842,9 @@ pub async fn run_review(
             "totalFiles": file_entries.len(),
             "findingsCount": findings.len(),
             "suppressed": suppressed,
+            "inputTokens": in_tokens,
+            "outputTokens": out_tokens,
+            "llmCalls": llm_calls,
         }),
     );
 
@@ -1773,6 +1894,10 @@ pub async fn review_single_file(
     let file_new_content = Arc::new(file.new_content.clone());
     let permits = Arc::new(Semaphore::new(1));
 
+    // Headless path: no diagnostics sink and a throwaway meter — the eval
+    // harness doesn't surface token totals, but the caps still apply.
+    let meter = Arc::new(TokenMeter::default());
+    let diag = Diagnostics::disabled();
     // Headless path: there's no user to cancel, so a flag that's never set.
     let never_cancel = Arc::new(AtomicBool::new(false));
     let mut hunk_findings: Vec<(usize, String)> = Vec::new();
@@ -1790,6 +1915,8 @@ pub async fn review_single_file(
             permits.clone(),
             file_new_content.clone(),
             never_cancel.clone(),
+            meter.clone(),
+            diag.clone(),
         )
         .await?;
         if response.trim() != "No issues found." {
@@ -1823,7 +1950,16 @@ pub async fn review_single_file(
         },
     ];
 
-    let raw = chat_with_retries(&provider, &agg_messages, retry_count).await?;
+    let raw = chat_with_retries(
+        &provider,
+        &agg_messages,
+        Some(crate::ai::MAX_TOKENS_ADJUDICATE),
+        retry_count,
+        &meter,
+        "adjudicate",
+        &diag,
+    )
+    .await?;
     let mut aggregate = parse_file_aggregate(&raw).map_err(AppError::Ai)?;
     normalize_finding_sources(&mut aggregate);
     apply_finding_guards(
@@ -1876,12 +2012,20 @@ fn strip_statistics_section(summary: &str) -> &str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn chat_with_retries(
     provider: &Arc<dyn AiProvider>,
     messages: &[ChatMessage],
+    max_tokens: Option<u32>,
     retries: u32,
+    meter: &TokenMeter,
+    stage: &str,
+    diag: &Diagnostics,
 ) -> Result<String, AppError> {
-    chat_with_retries_and_model(provider, messages, None, retries).await
+    chat_with_retries_and_model(
+        provider, messages, None, max_tokens, retries, meter, stage, diag,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1898,6 +2042,8 @@ async fn review_single_hunk(
     llm_permits: Arc<Semaphore>,
     file_new_content: Arc<String>,
     cancel: Arc<AtomicBool>,
+    meter: Arc<TokenMeter>,
+    diag: Diagnostics,
 ) -> Result<String, AppError> {
     let hunk_text: String = hunk
         .lines
@@ -1926,6 +2072,9 @@ async fn review_single_hunk(
             let file_ctx = file_ctx.clone();
             let llm_permits = llm_permits.clone();
             let cancel = cancel.clone();
+            let meter = meter.clone();
+            let diag = diag.clone();
+            let stage = format!("specialist:{}", key.specialist_label());
             handles.push((
                 idx,
                 tokio::spawn(async move {
@@ -1960,7 +2109,11 @@ async fn review_single_hunk(
                                     &provider,
                                     &pass_messages,
                                     model_override.as_deref(),
+                                    Some(crate::ai::MAX_TOKENS_HUNK),
                                     retry_count,
+                                    &meter,
+                                    &stage,
+                                    &diag,
                                 )
                                 .await
                             }
@@ -2048,7 +2201,18 @@ async fn review_single_hunk(
         });
         let work = async {
             match llm_permits.acquire_owned().await {
-                Ok(_permit) => chat_with_retries(&provider, &messages, retry_count).await,
+                Ok(_permit) => {
+                    chat_with_retries(
+                        &provider,
+                        &messages,
+                        Some(crate::ai::MAX_TOKENS_HUNK),
+                        retry_count,
+                        &meter,
+                        "hunk",
+                        &diag,
+                    )
+                    .await
+                }
                 Err(_) => Err(AppError::Ai("LLM concurrency limiter closed".into())),
             }
         };
@@ -2061,24 +2225,33 @@ async fn review_single_hunk(
     }
 }
 
-/// Calls `provider.chat_with_model` up to `1 + retries` times (initial attempt
-/// plus retries). With `retries = 0`, makes a single attempt — important for
+/// Calls `provider.chat_full` up to `1 + retries` times (initial attempt
+/// plus retries), recording token usage into `meter`. With `retries = 0`, makes
+/// a single attempt — important for
 /// slow local providers where a "failure" is usually just a request the
 /// engine's request_timeout fired on, while the model is still generating;
 /// retrying just adds another orphaned in-flight request.
+#[allow(clippy::too_many_arguments)]
 async fn chat_with_retries_and_model(
     provider: &Arc<dyn AiProvider>,
     messages: &[ChatMessage],
     model_override: Option<&str>,
+    max_tokens: Option<u32>,
     retries: u32,
+    meter: &TokenMeter,
+    stage: &str,
+    diag: &Diagnostics,
 ) -> Result<String, AppError> {
     let mut last_err: Option<AppError> = None;
     for attempt in 0..=retries {
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        match provider.chat_with_model(messages, model_override).await {
-            Ok(r) => return Ok(r),
+        match provider.chat_full(messages, model_override, max_tokens).await {
+            Ok(resp) => {
+                meter.record(stage, resp.usage, diag);
+                return Ok(resp.content);
+            }
             Err(e) => last_err = Some(e),
         }
     }

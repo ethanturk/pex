@@ -751,6 +751,8 @@ export interface ReviewSpecialistInfo {
   description: string;
   model: string;
   providerName: string;
+  /** Selected by default in the confirm dialog (the lean default roster). */
+  defaultEnabled: boolean;
 }
 
 export async function getReviewSpecialists(): Promise<ReviewSpecialistInfo[]> {

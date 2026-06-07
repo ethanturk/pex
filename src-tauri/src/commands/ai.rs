@@ -740,6 +740,9 @@ pub struct ReviewSpecialistInfo {
     pub model: String,
     /// The concrete provider this specialist will use.
     pub provider_name: String,
+    /// Whether this specialist is selected by default in the dialog. The lean
+    /// default set keeps per-hunk token cost down; the rest stay opt-in.
+    pub default_enabled: bool,
 }
 
 /// The Thorough-mode specialist roster, in run order, each annotated with the
@@ -773,6 +776,7 @@ pub async fn get_review_specialists(
             description: info.description,
             model: info.model.unwrap_or_else(|| provider.model.clone()),
             provider_name: provider.name.clone(),
+            default_enabled: k.is_default_specialist(),
         });
     }
     Ok(out)
