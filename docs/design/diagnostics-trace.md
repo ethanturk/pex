@@ -40,6 +40,23 @@ Every line has `ts` (RFC3339), `runId`, and `kind`, plus kind-specific fields.
   tier, and suppression decision — the signal for tuning the confidence
   threshold, the critical line, and the anchor check.
 
+## Evaluating token cost
+
+The `token_usage` events plus the `run_done` totals make a trace a record of
+what a review *cost*. To turn a directory of traces into a per-stage / per-run
+token report (and the derived output-tokens-per-file figure), run the bundled
+evaluator:
+
+```bash
+cd src-tauri
+cargo run --example eval_traces                 # scans the default diagnostics dir
+cargo run --example eval_traces -- run-a.jsonl run-b.jsonl
+```
+
+It reads existing traces only (never calls an LLM), so it's the way to confirm
+a prompt / cap / specialist-roster change actually moved token cost rather than
+estimating from tokens/sec.
+
 ## The join that makes it training data
 
 `finding_final` events carry the **same `fingerprint`** (`file_path` +

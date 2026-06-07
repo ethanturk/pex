@@ -369,6 +369,10 @@ export interface AiSettingsNoKey {
   /// alive will be allowed to finish.
   readTimeoutSecs: number;
   hunkConcurrency: number;
+  /// Output token cap for per-hunk passes (the main lever on local-LLM cost).
+  hunkMaxTokens: number;
+  /// Output token cap for the aggregation stages (adjudicate + synthesis).
+  aggregateMaxTokens: number;
   standardsMaxChars: number;
   /// Number of retries after a failed LLM call in a PR review.
   /// 0 = no retries (recommended for slow local providers).
@@ -449,6 +453,8 @@ export async function testAiDefaults(
 /// touches provider credentials.
 export async function saveAiPreferences(prefs: {
   hunkConcurrency: number;
+  hunkMaxTokens: number;
+  aggregateMaxTokens: number;
   standardsMaxChars: number;
   retryCount: number;
   confidenceThreshold: number;

@@ -1063,6 +1063,15 @@ pub async fn run_review(
         .unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY)
         .max(1) as usize;
     let llm_permits = Arc::new(Semaphore::new(hunk_concurrency));
+    // Output token caps, resolved once per run. The per-hunk cap is the main
+    // lever on cost for verbose local models; the aggregate cap covers the
+    // structured adjudication + synthesis stages.
+    let hunk_max_tokens = crate::ai::read_hunk_max_tokens(conn)
+        .await
+        .unwrap_or(crate::ai::DEFAULT_HUNK_MAX_TOKENS);
+    let aggregate_max_tokens = crate::ai::read_aggregate_max_tokens(conn)
+        .await
+        .unwrap_or(crate::ai::DEFAULT_AGGREGATE_MAX_TOKENS);
     // Accumulates token usage across every LLM call in this run.
     let token_meter = Arc::new(TokenMeter::default());
 
@@ -1313,6 +1322,7 @@ pub async fn run_review(
                             standards,
                             specialist_prompts,
                             retry_count,
+                            hunk_max_tokens,
                             llm_permits,
                             file_new_content,
                             cancel,
@@ -1442,7 +1452,7 @@ pub async fn run_review(
                 r = chat_with_retries(
                     &provider,
                     &agg_messages,
-                    Some(crate::ai::MAX_TOKENS_ADJUDICATE),
+                    Some(aggregate_max_tokens),
                     retry_count,
                     &token_meter,
                     "adjudicate",
@@ -1625,7 +1635,7 @@ pub async fn run_review(
             r = chat_with_retries(
                 &provider,
                 &batch_messages,
-                Some(crate::ai::MAX_TOKENS_SYNTHESIS),
+                Some(aggregate_max_tokens),
                 retry_count,
                 &token_meter,
                 "batch",
@@ -1759,7 +1769,7 @@ pub async fn run_review(
         r = chat_with_retries(
             &provider,
             &final_messages,
-            Some(crate::ai::MAX_TOKENS_SYNTHESIS),
+            Some(aggregate_max_tokens),
             retry_count,
             &token_meter,
             "synthesis",
@@ -1912,6 +1922,7 @@ pub async fn review_single_file(
             standards.to_string(),
             specialist_prompts.clone(),
             retry_count,
+            crate::ai::DEFAULT_HUNK_MAX_TOKENS,
             permits.clone(),
             file_new_content.clone(),
             never_cancel.clone(),
@@ -1953,7 +1964,7 @@ pub async fn review_single_file(
     let raw = chat_with_retries(
         &provider,
         &agg_messages,
-        Some(crate::ai::MAX_TOKENS_ADJUDICATE),
+        Some(crate::ai::DEFAULT_AGGREGATE_MAX_TOKENS),
         retry_count,
         &meter,
         "adjudicate",
@@ -2039,6 +2050,7 @@ async fn review_single_hunk(
     standards: String,
     specialist_prompts: Vec<SpecialistPrompt>,
     retry_count: u32,
+    max_tokens: u32,
     llm_permits: Arc<Semaphore>,
     file_new_content: Arc<String>,
     cancel: Arc<AtomicBool>,
@@ -2109,7 +2121,7 @@ async fn review_single_hunk(
                                     &provider,
                                     &pass_messages,
                                     model_override.as_deref(),
-                                    Some(crate::ai::MAX_TOKENS_HUNK),
+                                    Some(max_tokens),
                                     retry_count,
                                     &meter,
                                     &stage,
@@ -2205,7 +2217,7 @@ async fn review_single_hunk(
                     chat_with_retries(
                         &provider,
                         &messages,
-                        Some(crate::ai::MAX_TOKENS_HUNK),
+                        Some(max_tokens),
                         retry_count,
                         &meter,
                         "hunk",
