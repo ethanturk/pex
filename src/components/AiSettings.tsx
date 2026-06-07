@@ -117,6 +117,19 @@ function normalizeStandardsMaxChars(value: string | number): number {
 const INPUT_CLASS =
   "w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-accent";
 
+// djb2 hash, used to build a <datalist> id that changes whenever its option set
+// changes. The WebView caches the native autocomplete popup by datalist id and
+// won't rebuild it when only the <option> children change underneath it, so a
+// content-derived id forces a fresh association and a fresh popup.
+function hashOptions(options: string[]): string {
+  let h = 5381;
+  const joined = options.join("\n");
+  for (let i = 0; i < joined.length; i++) {
+    h = ((h << 5) + h + joined.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
 export function AiSettings({ open, onClose, standalone }: Props) {
   const [tab, setTab] = useState<Tab>("ai-defaults");
 
@@ -285,10 +298,11 @@ export function AiSettings({ open, onClose, standalone }: Props) {
       setPromptStatus({});
       setPromptModelDrafts({});
       setOpenPromptModelPicker(null);
-      // Fire-and-forget: populate the model dropdown from the cached list if
-      // there is one, so the picker shows real options without blocking the
-      // dialog. A refresh button gives the user explicit control over hitting
-      // the live /models endpoint.
+      // Stale-while-revalidate: show the cached list immediately so the picker
+      // isn't blank, then fetch the live /models list in the background so a
+      // changed server model set self-heals without the user clicking Refresh
+      // or Test. On a background-fetch failure (offline/unreachable) we keep the
+      // cached list rather than wiping it.
       listAiModels(false)
         .then((m) => {
           setAvailableModels(m);
@@ -298,6 +312,17 @@ export function AiSettings({ open, onClose, standalone }: Props) {
         .catch((e: unknown) => {
           setAvailableModels([]);
           setModelsError(String(e));
+        })
+        .finally(() => {
+          listAiModels(true)
+            .then((m) => {
+              setAvailableModels(m);
+              setProviderModels((prev) => ({ ...prev, [defaultId]: m }));
+              setModelsError(null);
+            })
+            .catch(() => {
+              // Keep whatever the cached read produced above.
+            });
         });
     } catch {
       // defaults are fine
@@ -875,7 +900,10 @@ export function AiSettings({ open, onClose, standalone }: Props) {
                     <Field label="Model">
                       {(() => {
                         const modelOptions = selectedProviderModels;
-                        const modelListId = `ai-provider-models-${selectedProvider.id}`;
+                        // Include a content hash in the id so the WebView drops
+                        // its cached autocomplete popup when the option set
+                        // changes (e.g. after Test fetches a fresh list).
+                        const modelListId = `ai-provider-models-${selectedProvider.id}-${hashOptions(modelOptions)}`;
                         return (
                           <div class="flex items-center gap-2">
                             <input
@@ -885,7 +913,7 @@ export function AiSettings({ open, onClose, standalone }: Props) {
                               placeholder="Model name"
                               class={`flex-1 min-w-0 ${INPUT_CLASS}`}
                             />
-                            <datalist id={modelListId}>
+                            <datalist id={modelListId} key={modelListId}>
                               {modelOptions.map((m) => (
                                 <option value={m}>{m}</option>
                               ))}

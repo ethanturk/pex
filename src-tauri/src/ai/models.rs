@@ -92,20 +92,33 @@ pub async fn fetch_and_cache(conn: &libsql::Connection) -> Result<Vec<String>, A
     };
 
     // Persist after a successful fetch.
+    set_cached(conn, &provider_id, kind, &endpoint, &models).await?;
+
+    Ok(models)
+}
+
+/// Persist a model list to the cache for the given provider identity. Callers
+/// that already hold the models (e.g. the Test button) use this so the list
+/// survives a dialog reopen instead of reverting to the previously cached list.
+pub async fn set_cached(
+    conn: &libsql::Connection,
+    provider_id: &str,
+    kind: AiProviderKind,
+    endpoint: &str,
+    models: &[String],
+) -> Result<(), AppError> {
     let provider_str = match kind {
         AiProviderKind::OpenAI => "openai",
         AiProviderKind::Anthropic => "anthropic",
     };
     let payload = serde_json::to_string(&CachedModels {
-        provider_id,
+        provider_id: provider_id.to_string(),
         provider: provider_str.to_string(),
-        endpoint,
-        models: models.clone(),
+        endpoint: endpoint.to_string(),
+        models: models.to_vec(),
     })
     .map_err(|e| AppError::Ai(format!("Failed to serialize models cache: {}", e)))?;
-    crate::cache::set_setting(conn, CACHE_KEY, &payload).await?;
-
-    Ok(models)
+    crate::cache::set_setting(conn, CACHE_KEY, &payload).await
 }
 
 /// Fetch the model list for an explicit provider/endpoint/key, without reading

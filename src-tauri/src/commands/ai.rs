@@ -550,6 +550,7 @@ pub async fn save_ai_preferences(
 /// This is what gates the Save button — Save is only enabled after Test passes.
 #[tauri::command]
 pub async fn test_ai_defaults(
+    state: State<'_, AppState>,
     provider: String,
     endpoint: String,
     api_key: String,
@@ -578,11 +579,26 @@ pub async fn test_ai_defaults(
         return Err("Enter an endpoint URL to test.".to_string());
     }
 
-    crate::ai::models::probe_models(kind, &endpoint, &key)
+    let models = crate::ai::models::probe_models(kind, &endpoint, &key)
         .await
-        .map_err(|e| e.to_string())
-    // Note: the working provider in `state` is intentionally left untouched —
-    // Test must not have side effects, so the user still has to Save.
+        .map_err(|e| e.to_string())?;
+
+    // Persist the freshly-probed list so it survives a dialog reopen instead of
+    // reverting to the older cached list. Only write when the tested provider is
+    // the default one (the identity `get_cached` reads back), so testing a
+    // non-default provider can't clobber the default's cache. The working
+    // provider config in `state` is still left untouched — Test must not change
+    // settings, so the user still has to Save.
+    if let Some(id) = provider_id.as_ref().filter(|id| !id.trim().is_empty()) {
+        let conn = state.db.conn();
+        if let Ok((default_provider_id, _)) = crate::ai::read_ai_provider_configs(&conn).await {
+            if *id == default_provider_id {
+                let _ = crate::ai::models::set_cached(&conn, id, kind, &endpoint, &models).await;
+            }
+        }
+    }
+
+    Ok(models)
 }
 
 // ---- Explain hunk ----
