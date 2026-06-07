@@ -730,6 +730,7 @@ export async function startReview(
   prTitle: string,
   mode: ReviewMode = "fast",
   enabledSpecialists?: string[],
+  resume = false,
 ): Promise<ReviewOutput> {
   return invoke<ReviewOutput>("start_review", {
     projectId,
@@ -738,6 +739,7 @@ export async function startReview(
     prTitle,
     mode,
     enabledSpecialists: enabledSpecialists ?? null,
+    resume,
   });
 }
 

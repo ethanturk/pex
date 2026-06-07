@@ -27,6 +27,16 @@ fn cancelled(flag: &AtomicBool) -> Result<(), AppError> {
     }
 }
 
+/// Resolves once the cancel flag is set. The flag isn't awaitable, so this polls
+/// it; the coarse 100ms latency is irrelevant for a user-driven cancel. Used to
+/// race long in-flight LLM calls in `tokio::select!` — when this wins, the chat
+/// future is dropped, which cancels the underlying HTTP request mid-flight.
+async fn wait_cancelled(flag: &AtomicBool) {
+    while !flag.load(Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 fn resolve_prompt_provider(
     providers: &[crate::ai::AiProviderConfig],
     default_provider_id: &str,
@@ -944,6 +954,10 @@ fn emit_progress(app: &tauri::AppHandle, phase: &str, detail: &str, extra: serde
 }
 
 /// Run the full multi-pass review.
+///
+/// `resume` carries the caller's intent: `true` continues from any saved
+/// progress for this PR, `false` starts fresh (and discards stale saved state,
+/// e.g. left behind by a cancelled run) so a fresh start never silently resumes.
 pub async fn run_review(
     app: tauri::AppHandle,
     provider: Arc<dyn AiProvider>,
@@ -951,6 +965,7 @@ pub async fn run_review(
     conn: &libsql::Connection,
     cancel: Arc<AtomicBool>,
     diag: crate::review::diagnostics::Diagnostics,
+    resume: bool,
 ) -> Result<ReviewOutput, AppError> {
     // ---- Prepare: sort files by hunk count (largest first) ----
     let mut file_entries: Vec<(FileInput, Vec<crate::diff::engine::DiffHunk>)> = input
@@ -1079,15 +1094,21 @@ pub async fn run_review(
     // meaningless — discard the state and review fresh rather than re-reviewing
     // already-completed files (the "resume just restarts" bug).
     let mut resuming = false;
-    if let Ok(Some(saved)) = state::load_state(conn).await {
-        if saved.pr_key == state.pr_key && !saved.is_done() {
-            if align_to_saved_order(&mut file_entries, &saved.file_paths) {
-                state = saved;
-                resuming = true;
-            } else {
-                let _ = state::clear_state(conn).await;
+    if resume {
+        if let Ok(Some(saved)) = state::load_state(conn).await {
+            if saved.pr_key == state.pr_key && !saved.is_done() {
+                if align_to_saved_order(&mut file_entries, &saved.file_paths) {
+                    state = saved;
+                    resuming = true;
+                } else {
+                    let _ = state::clear_state(conn).await;
+                }
             }
         }
+    } else {
+        // Fresh start requested — drop any stale saved state up front so a prior
+        // (e.g. cancelled) run for this PR can't silently resume underneath us.
+        let _ = state::clear_state(conn).await;
     }
     if resuming {
         emit_progress(
@@ -1204,6 +1225,7 @@ pub async fn run_review(
                 let llm_permits = llm_permits.clone();
                 let file_new_content = file_new_content.clone();
                 let mode = input.mode;
+                let cancel = cancel.clone();
                 handles.push((
                     hunk_idx,
                     tokio::spawn(async move {
@@ -1219,6 +1241,7 @@ pub async fn run_review(
                             retry_count,
                             llm_permits,
                             file_new_content,
+                            cancel,
                         )
                         .await
                     }),
@@ -1233,6 +1256,11 @@ pub async fn run_review(
                 };
                 batch_results.push((hunk_idx, result));
             }
+            // A cancel during this batch dropped the in-flight LLM calls (their
+            // HTTP requests aborted) and made each task return early. Bail now,
+            // before recording those aborted hunks as skipped-on-error and
+            // pressing on with the rest of the file.
+            cancelled(&cancel)?;
             batch_results.sort_by_key(|(hunk_idx, _)| *hunk_idx);
 
             for (hunk_idx, result) in batch_results {
@@ -1334,9 +1362,12 @@ pub async fn run_review(
             ];
 
             let agg_started = std::time::Instant::now();
-            let raw = chat_with_retries(&provider, &agg_messages, retry_count)
-                .await
-                .unwrap_or_else(|e| format!("[aggregate failed — {}]", e));
+            let raw = tokio::select! {
+                r = chat_with_retries(&provider, &agg_messages, retry_count) =>
+                    r.unwrap_or_else(|e| format!("[aggregate failed — {}]", e)),
+                _ = wait_cancelled(&cancel) =>
+                    return Err(AppError::Provider("Review cancelled".into())),
+            };
             if diag.is_enabled() {
                 diag.event(
                     "llm_call",
@@ -1505,9 +1536,12 @@ pub async fn run_review(
         ];
 
         let batch_started = std::time::Instant::now();
-        let batch_summary = chat_with_retries(&provider, &batch_messages, retry_count)
-            .await
-            .unwrap_or_else(|e| format!("[batch aggregate failed — {}]", e));
+        let batch_summary = tokio::select! {
+            r = chat_with_retries(&provider, &batch_messages, retry_count) =>
+                r.unwrap_or_else(|e| format!("[batch aggregate failed — {}]", e)),
+            _ = wait_cancelled(&cancel) =>
+                return Err(AppError::Provider("Review cancelled".into())),
+        };
         if diag.is_enabled() {
             diag.event(
                 "llm_call",
@@ -1628,9 +1662,12 @@ pub async fn run_review(
     ];
 
     let synth_started = std::time::Instant::now();
-    let final_review = chat_with_retries(&provider, &final_messages, retry_count)
-        .await
-        .unwrap_or_else(|e| format!("[final synthesis failed — {}]", e));
+    let final_review = tokio::select! {
+        r = chat_with_retries(&provider, &final_messages, retry_count) =>
+            r.unwrap_or_else(|e| format!("[final synthesis failed — {}]", e)),
+        _ = wait_cancelled(&cancel) =>
+            return Err(AppError::Provider("Review cancelled".into())),
+    };
     if diag.is_enabled() {
         diag.event(
             "llm_call",
@@ -1736,6 +1773,8 @@ pub async fn review_single_file(
     let file_new_content = Arc::new(file.new_content.clone());
     let permits = Arc::new(Semaphore::new(1));
 
+    // Headless path: there's no user to cancel, so a flag that's never set.
+    let never_cancel = Arc::new(AtomicBool::new(false));
     let mut hunk_findings: Vec<(usize, String)> = Vec::new();
     for (idx, hunk) in hunks.iter().enumerate() {
         let response = review_single_hunk(
@@ -1750,6 +1789,7 @@ pub async fn review_single_file(
             retry_count,
             permits.clone(),
             file_new_content.clone(),
+            never_cancel.clone(),
         )
         .await?;
         if response.trim() != "No issues found." {
@@ -1857,6 +1897,7 @@ async fn review_single_hunk(
     retry_count: u32,
     llm_permits: Arc<Semaphore>,
     file_new_content: Arc<String>,
+    cancel: Arc<AtomicBool>,
 ) -> Result<String, AppError> {
     let hunk_text: String = hunk
         .lines
@@ -1884,6 +1925,7 @@ async fn review_single_hunk(
             let user_msg = user_msg.clone();
             let file_ctx = file_ctx.clone();
             let llm_permits = llm_permits.clone();
+            let cancel = cancel.clone();
             handles.push((
                 idx,
                 tokio::spawn(async move {
@@ -1911,17 +1953,25 @@ async fn review_single_hunk(
                         role: ChatRole::User,
                         content: user_msg,
                     });
-                    let result = match llm_permits.acquire_owned().await {
-                        Ok(_permit) => {
-                            chat_with_retries_and_model(
-                                &provider,
-                                &pass_messages,
-                                model_override.as_deref(),
-                                retry_count,
-                            )
-                            .await
+                    let work = async {
+                        match llm_permits.acquire_owned().await {
+                            Ok(_permit) => {
+                                chat_with_retries_and_model(
+                                    &provider,
+                                    &pass_messages,
+                                    model_override.as_deref(),
+                                    retry_count,
+                                )
+                                .await
+                            }
+                            Err(_) => Err(AppError::Ai("LLM concurrency limiter closed".into())),
                         }
-                        Err(_) => Err(AppError::Ai("LLM concurrency limiter closed".into())),
+                    };
+                    // Cancel drops `work` (and its in-flight HTTP request) instead
+                    // of waiting for the model to finish.
+                    let result = tokio::select! {
+                        r = work => r,
+                        _ = wait_cancelled(&cancel) => Err(AppError::Provider("Review cancelled".into())),
                     };
                     (key, result)
                 }),
@@ -1996,11 +2046,18 @@ async fn review_single_hunk(
             role: ChatRole::User,
             content: user_msg,
         });
-        let _permit = llm_permits
-            .acquire_owned()
-            .await
-            .map_err(|_| AppError::Ai("LLM concurrency limiter closed".into()))?;
-        chat_with_retries(&provider, &messages, retry_count).await
+        let work = async {
+            match llm_permits.acquire_owned().await {
+                Ok(_permit) => chat_with_retries(&provider, &messages, retry_count).await,
+                Err(_) => Err(AppError::Ai("LLM concurrency limiter closed".into())),
+            }
+        };
+        // Cancel drops `work` (and its in-flight HTTP request) instead of waiting
+        // for the model to finish.
+        tokio::select! {
+            r = work => r,
+            _ = wait_cancelled(&cancel) => Err(AppError::Provider("Review cancelled".into())),
+        }
     }
 }
 

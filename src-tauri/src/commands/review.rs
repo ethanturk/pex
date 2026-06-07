@@ -716,8 +716,12 @@ pub async fn start_review(
     pr_title: String,
     mode: Option<ReviewMode>,
     enabled_specialists: Option<Vec<String>>,
+    resume: Option<bool>,
 ) -> Result<ReviewOutput, String> {
     let mode = mode.unwrap_or_default();
+    // `resume` defaults to a fresh start: only an explicit `true` continues from
+    // saved progress, so a fresh "Start review" never silently resumes a prior run.
+    let resume = resume.unwrap_or(false);
     // Gather the ADO client and context
     let (client, org_url) = {
         let ado = state.client.lock().map_err(|e| e.to_string())?;
@@ -780,7 +784,7 @@ pub async fn start_review(
 
     // Run review — the engine handles all the streaming
     let conn = state.db.conn();
-    let output = engine::run_review(app.clone(), provider, input, &conn, cancel, diag)
+    let output = engine::run_review(app.clone(), provider, input, &conn, cancel, diag, resume)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -890,7 +894,8 @@ pub async fn start_review_post(
     state.review_cancel.store(false, Ordering::SeqCst);
     let cancel = state.review_cancel.clone();
     let conn = state.db.conn();
-    let output = engine::run_review(app.clone(), provider, input, &conn, cancel, diag)
+    // The post path runs a full, automated review — always start fresh.
+    let output = engine::run_review(app.clone(), provider, input, &conn, cancel, diag, false)
         .await
         .map_err(|e| e.to_string())?;
 
