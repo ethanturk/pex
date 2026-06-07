@@ -8,10 +8,14 @@ import {
   type ReviewSpecialistInfo,
 } from "@/lib/api";
 
-const SPECIALISTS_KEY = "pex.reviewSpecialists";
+// Bumped to v2 when the default roster shrank from all-7 to the lean set: the
+// old key holds an all-7 selection saved on every prior review start, which
+// would otherwise mask the new default for existing users.
+const SPECIALISTS_KEY = "pex.reviewSpecialists.v2";
 
 // Persisted set of enabled specialist keys so the user's last choice carries
-// across reviews. Stored as a JSON array; unknown/missing falls back to "all".
+// across reviews. Stored as a JSON array; unknown/missing falls back to the
+// default roster (see `defaultEnabled`).
 function loadEnabledSpecialists(): string[] | null {
   try {
     const raw = localStorage.getItem(SPECIALISTS_KEY);
