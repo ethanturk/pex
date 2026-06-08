@@ -8,7 +8,7 @@ use crate::review::rules::ReviewRuleMatch;
 use crate::review::state::{self, ReviewMode, ReviewState};
 use crate::AppError;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Semaphore;
@@ -396,6 +396,7 @@ pub fn apply_finding_guards(
 #[allow(clippy::too_many_arguments)]
 async fn apply_finding_guards_with_relocation(
     provider: &Arc<dyn AiProvider>,
+    permits: &Semaphore,
     aggregate: &mut FileAggregateResult,
     file_path: &str,
     threshold: u8,
@@ -458,6 +459,7 @@ async fn apply_finding_guards_with_relocation(
         let started = std::time::Instant::now();
         match relocate_anchor(
             provider,
+            permits,
             file_path,
             new_content,
             &f,
@@ -555,8 +557,10 @@ fn emit_anchor_drop(
     diag.event("anchor_drop", payload);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn relocate_anchor(
     provider: &Arc<dyn AiProvider>,
+    permits: &Semaphore,
     file_path: &str,
     new_content: &str,
     finding: &FileAggregateFinding,
@@ -580,16 +584,19 @@ async fn relocate_anchor(
             ),
         },
     ];
-    let raw = chat_with_retries(
-        provider,
-        &messages,
-        Some(crate::ai::MAX_TOKENS_ANCHOR),
-        retry_count,
-        meter,
-        "anchor",
-        diag,
-    )
-    .await?;
+    let raw = {
+        let _permit = acquire_permit(permits).await?;
+        chat_with_retries(
+            provider,
+            &messages,
+            Some(crate::ai::MAX_TOKENS_ANCHOR),
+            retry_count,
+            meter,
+            "anchor",
+            diag,
+        )
+        .await?
+    };
     let snippet = crate::review::anchoring::extract_fenced_snippet(&raw);
     if snippet.trim().is_empty() {
         Ok(None)
@@ -679,6 +686,7 @@ fn build_review_guidance(
 #[allow(clippy::too_many_arguments)]
 async fn build_file_review_context(
     provider: &Arc<dyn AiProvider>,
+    permits: &Semaphore,
     file: &FileInput,
     hunks: &[crate::diff::engine::DiffHunk],
     file_entries: &[(FileInput, Vec<crate::diff::engine::DiffHunk>)],
@@ -707,10 +715,12 @@ async fn build_file_review_context(
 
     for round in 0..4 {
         let started = std::time::Instant::now();
-        let response = match provider
-            .chat_with_tools(&messages, &tools, None, Some(crate::ai::MAX_TOKENS_CONTEXT))
-            .await
-        {
+        let response = match {
+            let _permit = acquire_permit(permits).await?;
+            provider
+                .chat_with_tools(&messages, &tools, None, Some(crate::ai::MAX_TOKENS_CONTEXT))
+                .await
+        } {
             Ok(response) => response,
             Err(e) => {
                 if diag.is_enabled() {
@@ -1103,7 +1113,7 @@ fn provider_json_error_message(text: &str) -> Option<String> {
 fn record_llm_warning(
     app: &tauri::AppHandle,
     diag: &Diagnostics,
-    provider_failures: &mut usize,
+    provider_failures: &AtomicUsize,
     scope: &str,
     stage: &str,
     file_path: Option<&str>,
@@ -1126,8 +1136,8 @@ fn record_llm_warning(
     }
 
     if provider_error_message(error).is_some() {
-        *provider_failures += 1;
-        if *provider_failures >= MAX_PROVIDER_API_FAILURES {
+        let failures = provider_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        if failures >= MAX_PROVIDER_API_FAILURES {
             return Err(AppError::Ai(format!(
                 "AI provider failed repeatedly during review: {}",
                 message
@@ -1135,6 +1145,417 @@ fn record_llm_warning(
         }
     }
     Ok(())
+}
+
+/// Outcome of reviewing one file: its adjudicated aggregate plus the per-file
+/// anchoring rollup the UI surfaces on `file-done`. `file_idx` ties the result
+/// back to its worklist slot so the driver can record results in worklist order
+/// even though files now finish out of order.
+struct FileOutcome {
+    file_idx: usize,
+    aggregate: FileAggregateResult,
+    duration_ms: u64,
+    kept: usize,
+    anchored: usize,
+    dropped: usize,
+    deterministic: usize,
+}
+
+/// Immutable, run-wide context shared by every concurrent file task. Bundled
+/// behind an `Arc` so spawning a file task is a cheap refcount bump rather than
+/// a deep clone of the worklist and per-run settings.
+struct ReviewRunCtx {
+    provider: Arc<dyn AiProvider>,
+    mode: ReviewMode,
+    specialist_prompts: Arc<Vec<SpecialistPrompt>>,
+    retry_count: u32,
+    hunk_max_tokens: u32,
+    aggregate_max_tokens: u32,
+    confidence_threshold: u8,
+    /// Doubles as the cap on how many files run at once and how many hunk tasks
+    /// a single file keeps in flight; the shared `llm_permits` semaphore is the
+    /// real limit on concurrent LLM calls across the whole run.
+    hunk_concurrency: usize,
+    llm_permits: Arc<Semaphore>,
+    token_meter: Arc<TokenMeter>,
+    diag: Diagnostics,
+    standards: Arc<String>,
+    rules: HashMap<String, ReviewRuleMatch>,
+    related_files: HashMap<String, Vec<String>>,
+    ast_rules: Option<std::sync::Arc<crate::review::deterministic::CompiledRuleSet>>,
+    file_entries: Arc<Vec<(FileInput, Vec<crate::diff::engine::DiffHunk>)>>,
+    total_files: usize,
+    app: tauri::AppHandle,
+    cancel: Arc<AtomicBool>,
+    provider_failures: Arc<AtomicUsize>,
+}
+
+/// Review a single file end-to-end: gather context, run its hunks concurrently
+/// (bounded by the run-wide LLM limiter shared across every file), adjudicate,
+/// then apply the precision guards and deterministic checks. Returns the file's
+/// aggregate so the driver can checkpoint at file granularity.
+///
+/// This is the unit the Phase-1 worker pool runs concurrently, which is what
+/// lets `hunkConcurrency` stay saturated across files instead of draining one
+/// file at a time.
+async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome, AppError> {
+    cancelled(&ctx.cancel)?;
+    let file_started = std::time::Instant::now();
+    let (file, hunks) = &ctx.file_entries[idx];
+    let total_hunks = hunks.len();
+    // Shared once per file: each hunk pass windows a bounded slice of this for
+    // surrounding context, so hunk tasks clone the `Arc`, not the string.
+    let file_new_content = Arc::new(file.new_content.clone());
+    let rule_context = ctx.rules.get(&file.path).map(format_rule_context);
+    let related = ctx
+        .related_files
+        .get(&file.path)
+        .cloned()
+        .unwrap_or_default();
+    let related_context = format_related_context(&related);
+    let file_review_context = if ctx.mode == ReviewMode::Thorough
+        && (hunk_changed_lines(hunks) >= 50 || hunks.len() > 3)
+    {
+        build_file_review_context(
+            &ctx.provider,
+            &ctx.llm_permits,
+            file,
+            hunks,
+            &ctx.file_entries,
+            &related,
+            rule_context.as_deref(),
+            ctx.retry_count,
+            &ctx.diag,
+        )
+        .await
+        .ok()
+        .flatten()
+    } else {
+        None
+    };
+    let review_guidance = Arc::new(build_review_guidance(
+        &ctx.standards,
+        rule_context.as_deref(),
+        related_context.as_deref(),
+        file_review_context.as_deref(),
+    ));
+
+    // Mark this file in-flight so the UI shows it (and any sibling files running
+    // concurrently) as active.
+    emit_progress(
+        &ctx.app,
+        "hunk-review",
+        &format!("{} ({}/{})", file.path, idx + 1, ctx.total_files),
+        serde_json::json!({
+            "fileNum": idx + 1,
+            "totalFiles": ctx.total_files,
+            "hunk": 0,
+            "totalHunks": total_hunks,
+        }),
+    );
+
+    // ---- Hunk review ----
+    // Keep at most `hunk_concurrency` of this file's hunk tasks in flight; the
+    // shared `llm_permits` semaphore caps real concurrent LLM calls across every
+    // file, so this just bounds how many tasks we materialize at once.
+    let inflight_cap = ctx.hunk_concurrency.max(1);
+    let mut hunk_results: Vec<(usize, Result<String, AppError>)> = Vec::with_capacity(total_hunks);
+    {
+        let spawn_hunk = |js: &mut tokio::task::JoinSet<(usize, Result<String, AppError>)>,
+                          hunk_idx: usize| {
+            let provider = ctx.provider.clone();
+            let mode = ctx.mode;
+            let file_path = file.path.clone();
+            let hunk = hunks[hunk_idx].clone();
+            let standards = review_guidance.clone();
+            let specialist_prompts = ctx.specialist_prompts.clone();
+            let retry_count = ctx.retry_count;
+            let max_tokens = ctx.hunk_max_tokens;
+            let llm_permits = ctx.llm_permits.clone();
+            let file_new_content = file_new_content.clone();
+            let cancel = ctx.cancel.clone();
+            let meter = ctx.token_meter.clone();
+            let diag = ctx.diag.clone();
+            js.spawn(async move {
+                let result = review_single_hunk(
+                    provider,
+                    mode,
+                    file_path,
+                    hunk_idx,
+                    total_hunks,
+                    hunk,
+                    standards,
+                    specialist_prompts,
+                    retry_count,
+                    max_tokens,
+                    llm_permits,
+                    file_new_content,
+                    cancel,
+                    meter,
+                    diag,
+                )
+                .await;
+                (hunk_idx, result)
+            });
+        };
+
+        let mut joinset: tokio::task::JoinSet<(usize, Result<String, AppError>)> =
+            tokio::task::JoinSet::new();
+        let mut next = 0usize;
+        while next < total_hunks && joinset.len() < inflight_cap {
+            spawn_hunk(&mut joinset, next);
+            next += 1;
+        }
+        let mut completed = 0usize;
+        while let Some(joined) = joinset.join_next().await {
+            let (hunk_idx, result) =
+                joined.map_err(|e| AppError::Ai(format!("Hunk review task failed: {}", e)))?;
+            completed += 1;
+            emit_progress(
+                &ctx.app,
+                "hunk-review",
+                &format!("{} ({}/{})", file.path, idx + 1, ctx.total_files),
+                serde_json::json!({
+                    "fileNum": idx + 1,
+                    "totalFiles": ctx.total_files,
+                    "hunk": completed,
+                    "totalHunks": total_hunks,
+                }),
+            );
+            hunk_results.push((hunk_idx, result));
+            if next < total_hunks {
+                spawn_hunk(&mut joinset, next);
+                next += 1;
+            }
+        }
+    }
+    // A cancel during the batch dropped the in-flight LLM calls and made each
+    // task return early. Bail now, before recording those aborted hunks as
+    // skipped-on-error.
+    cancelled(&ctx.cancel)?;
+
+    hunk_results.sort_by_key(|(hunk_idx, _)| *hunk_idx);
+    let mut file_findings: Vec<(usize, String)> = Vec::new();
+    for (hunk_idx, result) in hunk_results {
+        match result {
+            Ok(response) => {
+                if response.trim() != "No issues found." {
+                    if ctx.diag.is_enabled() {
+                        ctx.diag.event(
+                            "hunk_candidate",
+                            serde_json::json!({
+                                "filePath": file.path,
+                                "hunk": hunk_idx + 1,
+                                "text": response,
+                            }),
+                        );
+                    }
+                    file_findings.push((hunk_idx + 1, response));
+                }
+            }
+            Err(e) => {
+                record_llm_warning(
+                    &ctx.app,
+                    &ctx.diag,
+                    &ctx.provider_failures,
+                    "file",
+                    "hunk",
+                    Some(&file.path),
+                    &e,
+                )?;
+                let warning_message = provider_error_message(&e).unwrap_or_else(|| e.to_string());
+                emit_progress(
+                    &ctx.app,
+                    "hunk-skipped",
+                    &format!(
+                        "Hunk {}/{} in {} failed: {}",
+                        hunk_idx + 1,
+                        total_hunks,
+                        file.path,
+                        warning_message
+                    ),
+                    serde_json::json!({}),
+                );
+                file_findings.push((
+                    hunk_idx + 1,
+                    format!("[skipped — error: {}]", warning_message),
+                ));
+            }
+        }
+    }
+
+    // ---- File aggregate ----
+    let mut kept = 0usize;
+    let mut anchored = 0usize;
+    let mut dropped = 0usize;
+    let mut aggregate = if !file_findings.is_empty() {
+        emit_progress(
+            &ctx.app,
+            "file-aggregate",
+            &format!("Summarizing {}", file.path),
+            serde_json::json!({
+                "fileNum": idx + 1,
+                "totalFiles": ctx.total_files,
+            }),
+        );
+
+        let agg_messages = vec![
+            ChatMessage {
+                role: ChatRole::System,
+                content: prompts::FILE_AGGREGATE_SYSTEM.to_string(),
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                content: prompts::file_aggregate_user_message(
+                    &file.path,
+                    &file_findings,
+                    ctx.standards.as_str(),
+                    &file.new_content,
+                    rule_context.as_deref(),
+                    file_review_context.as_deref(),
+                ),
+            },
+        ];
+
+        let agg_started = std::time::Instant::now();
+        let raw_result = {
+            let _permit = acquire_permit(&ctx.llm_permits).await?;
+            tokio::select! {
+                r = chat_with_retries(
+                    &ctx.provider,
+                    &agg_messages,
+                    Some(ctx.aggregate_max_tokens),
+                    ctx.retry_count,
+                    &ctx.token_meter,
+                    "adjudicate",
+                    &ctx.diag,
+                ) =>
+                    r,
+                _ = wait_cancelled(&ctx.cancel) =>
+                    return Err(AppError::Provider("Review cancelled".into())),
+            }
+        };
+        let mut aggregate = match raw_result {
+            Ok(raw) => {
+                if ctx.diag.is_enabled() {
+                    ctx.diag.event(
+                        "llm_call",
+                        serde_json::json!({
+                            "stage": "adjudicate",
+                            "filePath": file.path,
+                            "latencyMs": agg_started.elapsed().as_millis() as u64,
+                            "messages": &agg_messages,
+                            "response": raw,
+                        }),
+                    );
+                }
+                match parse_file_aggregate(&raw) {
+                    Ok(aggregate) => aggregate,
+                    Err(err) => {
+                        eprintln!(
+                            "[review] file-aggregate JSON parse failed for {}: {}",
+                            file.path, err
+                        );
+                        let message = format!(
+                            "The model returned malformed file-aggregate JSON for {}.",
+                            file.path
+                        );
+                        emit_warning(
+                            &ctx.app,
+                            "file",
+                            "file-aggregate",
+                            Some(&file.path),
+                            &message,
+                            Some(&err),
+                        );
+                        if ctx.diag.is_enabled() {
+                            ctx.diag.event(
+                                "review_warning",
+                                serde_json::json!({
+                                    "scope": "file",
+                                    "stage": "file-aggregate",
+                                    "filePath": file.path,
+                                    "message": message,
+                                    "detail": err,
+                                }),
+                            );
+                        }
+                        FileAggregateResult {
+                            summary: format!("Aggregate parse failed; raw model output: {}", raw),
+                            verdict: "review-required".into(),
+                            findings: Vec::new(),
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                record_llm_warning(
+                    &ctx.app,
+                    &ctx.diag,
+                    &ctx.provider_failures,
+                    "file",
+                    "file-aggregate",
+                    Some(&file.path),
+                    &e,
+                )?;
+                let message = provider_error_message(&e).unwrap_or_else(|| e.to_string());
+                FileAggregateResult {
+                    summary: format!("File aggregate failed: {}", message),
+                    verdict: "review-required".into(),
+                    findings: Vec::new(),
+                }
+            }
+        };
+
+        normalize_finding_sources(&mut aggregate);
+        dropped = apply_finding_guards_with_relocation(
+            &ctx.provider,
+            &ctx.llm_permits,
+            &mut aggregate,
+            &file.path,
+            ctx.confidence_threshold,
+            hunks,
+            &file.new_content,
+            ctx.retry_count,
+            &ctx.token_meter,
+            &ctx.diag,
+        )
+        .await;
+        anchored = aggregate
+            .findings
+            .iter()
+            .filter(|f| f.line_start.is_some())
+            .count();
+        kept = aggregate.findings.len();
+        aggregate
+    } else {
+        FileAggregateResult {
+            summary: "No issues found in this file.".into(),
+            verdict: "approve".into(),
+            findings: Vec::new(),
+        }
+    };
+
+    // Deterministic AST checks: no LLM, exact line ranges. Merge into the
+    // aggregate so they flow through tiering and suppression with the model's.
+    let det_findings = crate::review::deterministic::check_file(
+        &file.path,
+        &file.new_content,
+        hunks,
+        ctx.ast_rules.as_deref(),
+    );
+    let deterministic = det_findings.len();
+    aggregate.findings.extend(det_findings);
+
+    Ok(FileOutcome {
+        file_idx: idx,
+        aggregate,
+        duration_ms: file_started.elapsed().as_millis() as u64,
+        kept,
+        anchored,
+        dropped,
+        deterministic,
+    })
 }
 
 /// Run the full multi-pass review.
@@ -1188,7 +1609,7 @@ pub async fn run_review(
         .unwrap_or(crate::ai::DEFAULT_AGGREGATE_MAX_TOKENS);
     // Accumulates token usage across every LLM call in this run.
     let token_meter = Arc::new(TokenMeter::default());
-    let mut provider_api_failures = 0usize;
+    let provider_api_failures = Arc::new(AtomicUsize::new(0));
 
     // Minimum confidence a finding must reach to survive the deterministic
     // guard applied after each file's adjudication. Resolved once per run.
@@ -1280,6 +1701,9 @@ pub async fn run_review(
     } else {
         Vec::new()
     };
+    // Shared across every concurrent hunk task in the run — `Arc` so spawning a
+    // hunk is a refcount bump, not a deep clone of every specialist prompt.
+    let specialist_prompts = Arc::new(specialist_prompts);
 
     // Check for resumable state. The persisted state indexes files positionally
     // (`current_file_idx`), so before we trust those indices the freshly built
@@ -1340,413 +1764,133 @@ pub async fn run_review(
         }),
     );
 
-    // ---- Phase 1: Hunk Review (per file) ----
-    while state.current_file_idx < file_entries.len() {
-        cancelled(&cancel)?;
-        let file_started = std::time::Instant::now();
-        let (file, hunks) = &file_entries[state.current_file_idx];
-        let total_hunks = hunks.len();
-        // Shared once per file: each hunk pass windows a bounded slice of this
-        // for surrounding context, so we clone the Arc, not the string.
-        let file_new_content = Arc::new(file.new_content.clone());
-        let rule_context = input.rules.get(&file.path).map(format_rule_context);
-        let related = input
-            .related_files
-            .get(&file.path)
-            .cloned()
-            .unwrap_or_default();
-        let related_context = format_related_context(&related);
-        let file_review_context = if input.mode == ReviewMode::Thorough
-            && (hunk_changed_lines(hunks) >= 50 || hunks.len() > 3)
-        {
-            build_file_review_context(
-                &provider,
-                file,
-                hunks,
-                &file_entries,
-                &related,
-                rule_context.as_deref(),
-                retry_count,
-                &diag,
-            )
-            .await
-            .ok()
-            .flatten()
-        } else {
-            None
-        };
-        let review_guidance = build_review_guidance(
-            &input.standards,
-            rule_context.as_deref(),
-            related_context.as_deref(),
-            file_review_context.as_deref(),
-        );
+    // ---- Phase 1: Hunk Review (files reviewed concurrently) ----
+    // Files now overlap: a bounded pool keeps up to `hunk_concurrency` files in
+    // flight, and every LLM call they issue contends for the same `llm_permits`
+    // budget. Small files no longer leave that budget idle, and we never exceed
+    // the configured cap. Resume is file-level: `completed_files` is the source
+    // of truth, and any file not yet in it is reviewed from its first hunk.
+    let file_entries = Arc::new(file_entries);
 
-        if state.current_file_hunks == 0 {
-            state.current_file_hunks = total_hunks;
-            state.current_hunk = 0;
-            state.current_file_findings.clear();
+    // Pre-seed results from files already adjudicated in a resumed run, then
+    // review only the gaps. Matching by path stays correct even though the
+    // worklist was realigned to the saved order above.
+    let mut results: Vec<Option<FileAggregateResult>> = vec![None; file_entries.len()];
+    {
+        let done: HashMap<&str, &FileAggregateResult> = state
+            .completed_files
+            .iter()
+            .map(|(p, agg)| (p.as_str(), agg))
+            .collect();
+        for (i, (f, _)) in file_entries.iter().enumerate() {
+            if let Some(agg) = done.get(f.path.as_str()) {
+                results[i] = Some((*agg).clone());
+            }
         }
+    }
+    let pending: Vec<usize> = (0..file_entries.len())
+        .filter(|i| results[*i].is_none())
+        .collect();
 
-        emit_progress(
-            &app,
-            "hunk-review",
-            &format!(
-                "{} ({}/{})",
-                file.path,
-                state.current_file_idx + 1,
-                file_entries.len()
-            ),
-            serde_json::json!({
-                "fileNum": state.current_file_idx + 1,
-                "totalFiles": file_entries.len(),
-                "hunk": state.current_hunk,
-                "totalHunks": total_hunks,
-            }),
-        );
+    if !pending.is_empty() {
+        let ctx = Arc::new(ReviewRunCtx {
+            provider: provider.clone(),
+            mode: input.mode,
+            specialist_prompts: specialist_prompts.clone(),
+            retry_count,
+            hunk_max_tokens,
+            aggregate_max_tokens,
+            confidence_threshold,
+            hunk_concurrency,
+            llm_permits: llm_permits.clone(),
+            token_meter: token_meter.clone(),
+            diag: diag.clone(),
+            standards: Arc::new(input.standards.clone()),
+            rules: input.rules.clone(),
+            related_files: input.related_files.clone(),
+            ast_rules: input.ast_rules.clone(),
+            file_entries: file_entries.clone(),
+            total_files: file_entries.len(),
+            app: app.clone(),
+            cancel: cancel.clone(),
+            provider_failures: provider_api_failures.clone(),
+        });
 
-        while state.current_hunk < total_hunks {
-            cancelled(&cancel)?;
-
-            let batch_start = state.current_hunk;
-            let batch_end = (batch_start + hunk_concurrency).min(total_hunks);
-            let mut handles = Vec::new();
-
-            for hunk_idx in batch_start..batch_end {
-                let provider = provider.clone();
-                let hunk = hunks[hunk_idx].clone();
-                let file_path = file.path.clone();
-                let standards = review_guidance.clone();
-                let specialist_prompts = specialist_prompts.clone();
-                let llm_permits = llm_permits.clone();
-                let file_new_content = file_new_content.clone();
-                let mode = input.mode;
-                let cancel = cancel.clone();
-                let meter = token_meter.clone();
-                let diag = diag.clone();
-                handles.push((
-                    hunk_idx,
-                    tokio::spawn(async move {
-                        review_single_hunk(
-                            provider,
-                            mode,
-                            file_path,
-                            hunk_idx,
-                            total_hunks,
-                            hunk,
-                            standards,
-                            specialist_prompts,
-                            retry_count,
-                            hunk_max_tokens,
-                            llm_permits,
-                            file_new_content,
-                            cancel,
-                            meter,
-                            diag,
-                        )
-                        .await
-                    }),
-                ));
-            }
-
-            let mut batch_results = Vec::new();
-            for (hunk_idx, handle) in handles {
-                let result = match handle.await {
-                    Ok(result) => result,
-                    Err(e) => Err(AppError::Ai(format!("Hunk review task failed: {}", e))),
-                };
-                batch_results.push((hunk_idx, result));
-            }
-            // A cancel during this batch dropped the in-flight LLM calls (their
-            // HTTP requests aborted) and made each task return early. Bail now,
-            // before recording those aborted hunks as skipped-on-error and
-            // pressing on with the rest of the file.
-            cancelled(&cancel)?;
-            batch_results.sort_by_key(|(hunk_idx, _)| *hunk_idx);
-
-            for (hunk_idx, result) in batch_results {
-                let response = match result {
-                    Ok(r) => r,
-                    Err(e) => {
-                        record_llm_warning(
-                            &app,
-                            &diag,
-                            &mut provider_api_failures,
-                            "file",
-                            "hunk",
-                            Some(&file.path),
-                            &e,
-                        )?;
-                        let warning_message =
-                            provider_error_message(&e).unwrap_or_else(|| e.to_string());
-                        let skip_msg = format!("[skipped — error: {}]", warning_message);
-                        emit_progress(
-                            &app,
-                            "hunk-skipped",
-                            &format!(
-                                "Hunk {}/{} in {} failed: {}",
-                                hunk_idx + 1,
-                                total_hunks,
-                                file.path,
-                                warning_message
-                            ),
-                            serde_json::json!({}),
-                        );
-                        state.current_file_findings.push((hunk_idx + 1, skip_msg));
-                        state.current_hunk = hunk_idx + 1;
-                        save_state_to_db(conn, &state).await;
-                        continue;
-                    }
-                };
-
-                if response.trim() != "No issues found." {
-                    if diag.is_enabled() {
-                        diag.event(
-                            "hunk_candidate",
-                            serde_json::json!({
-                                "filePath": file.path,
-                                "hunk": hunk_idx + 1,
-                                "text": response,
-                            }),
-                        );
-                    }
-                    state.current_file_findings.push((hunk_idx + 1, response));
-                }
-
-                state.current_hunk = hunk_idx + 1;
-
-                emit_progress(
-                    &app,
-                    "hunk-review",
-                    &format!(
-                        "{} ({}/{})",
-                        file.path,
-                        state.current_file_idx + 1,
-                        file_entries.len()
-                    ),
-                    serde_json::json!({
-                        "fileNum": state.current_file_idx + 1,
-                        "totalFiles": file_entries.len(),
-                        "hunk": state.current_hunk,
-                        "totalHunks": total_hunks,
-                    }),
-                );
-
-                save_state_to_db(conn, &state).await;
+        let mut joinset: tokio::task::JoinSet<Result<FileOutcome, AppError>> =
+            tokio::task::JoinSet::new();
+        let mut it = pending.into_iter();
+        for _ in 0..hunk_concurrency.max(1) {
+            if let Some(file_idx) = it.next() {
+                joinset.spawn(process_file(file_idx, ctx.clone()));
             }
         }
 
-        // Per-file deterministic anchoring rollup, surfaced on `file-done`.
-        let mut kept_count = 0usize;
-        let mut anchored_count = 0usize;
-        let mut dropped_count = 0usize;
+        while let Some(joined) = joinset.join_next().await {
+            // Surface a cancel promptly and drop the rest of the in-flight tasks.
+            if let Err(e) = cancelled(&cancel) {
+                joinset.shutdown().await;
+                return Err(e);
+            }
+            let outcome =
+                joined.map_err(|e| AppError::Ai(format!("File review task failed: {}", e)))??;
+            let file_idx = outcome.file_idx;
+            results[file_idx] = Some(outcome.aggregate.clone());
 
-        // ---- File Aggregate ----
-        if !state.current_file_findings.is_empty() {
-            state.phase = "file-aggregate".into();
-            save_state_to_db(conn, &state).await;
+            // Re-derive completed_files in worklist order so batching (Phase 2)
+            // stays deterministic even though files finish out of order, and so
+            // the resume checkpoint reflects exactly which files are done.
+            state.completed_files = file_entries
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (f, _))| results[i].clone().map(|agg| (f.path.clone(), agg)))
+                .collect();
+            state.current_file_idx = state.completed_files.len();
+
             emit_progress(
                 &app,
-                "file-aggregate",
-                &format!("Summarizing {}", file.path),
+                "file-done",
+                &format!(
+                    "Reviewed {} — {} finding(s), {} anchored, {} dropped, {} deterministic",
+                    file_entries[file_idx].0.path,
+                    outcome.kept,
+                    outcome.anchored,
+                    outcome.dropped,
+                    outcome.deterministic
+                ),
                 serde_json::json!({
-                    "fileNum": state.current_file_idx + 1,
+                    "fileIndex": file_idx,
+                    "fileNum": file_idx + 1,
                     "totalFiles": file_entries.len(),
+                    "durationMs": outcome.duration_ms,
+                    "keptFindings": outcome.kept,
+                    "anchoredFindings": outcome.anchored,
+                    "droppedFindings": outcome.dropped,
+                    "deterministicFindings": outcome.deterministic,
                 }),
             );
+            save_state_to_db(conn, &state).await;
 
-            let agg_messages = vec![
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: prompts::FILE_AGGREGATE_SYSTEM.to_string(),
-                },
-                ChatMessage {
-                    role: ChatRole::User,
-                    content: prompts::file_aggregate_user_message(
-                        &file.path,
-                        &state.current_file_findings,
-                        &input.standards,
-                        &file.new_content,
-                        rule_context.as_deref(),
-                        file_review_context.as_deref(),
-                    ),
-                },
-            ];
-
-            let agg_started = std::time::Instant::now();
-            let raw_result = tokio::select! {
-                r = chat_with_retries(
-                    &provider,
-                    &agg_messages,
-                    Some(aggregate_max_tokens),
-                    retry_count,
-                    &token_meter,
-                    "adjudicate",
-                    &diag,
-                ) =>
-                    r,
-                _ = wait_cancelled(&cancel) =>
-                    return Err(AppError::Provider("Review cancelled".into())),
-            };
-            let mut aggregate = match raw_result {
-                Ok(raw) => {
-                    if diag.is_enabled() {
-                        diag.event(
-                            "llm_call",
-                            serde_json::json!({
-                                "stage": "adjudicate",
-                                "filePath": file.path,
-                                "latencyMs": agg_started.elapsed().as_millis() as u64,
-                                "messages": &agg_messages,
-                                "response": raw,
-                            }),
-                        );
-                    }
-                    match parse_file_aggregate(&raw) {
-                        Ok(aggregate) => aggregate,
-                        Err(err) => {
-                            eprintln!(
-                                "[review] file-aggregate JSON parse failed for {}: {}",
-                                file.path, err
-                            );
-                            let message = format!(
-                                "The model returned malformed file-aggregate JSON for {}.",
-                                file.path
-                            );
-                            emit_warning(
-                                &app,
-                                "file",
-                                "file-aggregate",
-                                Some(&file.path),
-                                &message,
-                                Some(&err),
-                            );
-                            if diag.is_enabled() {
-                                diag.event(
-                                    "review_warning",
-                                    serde_json::json!({
-                                        "scope": "file",
-                                        "stage": "file-aggregate",
-                                        "filePath": file.path,
-                                        "message": message,
-                                        "detail": err,
-                                    }),
-                                );
-                            }
-                            FileAggregateResult {
-                                summary: format!(
-                                    "Aggregate parse failed; raw model output: {}",
-                                    raw
-                                ),
-                                verdict: "review-required".into(),
-                                findings: Vec::new(),
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    record_llm_warning(
-                        &app,
-                        &diag,
-                        &mut provider_api_failures,
-                        "file",
-                        "file-aggregate",
-                        Some(&file.path),
-                        &e,
-                    )?;
-                    let message = provider_error_message(&e).unwrap_or_else(|| e.to_string());
-                    FileAggregateResult {
-                        summary: format!("File aggregate failed: {}", message),
-                        verdict: "review-required".into(),
-                        findings: Vec::new(),
-                    }
-                }
-            };
-
-            // Deterministic precision guards: drop sub-threshold findings and
-            // resolve line-level anchors from exact snippets before they reach
-            // the reviewer.
-            normalize_finding_sources(&mut aggregate);
-            dropped_count = apply_finding_guards_with_relocation(
-                &provider,
-                &mut aggregate,
-                &file.path,
-                confidence_threshold,
-                hunks,
-                &file.new_content,
-                retry_count,
-                &token_meter,
-                &diag,
-            )
-            .await;
-            // Surviving line-level findings are the ones the anchoring step
-            // resolved to a concrete new-side line range.
-            anchored_count = aggregate
-                .findings
-                .iter()
-                .filter(|f| f.line_start.is_some())
-                .count();
-            kept_count = aggregate.findings.len();
-
-            state.completed_files.push((file.path.clone(), aggregate));
-        } else {
-            state.completed_files.push((
-                file.path.clone(),
-                FileAggregateResult {
-                    summary: "No issues found in this file.".into(),
-                    verdict: "approve".into(),
-                    findings: Vec::new(),
-                },
-            ));
+            if let Some(file_idx) = it.next() {
+                joinset.spawn(process_file(file_idx, ctx.clone()));
+            }
         }
-
-        // Deterministic AST checks: produce findings with no LLM, scoped to
-        // lines the diff added. They already carry exact line ranges, so they
-        // skip the LLM anchoring step entirely. Merge them into this file's
-        // aggregate so they flow through tiering, ordering, and suppression
-        // alongside the model's findings.
-        let det_findings = crate::review::deterministic::check_file(
-            &file.path,
-            &file.new_content,
-            hunks,
-            input.ast_rules.as_deref(),
-        );
-        let deterministic_count = det_findings.len();
-        if let Some((_, agg)) = state.completed_files.last_mut() {
-            agg.findings.extend(det_findings);
-        }
-
-        emit_progress(
-            &app,
-            "file-done",
-            &format!(
-                "Reviewed {} — {} finding(s), {} anchored, {} dropped, {} deterministic",
-                file.path, kept_count, anchored_count, dropped_count, deterministic_count
-            ),
-            serde_json::json!({
-                "fileIndex": state.current_file_idx,
-                "fileNum": state.current_file_idx + 1,
-                "totalFiles": file_entries.len(),
-                "durationMs": file_started.elapsed().as_millis() as u64,
-                "keptFindings": kept_count,
-                "anchoredFindings": anchored_count,
-                "droppedFindings": dropped_count,
-                "deterministicFindings": deterministic_count,
-            }),
-        );
-
-        state.current_file_idx += 1;
-        state.current_file_hunks = 0;
-        state.current_hunk = 0;
-        state.current_file_findings.clear();
-        state.phase = if state.current_file_idx >= file_entries.len() {
-            "batch-aggregate".into()
-        } else {
-            "hunk-review".into()
-        };
-
-        save_state_to_db(conn, &state).await;
     }
+
+    // All files adjudicated. Re-derive the ordered worklist once more (covers
+    // the resume-from-later-phase case where `pending` was empty) and advance.
+    state.completed_files = file_entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (f, _))| results[i].clone().map(|agg| (f.path.clone(), agg)))
+        .collect();
+    state.current_file_idx = file_entries.len();
+    state.current_file_hunks = 0;
+    state.current_hunk = 0;
+    state.current_file_findings.clear();
+    if state.phase == "hunk-review" {
+        state.phase = "batch-aggregate".into();
+    }
+    save_state_to_db(conn, &state).await;
 
     // ---- Phase 2: Batch Aggregation ----
     let batch_size = 5;
@@ -1840,7 +1984,7 @@ pub async fn run_review(
                 record_llm_warning(
                     &app,
                     &diag,
-                    &mut provider_api_failures,
+                    &provider_api_failures,
                     "review",
                     "batch",
                     None,
@@ -1991,7 +2135,7 @@ pub async fn run_review(
             record_llm_warning(
                 &app,
                 &diag,
-                &mut provider_api_failures,
+                &provider_api_failures,
                 "review",
                 "synthesis",
                 None,
@@ -2098,21 +2242,23 @@ pub async fn review_single_file(
         });
     }
 
-    let specialist_prompts: Vec<SpecialistPrompt> = if mode == ReviewMode::Thorough {
-        PromptKey::THOROUGH_SPECIALISTS
-            .iter()
-            .map(|k| SpecialistPrompt {
-                key: *k,
-                system_prompt: k.default_text().to_string(),
-                provider: provider.clone(),
-                model_override: None,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let specialist_prompts: Arc<Vec<SpecialistPrompt>> =
+        Arc::new(if mode == ReviewMode::Thorough {
+            PromptKey::THOROUGH_SPECIALISTS
+                .iter()
+                .map(|k| SpecialistPrompt {
+                    key: *k,
+                    system_prompt: k.default_text().to_string(),
+                    provider: provider.clone(),
+                    model_override: None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        });
 
     let file_new_content = Arc::new(file.new_content.clone());
+    let standards_shared = Arc::new(standards.to_string());
     let permits = Arc::new(Semaphore::new(1));
 
     // Headless path: no diagnostics sink and a throwaway meter — the eval
@@ -2130,7 +2276,7 @@ pub async fn review_single_file(
             idx,
             hunks.len(),
             hunk.clone(),
-            standards.to_string(),
+            standards_shared.clone(),
             specialist_prompts.clone(),
             retry_count,
             crate::ai::DEFAULT_HUNK_MAX_TOKENS,
@@ -2234,6 +2380,18 @@ fn strip_statistics_section(summary: &str) -> &str {
     }
 }
 
+/// Acquire one slot from the global LLM concurrency limiter, mapping a closed
+/// semaphore to a clean error. Now that files are reviewed concurrently, every
+/// LLM-issuing stage (hunks, per-file context, aggregate, anchor relocation)
+/// acquires through here so real concurrent calls never exceed the configured
+/// `hunkConcurrency`, regardless of how many files are in flight.
+async fn acquire_permit(permits: &Semaphore) -> Result<tokio::sync::SemaphorePermit<'_>, AppError> {
+    permits
+        .acquire()
+        .await
+        .map_err(|_| AppError::Ai("LLM concurrency limiter closed".into()))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn chat_with_retries(
     provider: &Arc<dyn AiProvider>,
@@ -2258,8 +2416,8 @@ async fn review_single_hunk(
     hunk_idx: usize,
     total_hunks: usize,
     hunk: crate::diff::engine::DiffHunk,
-    standards: String,
-    specialist_prompts: Vec<SpecialistPrompt>,
+    standards: Arc<String>,
+    specialist_prompts: Arc<Vec<SpecialistPrompt>>,
     retry_count: u32,
     max_tokens: u32,
     llm_permits: Arc<Semaphore>,
@@ -2284,11 +2442,11 @@ async fn review_single_hunk(
 
     if mode == ReviewMode::Thorough {
         let mut handles = Vec::new();
-        for (idx, specialist) in specialist_prompts.into_iter().enumerate() {
+        for (idx, specialist) in specialist_prompts.iter().enumerate() {
             let provider = specialist.provider.clone();
             let key = specialist.key;
-            let sys_text = specialist.system_prompt;
-            let model_override = specialist.model_override;
+            let sys_text = specialist.system_prompt.clone();
+            let model_override = specialist.model_override.clone();
             let standards = standards.clone();
             let context_note = context_note.clone();
             let user_msg = user_msg.clone();

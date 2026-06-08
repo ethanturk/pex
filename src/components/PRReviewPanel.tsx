@@ -366,13 +366,13 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
   // Re-render once a second while a file is under review so its running timer
   // ticks. Idle (no active file / not running) means no interval.
   const [now, setNow] = useState(() => Date.now());
-  const activeStartMs = run?.activeFileStartMs;
+  const hasActiveFiles = (run?.activeFileIndices?.length ?? 0) > 0;
   useEffect(() => {
-    if (!running || activeStartMs == null) return;
+    if (!running || !hasActiveFiles) return;
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [running, activeStartMs]);
+  }, [running, hasActiveFiles]);
 
   // Open the pre-review confirmation dialog. The actual run is kicked off from
   // the dialog's Start button (which also carries the chosen specialist set).
@@ -960,12 +960,13 @@ function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
       <ul class="flex flex-col gap-0.5">
         {files.map((path, i) => {
           const done = isDone(i);
-          const active = !done && i === run.activeFileIndex;
+          const active = !done && (run.activeFileIndices?.includes(i) ?? false);
+          const startedMs = run.activeFileStartMs?.[i];
           const elapsed =
             done && durations[i] != null
               ? formatDuration(durations[i])
-              : active && run.activeFileStartMs != null
-                ? formatDuration(Math.max(0, now - run.activeFileStartMs))
+              : active && startedMs != null
+                ? formatDuration(Math.max(0, now - startedMs))
                 : "";
           return (
             <li
