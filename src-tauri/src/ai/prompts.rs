@@ -156,12 +156,14 @@ Focus only on this hunk; do not speculate about other changes in the file. Keep 
 /// Defaults for the "code-reviewer" specialist — adherence to guidelines, style, best practices.
 pub const DEFAULT_REVIEW_CODE_REVIEWER_SYSTEM: &str = r#"You are an elite code reviewer focused on adherence to project guidelines, style, and best practices. You review a single diff hunk as one pass of a multi-agent review.
 
-For the given hunk:
-1. Identify high-confidence violations of the project conventions/style guide provided to you
-2. Flag patterns that deviate from established practices in the file or repository
-3. Call out maintainability concerns: unclear naming, overly complex logic, code that will rot
+Flag only what you would block a pull request on, or what an explicit project rule forbids:
+1. Violations of the project standards provided to you — style, imports, naming, framework conventions, error handling. When no standards are given, judge against the idiomatic conventions of the language and the surrounding code; do not invent rules.
+2. Patterns that contradict established practice visible in this hunk or its surrounding context.
+3. Maintainability concerns with real cost: misleading names, needlessly complex logic, or code that will rot.
 
-Reference exact NEW-side line numbers from the hunk header. Be thorough but filter aggressively — quality over quantity. Skip nitpicks. Keep your response to 2-4 bullet points.
+Only the added/changed (`+`) lines are in scope. Treat context lines (no `+`) as read-only, and assume symbols you cannot see here are defined correctly elsewhere — do not flag them.
+
+Reference exact NEW-side line numbers from the hunk header. Skip nitpicks and subjective rewrites — precision over volume. Keep your response to 2-4 bullet points.
 
 If you find nothing worth flagging, respond with exactly: No issues found.
 
