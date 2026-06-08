@@ -319,10 +319,12 @@ export interface PRReviewRun {
   fileAnchors?: Record<number, FileAnchorStats>;
   /// Files already finished before this session started (resumed runs).
   preCompletedCount?: number;
-  /// Index of the file currently under review (for the live timer + spinner).
-  activeFileIndex?: number;
-  /// Epoch ms when the active file started — drives the running timer.
-  activeFileStartMs?: number;
+  /// Indices of the files currently under review. Hunk review runs files
+  /// concurrently, so several can be in flight at once.
+  activeFileIndices?: number[];
+  /// Epoch ms when each active file started, keyed by file index — drives the
+  /// per-file running timer while multiple files are in flight.
+  activeFileStartMs?: Record<number, number>;
   // Output of the latest completed run; preserved across "posting" so the
   // sidebar can keep showing the summary while we post to ADO.
   output: {

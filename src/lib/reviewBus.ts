@@ -47,14 +47,18 @@ export async function initReviewBus() {
       patch.fileAnchors = {};
       patch.ruleTitles = p.ruleTitles ?? {};
       patch.preCompletedCount = p.completedCount ?? 0;
-      patch.activeFileIndex = undefined;
-      patch.activeFileStartMs = undefined;
+      patch.activeFileIndices = [];
+      patch.activeFileStartMs = {};
     } else if (p.phase === "hunk-review" && typeof p.fileNum === "number") {
-      // First sighting of a new file → start its running timer.
+      // First sighting of a file → add it to the active set and start its timer.
+      // Several files review concurrently, so the set can hold more than one.
       const idx = p.fileNum - 1;
-      if (run?.activeFileIndex !== idx) {
-        patch.activeFileIndex = idx;
-        patch.activeFileStartMs = Date.now();
+      if (!(run?.activeFileIndices ?? []).includes(idx)) {
+        patch.activeFileIndices = [...(run?.activeFileIndices ?? []), idx];
+        patch.activeFileStartMs = {
+          ...(run?.activeFileStartMs ?? {}),
+          [idx]: Date.now(),
+        };
       }
     } else if (p.phase === "file-done" && typeof p.fileIndex === "number") {
       patch.fileDurations = {
@@ -70,9 +74,12 @@ export async function initReviewBus() {
           deterministic: p.deterministicFindings ?? 0,
         },
       };
-      // Clear the active marker; the next hunk-review event sets the next file.
-      patch.activeFileIndex = undefined;
-      patch.activeFileStartMs = undefined;
+      // Drop just this file from the active set; siblings stay in flight.
+      patch.activeFileIndices = (run?.activeFileIndices ?? []).filter(
+        (i) => i !== p.fileIndex,
+      );
+      const { [p.fileIndex]: _done, ...restStarts } = run?.activeFileStartMs ?? {};
+      patch.activeFileStartMs = restStarts;
     }
 
     updateReviewRun(id, patch);

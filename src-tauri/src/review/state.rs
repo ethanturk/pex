@@ -18,7 +18,14 @@ pub enum ReviewMode {
 /// state below this version (completed findings are cheap to regenerate; a
 /// half-old resume is not worth the risk). States written before this field
 /// existed deserialize to 0 via `serde(default)` and are therefore discarded.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+///
+/// v4: hunk review went concurrent across files. The single-file cursor
+/// (`current_file_idx` / `current_hunk` / `current_file_findings`) no longer
+/// tracks a single in-flight file — resume is now file-level: `completed_files`
+/// is the source of truth and any file not in it restarts from its first hunk.
+/// `current_file_idx` is repurposed to mean "count of completed files" so the
+/// resume `plan` event and `all_files_done` stay correct.
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 /// Serializable progress state for resumable PR reviews.
 /// Persisted to SQLite so the user can continue after cancellation or crash.
