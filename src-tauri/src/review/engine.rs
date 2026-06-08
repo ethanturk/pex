@@ -1,17 +1,19 @@
 use crate::ai::prompts::{resolve_prompt, PromptKey, PromptModelOverride};
+use crate::ai::TokenUsage;
 use crate::ai::{AiProvider, ChatMessage, ChatRole, ToolCall, ToolChatMessage, ToolDefinition};
 use crate::diff::engine::extract_hunks;
+use crate::review::diagnostics::Diagnostics;
 use crate::review::prompts;
 use crate::review::rules::ReviewRuleMatch;
 use crate::review::state::{self, ReviewMode, ReviewState};
 use crate::AppError;
-use crate::ai::TokenUsage;
-use crate::review::diagnostics::Diagnostics;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Semaphore;
+
+const MAX_PROVIDER_API_FAILURES: usize = 3;
 
 #[derive(Clone)]
 struct SpecialistPrompt {
@@ -43,8 +45,10 @@ impl TokenMeter {
         self.calls.fetch_add(1, Ordering::Relaxed);
         match usage {
             Some(u) => {
-                self.input.fetch_add(u.input_tokens as u64, Ordering::Relaxed);
-                self.output.fetch_add(u.output_tokens as u64, Ordering::Relaxed);
+                self.input
+                    .fetch_add(u.input_tokens as u64, Ordering::Relaxed);
+                self.output
+                    .fetch_add(u.output_tokens as u64, Ordering::Relaxed);
                 if diag.is_enabled() {
                     diag.event(
                         "token_usage",
@@ -452,7 +456,16 @@ async fn apply_finding_guards_with_relocation(
         }
 
         let started = std::time::Instant::now();
-        match relocate_anchor(provider, file_path, new_content, &f, retry_count, meter, diag).await
+        match relocate_anchor(
+            provider,
+            file_path,
+            new_content,
+            &f,
+            retry_count,
+            meter,
+            diag,
+        )
+        .await
         {
             Ok(Some(snippet)) => {
                 if let Some(anchor) = crate::review::anchoring::resolve_existing_code(
@@ -1023,6 +1036,107 @@ fn emit_progress(app: &tauri::AppHandle, phase: &str, detail: &str, extra: serde
     let _ = app.emit("review-progress", &payload);
 }
 
+fn emit_warning(
+    app: &tauri::AppHandle,
+    scope: &str,
+    stage: &str,
+    file_path: Option<&str>,
+    message: &str,
+    detail: Option<&str>,
+) {
+    let mut payload = serde_json::json!({
+        "scope": scope,
+        "stage": stage,
+        "message": message,
+    });
+    if let serde_json::Value::Object(ref mut map) = payload {
+        if let Some(path) = file_path {
+            map.insert("filePath".into(), serde_json::json!(path));
+        }
+        if let Some(detail) = detail.filter(|d| !d.trim().is_empty()) {
+            map.insert("detail".into(), serde_json::json!(detail));
+        }
+    }
+    let _ = app.emit("review-warning", &payload);
+}
+
+fn provider_error_message(error: &AppError) -> Option<String> {
+    let text = error.to_string();
+    if let Some(message) = provider_json_error_message(&text) {
+        return Some(message);
+    }
+    let lower = text.to_lowercase();
+    if lower.contains("request returned")
+        || lower.contains("request failed")
+        || lower.contains("invalid_request_error")
+        || lower.contains("provider api error")
+    {
+        return Some(text);
+    }
+    None
+}
+
+fn provider_json_error_message(text: &str) -> Option<String> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    let parsed = serde_json::from_str::<serde_json::Value>(&text[start..=end]).ok()?;
+    let error = parsed.get("error")?;
+    let message = error.get("message")?.as_str()?.trim();
+    if message.is_empty() {
+        return None;
+    }
+    let param = error.get("param").and_then(|p| p.as_str()).unwrap_or("");
+    if param.trim().is_empty() {
+        Some(format!("AI provider error: {}", message))
+    } else {
+        Some(format!(
+            "AI provider rejected {}: {}",
+            param.trim(),
+            message
+        ))
+    }
+}
+
+fn record_llm_warning(
+    app: &tauri::AppHandle,
+    diag: &Diagnostics,
+    provider_failures: &mut usize,
+    scope: &str,
+    stage: &str,
+    file_path: Option<&str>,
+    error: &AppError,
+) -> Result<(), AppError> {
+    let raw = error.to_string();
+    let message = provider_error_message(error).unwrap_or_else(|| raw.clone());
+    emit_warning(app, scope, stage, file_path, &message, Some(&raw));
+    if diag.is_enabled() {
+        diag.event(
+            "review_warning",
+            serde_json::json!({
+                "scope": scope,
+                "stage": stage,
+                "filePath": file_path,
+                "message": message,
+                "detail": raw,
+            }),
+        );
+    }
+
+    if provider_error_message(error).is_some() {
+        *provider_failures += 1;
+        if *provider_failures >= MAX_PROVIDER_API_FAILURES {
+            return Err(AppError::Ai(format!(
+                "AI provider failed repeatedly during review: {}",
+                message
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Run the full multi-pass review.
 ///
 /// `resume` carries the caller's intent: `true` continues from any saved
@@ -1074,6 +1188,7 @@ pub async fn run_review(
         .unwrap_or(crate::ai::DEFAULT_AGGREGATE_MAX_TOKENS);
     // Accumulates token usage across every LLM call in this run.
     let token_meter = Arc::new(TokenMeter::default());
+    let mut provider_api_failures = 0usize;
 
     // Minimum confidence a finding must reach to survive the deterministic
     // guard applied after each file's adjudication. Resolved once per run.
@@ -1353,7 +1468,18 @@ pub async fn run_review(
                 let response = match result {
                     Ok(r) => r,
                     Err(e) => {
-                        let skip_msg = format!("[skipped — error: {}]", e);
+                        record_llm_warning(
+                            &app,
+                            &diag,
+                            &mut provider_api_failures,
+                            "file",
+                            "hunk",
+                            Some(&file.path),
+                            &e,
+                        )?;
+                        let warning_message =
+                            provider_error_message(&e).unwrap_or_else(|| e.to_string());
+                        let skip_msg = format!("[skipped — error: {}]", warning_message);
                         emit_progress(
                             &app,
                             "hunk-skipped",
@@ -1362,7 +1488,7 @@ pub async fn run_review(
                                 hunk_idx + 1,
                                 total_hunks,
                                 file.path,
-                                e
+                                warning_message
                             ),
                             serde_json::json!({}),
                         );
@@ -1448,7 +1574,7 @@ pub async fn run_review(
             ];
 
             let agg_started = std::time::Instant::now();
-            let raw = tokio::select! {
+            let raw_result = tokio::select! {
                 r = chat_with_retries(
                     &provider,
                     &agg_messages,
@@ -1458,35 +1584,84 @@ pub async fn run_review(
                     "adjudicate",
                     &diag,
                 ) =>
-                    r.unwrap_or_else(|e| format!("[aggregate failed — {}]", e)),
+                    r,
                 _ = wait_cancelled(&cancel) =>
                     return Err(AppError::Provider("Review cancelled".into())),
             };
-            if diag.is_enabled() {
-                diag.event(
-                    "llm_call",
-                    serde_json::json!({
-                        "stage": "adjudicate",
-                        "filePath": file.path,
-                        "latencyMs": agg_started.elapsed().as_millis() as u64,
-                        "messages": &agg_messages,
-                        "response": raw,
-                    }),
-                );
-            }
-
-            let mut aggregate = parse_file_aggregate(&raw).unwrap_or_else(|err| {
-                // Log to stderr so the user can see what the model produced.
-                eprintln!(
-                    "[review] file-aggregate JSON parse failed for {}: {}",
-                    file.path, err
-                );
-                FileAggregateResult {
-                    summary: format!("Aggregate parse failed; raw model output: {}", raw),
-                    verdict: "review-required".into(),
-                    findings: Vec::new(),
+            let mut aggregate = match raw_result {
+                Ok(raw) => {
+                    if diag.is_enabled() {
+                        diag.event(
+                            "llm_call",
+                            serde_json::json!({
+                                "stage": "adjudicate",
+                                "filePath": file.path,
+                                "latencyMs": agg_started.elapsed().as_millis() as u64,
+                                "messages": &agg_messages,
+                                "response": raw,
+                            }),
+                        );
+                    }
+                    match parse_file_aggregate(&raw) {
+                        Ok(aggregate) => aggregate,
+                        Err(err) => {
+                            eprintln!(
+                                "[review] file-aggregate JSON parse failed for {}: {}",
+                                file.path, err
+                            );
+                            let message = format!(
+                                "The model returned malformed file-aggregate JSON for {}.",
+                                file.path
+                            );
+                            emit_warning(
+                                &app,
+                                "file",
+                                "file-aggregate",
+                                Some(&file.path),
+                                &message,
+                                Some(&err),
+                            );
+                            if diag.is_enabled() {
+                                diag.event(
+                                    "review_warning",
+                                    serde_json::json!({
+                                        "scope": "file",
+                                        "stage": "file-aggregate",
+                                        "filePath": file.path,
+                                        "message": message,
+                                        "detail": err,
+                                    }),
+                                );
+                            }
+                            FileAggregateResult {
+                                summary: format!(
+                                    "Aggregate parse failed; raw model output: {}",
+                                    raw
+                                ),
+                                verdict: "review-required".into(),
+                                findings: Vec::new(),
+                            }
+                        }
+                    }
                 }
-            });
+                Err(e) => {
+                    record_llm_warning(
+                        &app,
+                        &diag,
+                        &mut provider_api_failures,
+                        "file",
+                        "file-aggregate",
+                        Some(&file.path),
+                        &e,
+                    )?;
+                    let message = provider_error_message(&e).unwrap_or_else(|| e.to_string());
+                    FileAggregateResult {
+                        summary: format!("File aggregate failed: {}", message),
+                        verdict: "review-required".into(),
+                        findings: Vec::new(),
+                    }
+                }
+            };
 
             // Deterministic precision guards: drop sub-threshold findings and
             // resolve line-level anchors from exact snippets before they reach
@@ -1631,7 +1806,7 @@ pub async fn run_review(
         ];
 
         let batch_started = std::time::Instant::now();
-        let batch_summary = tokio::select! {
+        let batch_result = tokio::select! {
             r = chat_with_retries(
                 &provider,
                 &batch_messages,
@@ -1641,22 +1816,40 @@ pub async fn run_review(
                 "batch",
                 &diag,
             ) =>
-                r.unwrap_or_else(|e| format!("[batch aggregate failed — {}]", e)),
+                r,
             _ = wait_cancelled(&cancel) =>
                 return Err(AppError::Provider("Review cancelled".into())),
         };
-        if diag.is_enabled() {
-            diag.event(
-                "llm_call",
-                serde_json::json!({
-                    "stage": "batch",
-                    "batch": state.current_batch,
-                    "latencyMs": batch_started.elapsed().as_millis() as u64,
-                    "messages": &batch_messages,
-                    "response": batch_summary,
-                }),
-            );
-        }
+        let batch_summary = match batch_result {
+            Ok(summary) => {
+                if diag.is_enabled() {
+                    diag.event(
+                        "llm_call",
+                        serde_json::json!({
+                            "stage": "batch",
+                            "batch": state.current_batch,
+                            "latencyMs": batch_started.elapsed().as_millis() as u64,
+                            "messages": &batch_messages,
+                            "response": summary,
+                        }),
+                    );
+                }
+                summary
+            }
+            Err(e) => {
+                record_llm_warning(
+                    &app,
+                    &diag,
+                    &mut provider_api_failures,
+                    "review",
+                    "batch",
+                    None,
+                    &e,
+                )?;
+                let message = provider_error_message(&e).unwrap_or_else(|| e.to_string());
+                format!("[batch aggregate failed — {}]", message)
+            }
+        };
 
         state.batch_summaries.push(batch_summary);
         state.current_batch += 1;
@@ -1765,7 +1958,7 @@ pub async fn run_review(
     ];
 
     let synth_started = std::time::Instant::now();
-    let final_review = tokio::select! {
+    let final_result = tokio::select! {
         r = chat_with_retries(
             &provider,
             &final_messages,
@@ -1775,21 +1968,39 @@ pub async fn run_review(
             "synthesis",
             &diag,
         ) =>
-            r.unwrap_or_else(|e| format!("[final synthesis failed — {}]", e)),
+            r,
         _ = wait_cancelled(&cancel) =>
             return Err(AppError::Provider("Review cancelled".into())),
     };
-    if diag.is_enabled() {
-        diag.event(
-            "llm_call",
-            serde_json::json!({
-                "stage": "synthesis",
-                "latencyMs": synth_started.elapsed().as_millis() as u64,
-                "messages": &final_messages,
-                "response": final_review,
-            }),
-        );
-    }
+    let final_review = match final_result {
+        Ok(summary) => {
+            if diag.is_enabled() {
+                diag.event(
+                    "llm_call",
+                    serde_json::json!({
+                        "stage": "synthesis",
+                        "latencyMs": synth_started.elapsed().as_millis() as u64,
+                        "messages": &final_messages,
+                        "response": summary,
+                    }),
+                );
+            }
+            summary
+        }
+        Err(e) => {
+            record_llm_warning(
+                &app,
+                &diag,
+                &mut provider_api_failures,
+                "review",
+                "synthesis",
+                None,
+                &e,
+            )?;
+            let message = provider_error_message(&e).unwrap_or_else(|| e.to_string());
+            format!("[final synthesis failed — {}]", message)
+        }
+    };
     let final_review = append_exact_statistics(&final_review, file_entries.len(), &findings);
 
     state.phase = "done".into();
@@ -2259,7 +2470,10 @@ async fn chat_with_retries_and_model(
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        match provider.chat_full(messages, model_override, max_tokens).await {
+        match provider
+            .chat_full(messages, model_override, max_tokens)
+            .await
+        {
             Ok(resp) => {
                 meter.record(stage, resp.usage, diag);
                 return Ok(resp.content);
@@ -2816,5 +3030,19 @@ mod tests {
         let parsed = parse_file_aggregate(raw).expect("parse");
         assert_eq!(parsed.findings[0].confidence, default_confidence());
         assert!(parsed.findings[0].evidence.is_none());
+    }
+
+    #[test]
+    fn provider_error_message_extracts_openai_error_body() {
+        let error = AppError::Ai(
+            r#"OpenAI request returned 400 Bad Request: {"error":{"message":"Invalid option: expected one of \"none\"|\"minimal\"|\"low\"|\"medium\"|\"high\"|\"xhigh\"","type":"invalid_request_error","param":"reasoning.effort","code":"invalid_request_error"}}"#
+                .into(),
+        );
+        assert_eq!(
+            provider_error_message(&error).as_deref(),
+            Some(
+                "AI provider rejected reasoning.effort: Invalid option: expected one of \"none\"|\"minimal\"|\"low\"|\"medium\"|\"high\"|\"xhigh\""
+            )
+        );
     }
 }

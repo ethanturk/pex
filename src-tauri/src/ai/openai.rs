@@ -17,6 +17,7 @@ pub struct OpenAiProvider {
     endpoint: String,
     model: String,
     api_key: String,
+    reasoning_effort: Option<String>,
     http: reqwest::Client,
 }
 
@@ -28,6 +29,7 @@ impl OpenAiProvider {
         endpoint: String,
         model: String,
         api_key: String,
+        reasoning_effort: Option<String>,
         connect_timeout_secs: u64,
         read_timeout_secs: u64,
     ) -> Self {
@@ -40,6 +42,7 @@ impl OpenAiProvider {
             endpoint,
             model,
             api_key,
+            reasoning_effort,
             http,
         }
     }
@@ -51,6 +54,8 @@ struct OpenAiRequest<'a> {
     messages: Vec<OpenAiMessage<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -93,6 +98,8 @@ struct OpenAiToolRequest {
     tools: Vec<OpenAiToolDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -192,6 +199,7 @@ impl AiProvider for OpenAiProvider {
             model,
             messages: openai_messages,
             max_tokens,
+            reasoning_effort: self.reasoning_effort.as_deref(),
         };
 
         let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
@@ -254,6 +262,7 @@ impl AiProvider for OpenAiProvider {
                 })
                 .collect(),
             max_tokens,
+            reasoning_effort: self.reasoning_effort.clone(),
         };
 
         let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));

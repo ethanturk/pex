@@ -100,7 +100,9 @@ async fn incremental_paths(
     let (enabled, last) = {
         let conn = state.db.conn();
         (
-            crate::ai::read_incremental_review(&conn).await.unwrap_or(false),
+            crate::ai::read_incremental_review(&conn)
+                .await
+                .unwrap_or(false),
             crate::review::feedback::get_last_reviewed_iteration(&conn, pr_key).await,
         )
     };
@@ -207,7 +209,10 @@ async fn load_ast_rules(
     project_id: &str,
     repo_id: &str,
     commit_id: &str,
-) -> (Option<crate::review::deterministic::CompiledRuleSet>, Vec<String>) {
+) -> (
+    Option<crate::review::deterministic::CompiledRuleSet>,
+    Vec<String>,
+) {
     for path in [".pex/ast-rules.yml", ".pex/ast-rules.yaml"] {
         if let Ok(Some(raw)) = client
             .get_file_at_commit(project_id, repo_id, commit_id, path)
@@ -1011,8 +1016,9 @@ pub async fn get_saved_review(
     state: State<'_, AppState>,
 ) -> Result<Option<crate::review::state::ReviewState>, String> {
     let conn = state.db.conn();
-    let saved =
-        crate::review::state::load_state(&conn).await.map_err(|e: crate::AppError| e.to_string())?;
+    let saved = crate::review::state::load_state(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
     if saved.as_ref().map(|s| s.is_done()).unwrap_or(false) {
         crate::review::state::clear_state(&conn)
             .await

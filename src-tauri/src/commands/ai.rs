@@ -81,6 +81,7 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         provider: default_provider.provider.clone(),
         endpoint: default_provider.endpoint.clone(),
         model: default_provider.model.clone(),
+        reasoning_effort: default_provider.reasoning_effort.clone(),
         has_api_key: provider_has_key(default_provider).unwrap_or(false),
         connect_timeout_secs: default_provider.connect_timeout_secs,
         read_timeout_secs: default_provider.read_timeout_secs,
@@ -129,6 +130,7 @@ fn provider_no_key(provider: &AiProviderConfig) -> Result<AiProviderConfigNoKey,
         provider: provider.provider.clone(),
         endpoint: provider.endpoint.clone(),
         model: provider.model.clone(),
+        reasoning_effort: provider.reasoning_effort.clone(),
         has_api_key: provider_has_key(provider)?,
         connect_timeout_secs: provider.connect_timeout_secs,
         read_timeout_secs: provider.read_timeout_secs,
@@ -185,6 +187,8 @@ fn normalize_provider_config(
         provider.endpoint = crate::ai::default_endpoint_for_kind(kind).to_string();
     }
     provider.model = provider.model.trim().to_string();
+    provider.reasoning_effort =
+        crate::ai::normalize_reasoning_effort(provider.reasoning_effort.as_deref());
 
     Ok(AiProviderConfig {
         id: provider.id,
@@ -192,6 +196,7 @@ fn normalize_provider_config(
         provider: kind.to_string(),
         endpoint: provider.endpoint,
         model: provider.model,
+        reasoning_effort: provider.reasoning_effort,
         connect_timeout_secs: clamp_timeout(
             provider.connect_timeout_secs,
             crate::ai::DEFAULT_CONNECT_TIMEOUT_SECS,
@@ -210,6 +215,10 @@ async fn mirror_default_settings(
     crate::cache::set_setting(db, "ai_provider", &provider.provider).await?;
     crate::cache::set_setting(db, "ai_endpoint", &provider.endpoint).await?;
     crate::cache::set_setting(db, "ai_model", &provider.model).await?;
+    match provider.reasoning_effort.as_deref() {
+        Some(effort) => crate::cache::set_setting(db, "ai_reasoning_effort", effort).await?,
+        None => crate::cache::delete_setting(db, "ai_reasoning_effort").await?,
+    }
     crate::cache::set_setting(
         db,
         "ai_connect_timeout_secs",
@@ -245,6 +254,7 @@ fn configure_default_provider(
             &provider.endpoint,
             &provider.model,
             api_key,
+            provider.reasoning_effort.clone(),
             provider.connect_timeout_secs,
             provider.read_timeout_secs,
         ),
@@ -255,6 +265,7 @@ fn configure_default_provider(
                 &provider.endpoint,
                 &provider.model,
                 api_key,
+                provider.reasoning_effort.clone(),
                 provider.connect_timeout_secs,
                 provider.read_timeout_secs,
             );
@@ -274,6 +285,7 @@ pub async fn save_ai_defaults(
     endpoint: String,
     model: String,
     api_key: String,
+    reasoning_effort: Option<String>,
     connect_timeout_secs: u64,
     read_timeout_secs: u64,
 ) -> Result<(), String> {
@@ -293,6 +305,7 @@ pub async fn save_ai_defaults(
         provider: kind.to_string(),
         endpoint,
         model,
+        reasoning_effort: crate::ai::normalize_reasoning_effort(reasoning_effort.as_deref()),
         connect_timeout_secs: connect_timeout,
         read_timeout_secs: read_timeout,
     };
@@ -474,7 +487,10 @@ pub async fn save_ai_preferences(
     crate::cache::set_setting(&conn, "ai_hunk_max_tokens", &hunk_tokens.to_string())
         .await
         .map_err(|e: crate::AppError| e.to_string())?;
-    let agg_tokens = clamp_tokens(aggregate_max_tokens, crate::ai::DEFAULT_AGGREGATE_MAX_TOKENS);
+    let agg_tokens = clamp_tokens(
+        aggregate_max_tokens,
+        crate::ai::DEFAULT_AGGREGATE_MAX_TOKENS,
+    );
     crate::cache::set_setting(&conn, "ai_aggregate_max_tokens", &agg_tokens.to_string())
         .await
         .map_err(|e: crate::AppError| e.to_string())?;
@@ -529,9 +545,13 @@ pub async fn save_ai_preferences(
     .await
     .map_err(|e: crate::AppError| e.to_string())?;
     let auto_post_conf = auto_post_confidence.min(crate::ai::MAX_AUTO_POST_CONFIDENCE);
-    crate::cache::set_setting(&conn, "ai_auto_post_confidence", &auto_post_conf.to_string())
-        .await
-        .map_err(|e: crate::AppError| e.to_string())?;
+    crate::cache::set_setting(
+        &conn,
+        "ai_auto_post_confidence",
+        &auto_post_conf.to_string(),
+    )
+    .await
+    .map_err(|e: crate::AppError| e.to_string())?;
     crate::cache::set_setting(
         &conn,
         "ai_diagnostics",
@@ -630,7 +650,11 @@ pub async fn explain_hunk(
     // Ensure AI manager is configured + resolve the (possibly user-customized) system prompt.
     let system_prompt = {
         let conn = state.db.conn();
-        let needs_configure = state.ai_manager.lock().map_err(|e| e.to_string())?.is_none();
+        let needs_configure = state
+            .ai_manager
+            .lock()
+            .map_err(|e| e.to_string())?
+            .is_none();
         if needs_configure {
             let mut mgr = crate::ai::AiManager::new();
             let configured = mgr

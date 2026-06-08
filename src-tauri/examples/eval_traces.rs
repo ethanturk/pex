@@ -160,7 +160,10 @@ fn print_run(run: &RunStats) {
         run.done_calls.unwrap_or(totals.calls),
     );
     if !run.by_stage.is_empty() {
-        println!("   {:<28} {:>10} {:>10} {:>7}", "stage", "input", "output", "calls");
+        println!(
+            "   {:<28} {:>10} {:>10} {:>7}",
+            "stage", "input", "output", "calls"
+        );
         for (stage, s) in &run.by_stage {
             println!(
                 "   {:<28} {:>10} {:>10} {:>7}",
@@ -170,7 +173,10 @@ fn print_run(run: &RunStats) {
     }
     let out = run.done_output.unwrap_or(totals.output);
     let inp = run.done_input.unwrap_or(totals.input);
-    println!("   {:<28} {:>10} {:>10} {:>7}", "TOTAL", inp, out, totals.calls);
+    println!(
+        "   {:<28} {:>10} {:>10} {:>7}",
+        "TOTAL", inp, out, totals.calls
+    );
     if run.files > 0 {
         println!(
             "   output tokens / file: {:.0}",
@@ -222,8 +228,15 @@ fn main() {
         }
     }
 
-    println!("══ OVERALL ({} run(s), {} file(s)) ══════════", runs.len(), grand_files);
-    println!("   {:<28} {:>10} {:>10} {:>7}", "stage", "input", "output", "calls");
+    println!(
+        "══ OVERALL ({} run(s), {} file(s)) ══════════",
+        runs.len(),
+        grand_files
+    );
+    println!(
+        "   {:<28} {:>10} {:>10} {:>7}",
+        "stage", "input", "output", "calls"
+    );
     let mut g = StageStats::default();
     for (stage, s) in &overall {
         println!(
@@ -234,7 +247,10 @@ fn main() {
         g.output += s.output;
         g.calls += s.calls;
     }
-    println!("   {:<28} {:>10} {:>10} {:>7}", "TOTAL", g.input, g.output, g.calls);
+    println!(
+        "   {:<28} {:>10} {:>10} {:>7}",
+        "TOTAL", g.input, g.output, g.calls
+    );
     if grand_files > 0 {
         println!(
             "   output tokens / file (mean): {:.0}",

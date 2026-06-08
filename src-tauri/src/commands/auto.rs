@@ -1,7 +1,9 @@
 //! Phase 4 automation commands: deciding which PRs need an auto-review, and
 //! auto-posting the highest-confidence Blocking findings after one.
 
-use crate::review::engine::{post_single_finding, select_auto_post_findings, should_auto_review, Finding};
+use crate::review::engine::{
+    post_single_finding, select_auto_post_findings, should_auto_review, Finding,
+};
 use crate::review::feedback::{self, Verdict};
 use crate::AppState;
 use tauri::State;

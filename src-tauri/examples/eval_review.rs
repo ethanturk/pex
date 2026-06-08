@@ -189,14 +189,14 @@ async fn main() {
             continue;
         };
 
-        let result =
-            match review_single_file(provider.clone(), mode, &file, "", threshold, 1).await {
-                Ok(r) => r,
-                Err(e) => {
-                    println!("[{name}] ERROR: {e}");
-                    continue;
-                }
-            };
+        let result = match review_single_file(provider.clone(), mode, &file, "", threshold, 1).await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                println!("[{name}] ERROR: {e}");
+                continue;
+            }
+        };
 
         let tps: Vec<&ExpectedFinding> = expected.iter().filter(|e| !e.false_positive).collect();
         let traps: Vec<&ExpectedFinding> = expected.iter().filter(|e| e.false_positive).collect();

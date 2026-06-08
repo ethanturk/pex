@@ -348,6 +348,7 @@ export interface AiProviderConfig {
   provider: string;
   endpoint: string;
   model: string;
+  reasoningEffort?: string | null;
   hasApiKey: boolean;
   connectTimeoutSecs: number;
   readTimeoutSecs: number;
@@ -359,6 +360,7 @@ export interface AiSettingsNoKey {
   provider: string;
   endpoint: string;
   model: string;
+  reasoningEffort?: string | null;
   /// Whether an API key is stored for the current provider. The key itself is
   /// never returned — the UI shows a masked placeholder when this is true.
   hasApiKey: boolean;
@@ -410,6 +412,7 @@ export async function saveAiDefaults(
   endpoint: string,
   model: string,
   apiKey: string,
+  reasoningEffort: string | null,
   connectTimeoutSecs: number,
   readTimeoutSecs: number,
 ): Promise<void> {
@@ -418,6 +421,7 @@ export async function saveAiDefaults(
     endpoint,
     model,
     apiKey,
+    reasoningEffort,
     connectTimeoutSecs,
     readTimeoutSecs,
   });

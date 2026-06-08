@@ -18,7 +18,10 @@ pub async fn validate_github_pat(api_base: &str, pat: &str) -> Result<String, Ap
         .await?;
 
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| AppError::Auth(e.to_string()))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::Auth(e.to_string()))?;
     if !status.is_success() {
         return Err(AppError::Auth(format!(
             "GitHub authentication failed ({}): {}",

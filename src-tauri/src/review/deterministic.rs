@@ -109,9 +109,14 @@ impl Language for AgLang {
         self.get_ts_language().id_for_node_kind(kind, true)
     }
     fn field_to_id(&self, field: &str) -> Option<u16> {
-        self.get_ts_language().field_id_for_name(field).map(|f| f.get())
+        self.get_ts_language()
+            .field_id_for_name(field)
+            .map(|f| f.get())
     }
-    fn build_pattern(&self, builder: &PatternBuilder) -> Result<ast_grep_core::Pattern, PatternError> {
+    fn build_pattern(
+        &self,
+        builder: &PatternBuilder,
+    ) -> Result<ast_grep_core::Pattern, PatternError> {
         builder.build(|src| StrDoc::try_new(src, self.clone()))
     }
 }
@@ -207,7 +212,10 @@ fn compile_manifest(yaml: &str, cap: Option<usize>) -> (CompiledRuleSet, Vec<Str
     let mut count = 0usize;
     for spec in manifest.rules {
         if cap.is_some_and(|c| count >= c) {
-            warnings.push(format!("too many AST rules; ignoring beyond {}", cap.unwrap()));
+            warnings.push(format!(
+                "too many AST rules; ignoring beyond {}",
+                cap.unwrap()
+            ));
             break;
         }
         count += 1;
@@ -554,8 +562,14 @@ mod tests {
         // Exercises the typescript→tsx grammar expansion.
         let new = "const C = (v: any) => {\n  console.log(v);\n  return <div/>;\n};\n";
         let got = ids(&check("src/C.tsx", "const x = 1;\n", new));
-        assert!(got.contains(&"deterministic:ts-any".to_string()), "got {got:?}");
-        assert!(got.contains(&"deterministic:ts-console".to_string()), "got {got:?}");
+        assert!(
+            got.contains(&"deterministic:ts-any".to_string()),
+            "got {got:?}"
+        );
+        assert!(
+            got.contains(&"deterministic:ts-console".to_string()),
+            "got {got:?}"
+        );
     }
 
     #[test]
@@ -599,7 +613,10 @@ mod tests {
         let f = check("app.py", "x = 1\n", new);
         assert!(ids(&f).contains(&"deterministic:py-eval-exec".to_string()));
         assert_eq!(
-            f.iter().find(|x| x.sources[0].contains("eval")).unwrap().severity,
+            f.iter()
+                .find(|x| x.sources[0].contains("eval"))
+                .unwrap()
+                .severity,
             Severity::Critical
         );
     }
@@ -608,9 +625,18 @@ mod tests {
     fn flags_csharp_writeline_throw_debugger() {
         let new = "class C {\n  void M() {\n    Console.WriteLine(\"x\");\n    Debugger.Break();\n    throw new Exception(\"e\");\n  }\n}\n";
         let got = ids(&check("src/C.cs", "class C {}\n", new));
-        assert!(got.contains(&"deterministic:cs-console-writeline".to_string()), "got {got:?}");
-        assert!(got.contains(&"deterministic:cs-debugger-break".to_string()), "got {got:?}");
-        assert!(got.contains(&"deterministic:cs-throw-base-exception".to_string()), "got {got:?}");
+        assert!(
+            got.contains(&"deterministic:cs-console-writeline".to_string()),
+            "got {got:?}"
+        );
+        assert!(
+            got.contains(&"deterministic:cs-debugger-break".to_string()),
+            "got {got:?}"
+        );
+        assert!(
+            got.contains(&"deterministic:cs-throw-base-exception".to_string()),
+            "got {got:?}"
+        );
     }
 
     #[test]

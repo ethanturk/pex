@@ -377,7 +377,9 @@ async fn build_synced_database(
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let db = Builder::new_synced_database(path, url, token).build().await?;
+        let db = Builder::new_synced_database(path, url, token)
+            .build()
+            .await?;
         Ok(db)
     }
 }
@@ -558,7 +560,9 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::cache::set_setting(&src, "ai_model", "gpt-x").await.unwrap();
+        crate::cache::set_setting(&src, "ai_model", "gpt-x")
+            .await
+            .unwrap();
 
         let snapshot = export_all_tables(&src).await.unwrap();
 

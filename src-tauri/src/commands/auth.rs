@@ -240,9 +240,7 @@ pub async fn refresh_oauth_token(
 }
 
 #[tauri::command]
-pub async fn get_saved_orgs(
-    state: State<'_, AppState>,
-) -> Result<Vec<serde_json::Value>, String> {
+pub async fn get_saved_orgs(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
     let conn = state.db.conn();
     let orgs = crate::cache::list_orgs(&conn)
         .await

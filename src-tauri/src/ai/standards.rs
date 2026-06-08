@@ -7,8 +7,8 @@
 //! are memoized in `StandardsCache` so a full "Review All" run over a 40-file
 //! PR makes only a handful of ADO requests instead of hundreds.
 
-use crate::provider::GitClient;
 use crate::cache::standards_cache::{StandardsCache, StandardsCacheKey};
+use crate::provider::GitClient;
 
 /// Filename variants for the agent-guidance file. Tried in this order; first
 /// hit wins. ADO paths are case-sensitive, so we have to enumerate.

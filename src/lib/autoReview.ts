@@ -87,6 +87,7 @@ async function runOne({ projectId, repoId, prId, prTitle }: QueueItem): Promise<
     progress: { phase: "auto", detail: "Auto-reviewing…" },
     output: null,
     error: null,
+    warnings: [],
     mode,
   });
   reviewRuns.value = next;

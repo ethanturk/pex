@@ -135,7 +135,10 @@ pub trait AiProvider: Send + Sync {
         messages: &[ChatMessage],
         model_override: Option<&str>,
     ) -> Result<String, AppError> {
-        Ok(self.chat_full(messages, model_override, None).await?.content)
+        Ok(self
+            .chat_full(messages, model_override, None)
+            .await?
+            .content)
     }
 
     /// Send a chat request, capping output at `max_tokens` (when the provider
@@ -284,6 +287,8 @@ pub struct AiProviderConfig {
     pub provider: String,
     pub endpoint: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub connect_timeout_secs: u64,
     pub read_timeout_secs: u64,
 }
@@ -298,6 +303,8 @@ pub struct AiProviderConfigNoKey {
     pub provider: String,
     pub endpoint: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub has_api_key: bool,
     pub connect_timeout_secs: u64,
     pub read_timeout_secs: u64,
@@ -312,6 +319,8 @@ pub struct AiSettingsNoKey {
     pub provider: String,
     pub endpoint: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     /// Whether an API key is stored for the current provider. The key itself is
     /// never returned; the UI uses this to show a masked placeholder instead of
     /// a misleadingly-empty field.
@@ -378,6 +387,15 @@ pub fn default_model_for_kind(kind: AiProviderKind) -> &'static str {
     }
 }
 
+pub fn normalize_reasoning_effort(value: Option<&str>) -> Option<String> {
+    let effort = value?.trim().to_lowercase();
+    match effort.as_str() {
+        "minimal" | "low" | "medium" | "high" | "xhigh" => Some(effort),
+        "max" => Some("xhigh".to_string()),
+        _ => None,
+    }
+}
+
 pub async fn read_ai_provider_configs(
     conn: &libsql::Connection,
 ) -> Result<(String, Vec<AiProviderConfig>), AppError> {
@@ -399,6 +417,7 @@ pub async fn read_ai_provider_configs(
             p.provider = p.provider.trim().to_lowercase();
             p.endpoint = p.endpoint.trim().to_string();
             p.model = p.model.trim().to_string();
+            p.reasoning_effort = normalize_reasoning_effort(p.reasoning_effort.as_deref());
             p.connect_timeout_secs =
                 clamp_timeout_value(p.connect_timeout_secs, DEFAULT_CONNECT_TIMEOUT_SECS);
             p.read_timeout_secs =
@@ -422,6 +441,11 @@ pub async fn read_ai_provider_configs(
             model: crate::cache::get_setting(conn, "ai_model")
                 .await?
                 .unwrap_or_else(|| default_model_for_kind(kind).to_string()),
+            reasoning_effort: normalize_reasoning_effort(
+                crate::cache::get_setting(conn, "ai_reasoning_effort")
+                    .await?
+                    .as_deref(),
+            ),
             connect_timeout_secs: read_connect_timeout(conn).await?,
             read_timeout_secs: read_read_timeout(conn).await?,
         });
@@ -466,6 +490,7 @@ pub fn provider_from_config(
                 provider.endpoint.clone(),
                 provider.model.clone(),
                 api_key.to_string(),
+                provider.reasoning_effort.clone(),
                 provider.connect_timeout_secs,
                 provider.read_timeout_secs,
             );
@@ -690,6 +715,7 @@ impl AiManager {
         endpoint: &str,
         model: &str,
         api_key: &str,
+        reasoning_effort: Option<String>,
         connect_timeout_secs: u64,
         read_timeout_secs: u64,
     ) {
@@ -699,6 +725,7 @@ impl AiManager {
                     endpoint.to_string(),
                     model.to_string(),
                     api_key.to_string(),
+                    reasoning_effort,
                     connect_timeout_secs,
                     read_timeout_secs,
                 );

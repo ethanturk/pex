@@ -82,6 +82,15 @@ const DIFF_VIEW_OPTIONS: { label: string; value: DiffView }[] = [
   { label: "Side-by-side", value: "split" },
 ];
 
+const REASONING_EFFORT_OPTIONS = [
+  { label: "Provider default", value: "" },
+  { label: "Minimal", value: "minimal" },
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+  { label: "XHigh", value: "xhigh" },
+];
+
 const DEFAULT_STANDARDS_MAX_CHARS = 8000;
 const MIN_STANDARDS_MAX_CHARS = 500;
 const MAX_STANDARDS_MAX_CHARS = 65535;
@@ -252,6 +261,7 @@ export function AiSettings({ open, onClose, standalone }: Props) {
             provider: settings.provider || "openai",
             endpoint: settings.endpoint || DEFAULT_OPENAI_ENDPOINT,
             model: settings.model || "gpt-4.1",
+            reasoningEffort: settings.reasoningEffort ?? null,
             hasApiKey: !!settings.hasApiKey,
             connectTimeoutSecs: settings.connectTimeoutSecs || 10,
             readTimeoutSecs: settings.readTimeoutSecs || 60,
@@ -523,6 +533,7 @@ export function AiSettings({ open, onClose, standalone }: Props) {
       provider: "openai",
       endpoint: DEFAULT_OPENAI_ENDPOINT,
       model: "",
+      reasoningEffort: null,
       hasApiKey: false,
       connectTimeoutSecs: 10,
       readTimeoutSecs: 60,
@@ -852,6 +863,7 @@ export function AiSettings({ open, onClose, standalone }: Props) {
                             provider: nextProvider,
                             endpoint: defaultEndpoint(nextProvider),
                             model: "",
+                            reasoningEffort: null,
                           });
                           setProviderModels((prev) => ({ ...prev, [selectedProvider.id]: [] }));
                         }}
@@ -935,6 +947,26 @@ export function AiSettings({ open, onClose, standalone }: Props) {
                           Couldn't load models: {providerModelsError}
                         </p>
                       )}
+                    </Field>
+
+                    <Field label="Reasoning effort">
+                      <select
+                        value={selectedProvider.reasoningEffort ?? ""}
+                        onChange={(e) => {
+                          const value = e.currentTarget.value;
+                          updateProvider(selectedProvider.id, {
+                            reasoningEffort: value ? value : null,
+                          });
+                        }}
+                        class={INPUT_CLASS}
+                      >
+                        {REASONING_EFFORT_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        Sent only when set, for OpenAI-compatible reasoning models that support the <code>reasoning_effort</code> request field. Leave as provider default for other models.
+                      </p>
                     </Field>
 
                     <Field label="Connect timeout (seconds)">

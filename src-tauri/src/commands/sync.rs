@@ -66,7 +66,11 @@ pub async fn disable_sync(state: State<'_, AppState>) -> Result<SyncStatus, Stri
     let mut cfg = db::load_sync_config().unwrap_or_default();
     cfg.enabled = false;
     db::save_sync_config(&cfg).map_err(|e| e.to_string())?;
-    state.db.reconfigure(None).await.map_err(|e| e.to_string())?;
+    state
+        .db
+        .reconfigure(None)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(state.db.status())
 }
 

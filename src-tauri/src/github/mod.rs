@@ -74,7 +74,10 @@ impl GithubClient {
 
     fn headers(&self, accept: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
-        h.insert(AUTHORIZATION, HeaderValue::from_str(&self.auth_value).unwrap());
+        h.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&self.auth_value).unwrap(),
+        );
         h.insert(ACCEPT, HeaderValue::from_str(accept).unwrap());
         h.insert(USER_AGENT, HeaderValue::from_static("pex"));
         h.insert(
@@ -109,7 +112,10 @@ impl GithubClient {
         let url = self.url(path);
         let resp = self.send(Method::GET, &url, JSON_ACCEPT, None).await?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| AppError::Provider(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Provider(e.to_string()))?;
         if !status.is_success() {
             return Err(AppError::Provider(format!(
                 "GitHub API {}: {}",
@@ -126,9 +132,14 @@ impl GithubClient {
         body: &serde_json::Value,
     ) -> Result<T, AppError> {
         let url = self.url(path);
-        let resp = self.send(Method::POST, &url, JSON_ACCEPT, Some(body)).await?;
+        let resp = self
+            .send(Method::POST, &url, JSON_ACCEPT, Some(body))
+            .await?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| AppError::Provider(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Provider(e.to_string()))?;
         if !status.is_success() {
             return Err(AppError::Provider(format!(
                 "GitHub API {}: {}",
@@ -145,9 +156,14 @@ impl GithubClient {
         body: &serde_json::Value,
     ) -> Result<T, AppError> {
         let url = self.url(path);
-        let resp = self.send(Method::PATCH, &url, JSON_ACCEPT, Some(body)).await?;
+        let resp = self
+            .send(Method::PATCH, &url, JSON_ACCEPT, Some(body))
+            .await?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| AppError::Provider(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Provider(e.to_string()))?;
         if !status.is_success() {
             return Err(AppError::Provider(format!(
                 "GitHub API {}: {}",
@@ -171,7 +187,10 @@ impl GithubClient {
                 .get(reqwest::header::LINK)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let text = resp.text().await.map_err(|e| AppError::Provider(e.to_string()))?;
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| AppError::Provider(e.to_string()))?;
             if !status.is_success() {
                 return Err(AppError::Provider(format!(
                     "GitHub API {}: {}",
@@ -418,7 +437,9 @@ impl GithubClient {
             .iter()
             .map(|f| FileChange {
                 change_type: map_file_status(
-                    f.get("status").and_then(|v| v.as_str()).unwrap_or("modified"),
+                    f.get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("modified"),
                 )
                 .to_string(),
                 item: FileItem {
@@ -453,9 +474,7 @@ impl GithubClient {
             .await
             .unwrap_or_else(|_| base_sha.clone());
 
-        let new_content = self
-            .get_content(owner, repo, file_path, &head_sha)
-            .await?;
+        let new_content = self.get_content(owner, repo, file_path, &head_sha).await?;
         let old_content = self
             .get_content(owner, repo, file_path, &merge_base)
             .await?;
@@ -463,8 +482,7 @@ impl GithubClient {
         let old_str = old_content.clone().unwrap_or_default();
         let new_str = new_content.clone().unwrap_or_default();
 
-        let html =
-            crate::diff::engine::highlighted_diff_view(&old_str, &new_str, file_path, view);
+        let html = crate::diff::engine::highlighted_diff_view(&old_str, &new_str, file_path, view);
 
         let change_type = match (&old_content, &new_content) {
             (None, _) => "add",
@@ -537,7 +555,10 @@ impl GithubClient {
         if status == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let text = resp.text().await.map_err(|e| AppError::Provider(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Provider(e.to_string()))?;
         if !status.is_success() {
             return Err(AppError::Provider(format!(
                 "GitHub content {} for {} @ {}: {}",
@@ -744,7 +765,12 @@ fn review_state_to_vote(state: &str) -> i32 {
 }
 
 fn map_pull_request(pr: &serde_json::Value, reviews: &[serde_json::Value]) -> PullRequest {
-    let s = |ptr: &str| pr.pointer(ptr).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let s = |ptr: &str| {
+        pr.pointer(ptr)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     let login = pr
         .pointer("/user/login")
         .and_then(|v| v.as_str())
@@ -762,7 +788,10 @@ fn map_pull_request(pr: &serde_json::Value, reviews: &[serde_json::Value]) -> Pu
     PullRequest {
         pull_request_id: pr.get("number").and_then(|v| v.as_i64()).unwrap_or(0),
         title: s("/title"),
-        description: pr.get("body").and_then(|v| v.as_str()).map(|x| x.to_string()),
+        description: pr
+            .get("body")
+            .and_then(|v| v.as_str())
+            .map(|x| x.to_string()),
         status: status.to_string(),
         is_draft: pr.get("draft").and_then(|v| v.as_bool()).unwrap_or(false),
         created_by: IdentityRef {
@@ -826,10 +855,7 @@ fn build_reviewers(pr: &serde_json::Value, reviews: &[serde_json::Value]) -> Vec
 }
 
 fn map_check_run(run: &serde_json::Value) -> PrCheck {
-    let id = run
-        .get("id")
-        .map(|v| v.to_string())
-        .unwrap_or_default();
+    let id = run.get("id").map(|v| v.to_string()).unwrap_or_default();
     // GitHub: status is queued/in_progress/completed; conclusion is the result
     // once completed (success/failure/neutral/…). Prefer the conclusion.
     let status = run
@@ -879,7 +905,10 @@ fn json_comment(c: &serde_json::Value) -> Comment {
                 .unwrap_or("")
                 .to_string(),
         }),
-        content: c.get("body").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        content: c
+            .get("body")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         published_date: c
             .get("created_at")
             .and_then(|v| v.as_str())
@@ -894,7 +923,11 @@ fn review_comment_to_thread(c: &serde_json::Value) -> CommentThread {
         .and_then(|v| v.as_i64())
         .or_else(|| c.get("original_line").and_then(|v| v.as_i64()))
         .unwrap_or(0);
-    let path = c.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let path = c
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     CommentThread {
         id: c.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
         thread_context: Some(ThreadContext {
@@ -1069,7 +1102,10 @@ mod tests {
     fn api_base_derivation() {
         assert_eq!(api_base_for(""), "https://api.github.com");
         assert_eq!(api_base_for("https://github.com"), "https://api.github.com");
-        assert_eq!(api_base_for("https://github.com/"), "https://api.github.com");
+        assert_eq!(
+            api_base_for("https://github.com/"),
+            "https://api.github.com"
+        );
         assert_eq!(
             api_base_for("https://ghe.example.com"),
             "https://ghe.example.com/api/v3"
@@ -1096,10 +1132,7 @@ mod tests {
         let issue = serde_json::json!([
             { "id": 100, "body": "pr-level", "user": {"login": "dave"}, "created_at": "2024-01-04T00:00:00Z" },
         ]);
-        let threads = build_threads(
-            review.as_array().unwrap(),
-            issue.as_array().unwrap(),
-        );
+        let threads = build_threads(review.as_array().unwrap(), issue.as_array().unwrap());
         // 2 review threads (root 1 with reply, root 3) + 1 issue thread.
         assert_eq!(threads.len(), 3);
         let t1 = threads.iter().find(|t| t.id == 1).unwrap();

@@ -243,9 +243,19 @@ mod tests {
     #[tokio::test]
     async fn mark_completed_flips_status() {
         let conn = mem().await;
-        save_review(&conn, "k", "p", "r", 1, "t", 1, STATUS_OUTSTANDING, &sample_output())
-            .await
-            .unwrap();
+        save_review(
+            &conn,
+            "k",
+            "p",
+            "r",
+            1,
+            "t",
+            1,
+            STATUS_OUTSTANDING,
+            &sample_output(),
+        )
+        .await
+        .unwrap();
         mark_completed(&conn, "k").await.unwrap();
         let got = get_review(&conn, "k").await.unwrap().unwrap();
         assert_eq!(got.status, STATUS_COMPLETED);
@@ -254,9 +264,19 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_row() {
         let conn = mem().await;
-        save_review(&conn, "k", "p", "r", 1, "t", 1, STATUS_OUTSTANDING, &sample_output())
-            .await
-            .unwrap();
+        save_review(
+            &conn,
+            "k",
+            "p",
+            "r",
+            1,
+            "t",
+            1,
+            STATUS_OUTSTANDING,
+            &sample_output(),
+        )
+        .await
+        .unwrap();
         delete_review(&conn, "k").await.unwrap();
         assert!(get_review(&conn, "k").await.unwrap().is_none());
     }
@@ -264,12 +284,32 @@ mod tests {
     #[tokio::test]
     async fn list_returns_saved_rows() {
         let conn = mem().await;
-        save_review(&conn, "a", "p", "r", 1, "t", 1, STATUS_OUTSTANDING, &sample_output())
-            .await
-            .unwrap();
-        save_review(&conn, "b", "p", "r", 2, "t", 1, STATUS_COMPLETED, &sample_output())
-            .await
-            .unwrap();
+        save_review(
+            &conn,
+            "a",
+            "p",
+            "r",
+            1,
+            "t",
+            1,
+            STATUS_OUTSTANDING,
+            &sample_output(),
+        )
+        .await
+        .unwrap();
+        save_review(
+            &conn,
+            "b",
+            "p",
+            "r",
+            2,
+            "t",
+            1,
+            STATUS_COMPLETED,
+            &sample_output(),
+        )
+        .await
+        .unwrap();
         let all = list_reviews(&conn).await.unwrap();
         assert_eq!(all.len(), 2);
     }
@@ -278,12 +318,32 @@ mod tests {
     async fn cleanup_prunes_only_stale_rows() {
         let conn = mem().await;
         // A fresh row (updated_at = now) and a stale one (updated_at 30 days ago).
-        save_review(&conn, "fresh", "p", "r", 1, "t", 1, STATUS_OUTSTANDING, &sample_output())
-            .await
-            .unwrap();
-        save_review(&conn, "stale", "p", "r", 2, "t", 1, STATUS_COMPLETED, &sample_output())
-            .await
-            .unwrap();
+        save_review(
+            &conn,
+            "fresh",
+            "p",
+            "r",
+            1,
+            "t",
+            1,
+            STATUS_OUTSTANDING,
+            &sample_output(),
+        )
+        .await
+        .unwrap();
+        save_review(
+            &conn,
+            "stale",
+            "p",
+            "r",
+            2,
+            "t",
+            1,
+            STATUS_COMPLETED,
+            &sample_output(),
+        )
+        .await
+        .unwrap();
         conn.execute(
             "UPDATE pr_reviews SET updated_at = datetime('now', '-30 days') WHERE pr_key = 'stale'",
             (),
@@ -291,7 +351,9 @@ mod tests {
         .await
         .unwrap();
 
-        let removed = delete_reviews_older_than(&conn, RETENTION_DAYS).await.unwrap();
+        let removed = delete_reviews_older_than(&conn, RETENTION_DAYS)
+            .await
+            .unwrap();
         assert_eq!(removed, 1);
         assert!(get_review(&conn, "fresh").await.unwrap().is_some());
         assert!(get_review(&conn, "stale").await.unwrap().is_none());
@@ -300,9 +362,19 @@ mod tests {
     #[tokio::test]
     async fn save_preserves_created_at_on_replace() {
         let conn = mem().await;
-        save_review(&conn, "k", "p", "r", 1, "t", 1, STATUS_OUTSTANDING, &sample_output())
-            .await
-            .unwrap();
+        save_review(
+            &conn,
+            "k",
+            "p",
+            "r",
+            1,
+            "t",
+            1,
+            STATUS_OUTSTANDING,
+            &sample_output(),
+        )
+        .await
+        .unwrap();
         let created: String = {
             let mut rows = conn
                 .query("SELECT created_at FROM pr_reviews WHERE pr_key='k'", ())
@@ -311,9 +383,19 @@ mod tests {
             rows.next().await.unwrap().unwrap().get(0).unwrap()
         };
         // Re-save (e.g. a fresh run for the same PR) must not reset created_at.
-        save_review(&conn, "k", "p", "r", 1, "t", 2, STATUS_OUTSTANDING, &sample_output())
-            .await
-            .unwrap();
+        save_review(
+            &conn,
+            "k",
+            "p",
+            "r",
+            1,
+            "t",
+            2,
+            STATUS_OUTSTANDING,
+            &sample_output(),
+        )
+        .await
+        .unwrap();
         let created2: String = {
             let mut rows = conn
                 .query("SELECT created_at FROM pr_reviews WHERE pr_key='k'", ())

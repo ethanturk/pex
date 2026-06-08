@@ -100,12 +100,24 @@ impl GitClient {
     ) -> Result<HashSet<String>, AppError> {
         match self {
             GitClient::Ado(c) => {
-                c.changed_paths_since_iteration(project, repo_id, pr_id, from_iteration, to_iteration)
-                    .await
+                c.changed_paths_since_iteration(
+                    project,
+                    repo_id,
+                    pr_id,
+                    from_iteration,
+                    to_iteration,
+                )
+                .await
             }
             GitClient::Github(c) => {
-                c.changed_paths_since_iteration(project, repo_id, pr_id, from_iteration, to_iteration)
-                    .await
+                c.changed_paths_since_iteration(
+                    project,
+                    repo_id,
+                    pr_id,
+                    from_iteration,
+                    to_iteration,
+                )
+                .await
             }
         }
     }

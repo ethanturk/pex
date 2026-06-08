@@ -108,7 +108,13 @@ fn now_rfc3339() -> String {
 /// Keep run ids filesystem-safe.
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -130,8 +136,14 @@ mod tests {
         let dir = dir.to_string_lossy().to_string();
         let d = Diagnostics::create(&dir, "run/with:bad*chars");
         assert!(d.is_enabled());
-        d.event("run_start", serde_json::json!({"prKey": "p", "mode": "fast"}));
-        d.event("finding_final", serde_json::json!({"fingerprint": "abc", "tier": "blocking"}));
+        d.event(
+            "run_start",
+            serde_json::json!({"prKey": "p", "mode": "fast"}),
+        );
+        d.event(
+            "finding_final",
+            serde_json::json!({"fingerprint": "abc", "tier": "blocking"}),
+        );
         let path = d.path().unwrap();
         drop(d); // flush/close
         let body = std::fs::read_to_string(&path).unwrap();

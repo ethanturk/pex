@@ -15,6 +15,7 @@ import {
   type PRReviewRun,
   type ReviewProgress,
   type ReviewMode,
+  type ReviewWarning,
 } from "@/lib/signals";
 import { startBackgroundReview } from "@/lib/reviewBus";
 import { ReviewConfirmDialog } from "@/components/ReviewConfirmDialog";
@@ -639,6 +640,10 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
         </div>
       )}
 
+      {run?.warnings && run.warnings.length > 0 && (
+        <ReviewWarnings warnings={run.warnings} />
+      )}
+
       {/* Sub-tabs: Summary and Findings live on separate panes so a long
           summary never buries the findings list (and each scrolls on its own). */}
       {run?.output && (
@@ -900,6 +905,35 @@ function ResumeChoiceDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+function ReviewWarnings({ warnings }: { warnings: ReviewWarning[] }) {
+  const latest = warnings[warnings.length - 1];
+  return (
+    <details class="mx-4 mt-3 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 shrink-0 text-xs text-amber-900 dark:text-amber-100">
+      <summary class="cursor-pointer font-semibold">
+        Some review steps failed ({warnings.length})
+        {latest?.filePath ? ` — ${fileName(latest.filePath)}` : ""}
+      </summary>
+      <div class="mt-2 space-y-2 max-h-48 overflow-y-auto pr-1">
+        {warnings.map((warning, index) => (
+          <div key={`${warning.stage}-${warning.filePath ?? "review"}-${index}`} class="border-t border-amber-200 dark:border-amber-800 pt-2 first:border-t-0 first:pt-0">
+            <div class="font-medium">
+              {warning.stage}
+              {warning.filePath ? ` · ${warning.filePath}` : ""}
+            </div>
+            <div class="mt-0.5 whitespace-pre-wrap break-words">{warning.message}</div>
+            {warning.detail && (
+              <details class="mt-1">
+                <summary class="cursor-pointer text-amber-700 dark:text-amber-300">Details</summary>
+                <pre class="mt-1 whitespace-pre-wrap break-words text-[11px]">{warning.detail}</pre>
+              </details>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 

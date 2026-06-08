@@ -287,6 +287,14 @@ export interface ReviewProgress {
   ruleTitles?: Record<string, string>;
 }
 
+export interface ReviewWarning {
+  scope: "file" | "review";
+  stage: string;
+  message: string;
+  filePath?: string;
+  detail?: string;
+}
+
 // Per-file anchoring + deterministic-check rollup, keyed by file index.
 export interface FileAnchorStats {
   kept: number;
@@ -323,6 +331,10 @@ export interface PRReviewRun {
   activeFileIndex?: number;
   /// Epoch ms when the active file started — drives the running timer.
   activeFileStartMs?: number;
+  /// Non-terminal review warnings emitted by the backend. These are distinct
+  /// from `error`: a review may continue, but the user should still see that
+  /// a file/stage degraded.
+  warnings?: ReviewWarning[];
   // Output of the latest completed run; preserved across "posting" so the
   // sidebar can keep showing the summary while we post to ADO.
   output: {

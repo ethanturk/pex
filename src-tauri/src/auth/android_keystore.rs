@@ -477,7 +477,10 @@ mod keystore {
     }
 
     /// Build a single-element `String[]` (for the Builder varargs setters).
-    fn string_array<'a>(env: &mut jni::JNIEnv<'a>, value: &str) -> Result<JObjectArray<'a>, String> {
+    fn string_array<'a>(
+        env: &mut jni::JNIEnv<'a>,
+        value: &str,
+    ) -> Result<JObjectArray<'a>, String> {
         let s = env.new_string(value).j()?;
         env.new_object_array(1, "java/lang/String", &s)
             .map_err(|e| e.to_string())

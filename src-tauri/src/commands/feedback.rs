@@ -86,7 +86,9 @@ pub async fn get_review_calibration(
     state: State<'_, AppState>,
 ) -> Result<CalibrationStats, String> {
     let conn = state.db.conn();
-    feedback::calibration(&conn).await.map_err(|e| e.to_string())
+    feedback::calibration(&conn)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Clear all recorded verdicts (resets calibration metrics and suppression).

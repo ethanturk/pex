@@ -198,8 +198,7 @@ impl BucketStats {
     fn finalize(&mut self) {
         let total = self.accepted + self.dismissed + self.edited;
         if total > 0 {
-            self.accept_rate =
-                Some((self.accepted + self.edited) as f64 / total as f64 * 100.0);
+            self.accept_rate = Some((self.accepted + self.edited) as f64 / total as f64 * 100.0);
         }
     }
 }
@@ -226,7 +225,10 @@ pub struct CalibrationStats {
 /// Aggregate every recorded verdict (across all PRs) into calibration metrics.
 pub async fn calibration(conn: &Connection) -> Result<CalibrationStats, AppError> {
     let mut result_rows = conn
-        .query("SELECT verdict, severity, tier, sources FROM finding_verdicts", ())
+        .query(
+            "SELECT verdict, severity, tier, sources FROM finding_verdicts",
+            (),
+        )
         .await?;
     let mut rows: Vec<(String, String, String, String)> = Vec::new();
     while let Some(row) = result_rows.next().await? {
@@ -346,7 +348,10 @@ mod tests {
         let f1 = fingerprint("a.rs", "Possible nil at line 3");
         let f2 = fingerprint("a.rs", "possible nil at line 99!");
         let f3 = fingerprint("b.rs", "Possible nil at line 3");
-        assert_eq!(f1, f2, "line/case/punct drift must not change the fingerprint");
+        assert_eq!(
+            f1, f2,
+            "line/case/punct drift must not change the fingerprint"
+        );
         assert_ne!(f1, f3, "different files must fingerprint differently");
         assert_eq!(f1.len(), 16);
     }
@@ -378,12 +383,31 @@ mod tests {
     async fn dismissed_are_remembered_per_pr() {
         let conn = mem_db().await;
         let fp = fingerprint("a.rs", "nit");
-        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 90, "nit", "")
-            .await
-            .unwrap();
         record_verdict(
-            &conn, "pr1", &fingerprint("b.rs", "keep"), Verdict::Accepted, "b.rs", "critical",
-            "blocking", 95, "keep", "",
+            &conn,
+            "pr1",
+            &fp,
+            Verdict::Dismissed,
+            "a.rs",
+            "minor",
+            "nit",
+            90,
+            "nit",
+            "",
+        )
+        .await
+        .unwrap();
+        record_verdict(
+            &conn,
+            "pr1",
+            &fingerprint("b.rs", "keep"),
+            Verdict::Accepted,
+            "b.rs",
+            "critical",
+            "blocking",
+            95,
+            "keep",
+            "",
         )
         .await
         .unwrap();
@@ -391,16 +415,51 @@ mod tests {
         let dismissed = dismissed_fingerprints(&conn, "pr1").await.unwrap();
         assert!(dismissed.contains(&fp));
         assert_eq!(dismissed.len(), 1, "only dismissed findings are suppressed");
-        assert!(dismissed_fingerprints(&conn, "pr2").await.unwrap().is_empty(), "scoped per PR");
+        assert!(
+            dismissed_fingerprints(&conn, "pr2")
+                .await
+                .unwrap()
+                .is_empty(),
+            "scoped per PR"
+        );
     }
 
     #[tokio::test]
     async fn latest_verdict_wins() {
         let conn = mem_db().await;
         let fp = fingerprint("a.rs", "x");
-        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 80, "x", "").await.unwrap();
-        record_verdict(&conn, "pr1", &fp, Verdict::Accepted, "a.rs", "minor", "nit", 80, "x", "").await.unwrap();
-        assert!(dismissed_fingerprints(&conn, "pr1").await.unwrap().is_empty());
+        record_verdict(
+            &conn,
+            "pr1",
+            &fp,
+            Verdict::Dismissed,
+            "a.rs",
+            "minor",
+            "nit",
+            80,
+            "x",
+            "",
+        )
+        .await
+        .unwrap();
+        record_verdict(
+            &conn,
+            "pr1",
+            &fp,
+            Verdict::Accepted,
+            "a.rs",
+            "minor",
+            "nit",
+            80,
+            "x",
+            "",
+        )
+        .await
+        .unwrap();
+        assert!(dismissed_fingerprints(&conn, "pr1")
+            .await
+            .unwrap()
+            .is_empty());
         assert_eq!(calibration(&conn).await.unwrap().accepted, 1);
     }
 
@@ -408,11 +467,27 @@ mod tests {
     async fn clear_verdict_removes_dismissal_without_accepting() {
         let conn = mem_db().await;
         let fp = fingerprint("a.rs", "x");
-        record_verdict(&conn, "pr1", &fp, Verdict::Dismissed, "a.rs", "minor", "nit", 80, "x", "").await.unwrap();
+        record_verdict(
+            &conn,
+            "pr1",
+            &fp,
+            Verdict::Dismissed,
+            "a.rs",
+            "minor",
+            "nit",
+            80,
+            "x",
+            "",
+        )
+        .await
+        .unwrap();
 
         clear_verdict(&conn, "pr1", &fp).await.unwrap();
 
-        assert!(dismissed_fingerprints(&conn, "pr1").await.unwrap().is_empty());
+        assert!(dismissed_fingerprints(&conn, "pr1")
+            .await
+            .unwrap()
+            .is_empty());
         let c = calibration(&conn).await.unwrap();
         assert_eq!(c.total, 0);
         assert_eq!(c.accepted, 0);
@@ -422,9 +497,48 @@ mod tests {
     #[tokio::test]
     async fn calibration_counts_and_rates() {
         let conn = mem_db().await;
-        record_verdict(&conn, "p", &fingerprint("a", "null deref"), Verdict::Accepted, "a", "critical", "blocking", 95, "null deref", "code-reviewer").await.unwrap();
-        record_verdict(&conn, "p", &fingerprint("a", "rename this"), Verdict::Edited, "a", "moderate", "should-fix", 85, "rename this", "code-reviewer,silent-failure-hunter").await.unwrap();
-        record_verdict(&conn, "p", &fingerprint("a", "add a test"), Verdict::Dismissed, "a", "minor", "nit", 80, "add a test", "").await.unwrap();
+        record_verdict(
+            &conn,
+            "p",
+            &fingerprint("a", "null deref"),
+            Verdict::Accepted,
+            "a",
+            "critical",
+            "blocking",
+            95,
+            "null deref",
+            "code-reviewer",
+        )
+        .await
+        .unwrap();
+        record_verdict(
+            &conn,
+            "p",
+            &fingerprint("a", "rename this"),
+            Verdict::Edited,
+            "a",
+            "moderate",
+            "should-fix",
+            85,
+            "rename this",
+            "code-reviewer,silent-failure-hunter",
+        )
+        .await
+        .unwrap();
+        record_verdict(
+            &conn,
+            "p",
+            &fingerprint("a", "add a test"),
+            Verdict::Dismissed,
+            "a",
+            "minor",
+            "nit",
+            80,
+            "add a test",
+            "",
+        )
+        .await
+        .unwrap();
         let c = calibration(&conn).await.unwrap();
         assert_eq!(c.total, 3);
         assert_eq!(c.accepted, 1);
@@ -436,7 +550,11 @@ mod tests {
         assert_eq!(c.by_tier.len(), 3);
         // code-reviewer (2), silent-failure-hunter (1), unattributed (1)
         assert_eq!(c.by_specialist.len(), 3);
-        let cr = c.by_specialist.iter().find(|b| b.label == "code-reviewer").unwrap();
+        let cr = c
+            .by_specialist
+            .iter()
+            .find(|b| b.label == "code-reviewer")
+            .unwrap();
         assert_eq!(cr.accepted + cr.edited, 2);
         assert!(c.by_specialist.iter().any(|b| b.label == "unattributed"));
     }

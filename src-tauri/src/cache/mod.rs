@@ -228,11 +228,8 @@ pub async fn list_orgs(
 }
 
 pub async fn remove_org(conn: &Connection, org_url: &str) -> Result<(), AppError> {
-    conn.execute(
-        "DELETE FROM saved_orgs WHERE org_url=?1",
-        params![org_url],
-    )
-    .await?;
+    conn.execute("DELETE FROM saved_orgs WHERE org_url=?1", params![org_url])
+        .await?;
     Ok(())
 }
 
@@ -284,10 +281,16 @@ mod tests {
         let conn = mem_conn().await;
         assert_eq!(get_setting(&conn, "k").await.unwrap(), None);
         set_setting(&conn, "k", "v1").await.unwrap();
-        assert_eq!(get_setting(&conn, "k").await.unwrap(), Some("v1".to_string()));
+        assert_eq!(
+            get_setting(&conn, "k").await.unwrap(),
+            Some("v1".to_string())
+        );
         // INSERT OR REPLACE overwrites.
         set_setting(&conn, "k", "v2").await.unwrap();
-        assert_eq!(get_setting(&conn, "k").await.unwrap(), Some("v2".to_string()));
+        assert_eq!(
+            get_setting(&conn, "k").await.unwrap(),
+            Some("v2".to_string())
+        );
         delete_setting(&conn, "k").await.unwrap();
         assert_eq!(get_setting(&conn, "k").await.unwrap(), None);
     }
@@ -295,24 +298,43 @@ mod tests {
     #[tokio::test]
     async fn viewed_files_toggle() {
         let conn = mem_conn().await;
-        assert!(get_viewed(&conn, "o", "p", "r", 1).await.unwrap().is_empty());
-        set_viewed(&conn, "o", "p", "r", 1, "a.rs", true).await.unwrap();
-        set_viewed(&conn, "o", "p", "r", 1, "b.rs", true).await.unwrap();
+        assert!(get_viewed(&conn, "o", "p", "r", 1)
+            .await
+            .unwrap()
+            .is_empty());
+        set_viewed(&conn, "o", "p", "r", 1, "a.rs", true)
+            .await
+            .unwrap();
+        set_viewed(&conn, "o", "p", "r", 1, "b.rs", true)
+            .await
+            .unwrap();
         let mut viewed = get_viewed(&conn, "o", "p", "r", 1).await.unwrap();
         viewed.sort();
         assert_eq!(viewed, vec!["a.rs".to_string(), "b.rs".to_string()]);
         // Scoped by PR.
-        assert!(get_viewed(&conn, "o", "p", "r", 2).await.unwrap().is_empty());
+        assert!(get_viewed(&conn, "o", "p", "r", 2)
+            .await
+            .unwrap()
+            .is_empty());
         // Un-viewing removes only that row.
-        set_viewed(&conn, "o", "p", "r", 1, "a.rs", false).await.unwrap();
-        assert_eq!(get_viewed(&conn, "o", "p", "r", 1).await.unwrap(), vec!["b.rs".to_string()]);
+        set_viewed(&conn, "o", "p", "r", 1, "a.rs", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_viewed(&conn, "o", "p", "r", 1).await.unwrap(),
+            vec!["b.rs".to_string()]
+        );
     }
 
     #[tokio::test]
     async fn saved_orgs_upsert_and_remove() {
         let conn = mem_conn().await;
-        save_org(&conn, "https://o", "Org", "pat", "ado").await.unwrap();
-        save_org(&conn, "https://o", "Org Renamed", "oauth", "ado").await.unwrap();
+        save_org(&conn, "https://o", "Org", "pat", "ado")
+            .await
+            .unwrap();
+        save_org(&conn, "https://o", "Org Renamed", "oauth", "ado")
+            .await
+            .unwrap();
         let orgs = list_orgs(&conn).await.unwrap();
         assert_eq!(orgs.len(), 1, "same org_url replaces");
         assert_eq!(orgs[0].1, "Org Renamed");

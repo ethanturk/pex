@@ -24,10 +24,10 @@
 
 use std::sync::Arc;
 
+use pex_lib::ado::AdoClient;
 use pex_lib::ai::anthropic::AnthropicProvider;
 use pex_lib::ai::openai::OpenAiProvider;
 use pex_lib::ai::AiProvider;
-use pex_lib::ado::AdoClient;
 use pex_lib::diff::engine::DiffView;
 use pex_lib::review::engine::{review_single_file, tier_for, FileInput, Tier};
 use pex_lib::review::state::ReviewMode;
@@ -194,14 +194,14 @@ async fn main() {
             old_content: diff.old_content,
             new_content: diff.new_content,
         };
-        let result = match review_single_file(provider.clone(), mode, &input, "", threshold, 1).await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("  [{path}] review error: {e}");
-                continue;
-            }
-        };
+        let result =
+            match review_single_file(provider.clone(), mode, &input, "", threshold, 1).await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("  [{path}] review error: {e}");
+                    continue;
+                }
+            };
 
         for f in &result.findings {
             let tier = tier_for(f.severity, f.confidence, f.line_start, blocking);

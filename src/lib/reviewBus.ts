@@ -6,6 +6,7 @@ import {
   reconcilePersistedReviews,
   type PRReviewRun,
   type ReviewProgress,
+  type ReviewWarning,
 } from "@/lib/signals";
 import {
   startReview,
@@ -78,6 +79,15 @@ export async function initReviewBus() {
     updateReviewRun(id, patch);
   });
 
+  await listen<ReviewWarning>("review-warning", (e) => {
+    const id = activeReviewPrId.value;
+    if (id == null) return;
+    const run = reviewRuns.value.get(id);
+    updateReviewRun(id, {
+      warnings: [...(run?.warnings ?? []), e.payload],
+    });
+  });
+
   // `review-done` is informational — the awaited promise from `startReview`
   // is the authoritative source of the final ReviewOutput, so we only use
   // this event to surface an explicit failure flag if Rust ever sends one.
@@ -123,6 +133,7 @@ export function startBackgroundReview(
       : null,
     output: null,
     error: null,
+    warnings: [],
     mode,
   });
   reviewRuns.value = next;

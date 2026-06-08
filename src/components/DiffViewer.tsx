@@ -842,21 +842,16 @@ export function DiffViewer({
           when there are comments. Hidden entirely when empty. */}
       {threads.length > 0 && (
         <div class={`shrink-0 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 ${commentsExpanded ? "max-h-[40vh] overflow-y-auto" : ""}`}>
-          {compactLayout ? (
-            <button
-              type="button"
-              class="w-full flex items-center justify-between text-xs font-medium text-gray-500 dark:text-gray-400 px-3 py-2 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60"
-              onClick={() => setCommentsExpanded((v) => !v)}
-              aria-expanded={commentsExpanded}
-            >
-              <span>Comments ({threads.length})</span>
-              <span aria-hidden="true">{commentsExpanded ? "▼" : "▲"}</span>
-            </button>
-          ) : (
-            <div class="text-xs font-medium text-gray-500 dark:text-gray-400 px-3 py-1.5 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60">
-              Comments ({threads.length})
-            </div>
-          )}
+          <button
+            type="button"
+            class={`w-full flex items-center justify-between text-xs font-medium text-gray-500 dark:text-gray-400 px-3 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60 hover:bg-gray-100 dark:hover:bg-gray-800 ${compactLayout ? "py-2" : "py-1.5"}`}
+            onClick={() => setCommentsExpanded((v) => !v)}
+            aria-expanded={commentsExpanded}
+            title={commentsExpanded ? "Collapse comments" : "Expand comments"}
+          >
+            <span>Comments ({threads.length})</span>
+            <span aria-hidden="true">{commentsExpanded ? "▼" : "▲"}</span>
+          </button>
           {commentsExpanded && threads.map((t) => (
             <div key={t.id} class="border-t border-gray-100 dark:border-gray-800 p-3">
               <div class="text-xs text-gray-400 mb-1">
