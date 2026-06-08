@@ -679,6 +679,9 @@ export async function postReviewFinding(
 export interface ReviewOutput {
   summary: string;
   findings: ReviewFinding[];
+  health?: "success" | "degraded" | "failed";
+  warnings?: number;
+  providerFailures?: number;
 }
 
 export type ReviewSkipReason =

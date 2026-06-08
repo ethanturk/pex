@@ -14,6 +14,19 @@ use tauri::Emitter;
 use tokio::sync::Semaphore;
 
 const MAX_PROVIDER_API_FAILURES: usize = 3;
+const CONTEXT_CALL_TIMEOUT_SECS: u64 = 30;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewHealth {
+    Success,
+    Degraded,
+    Failed,
+}
+
+fn default_review_health() -> ReviewHealth {
+    ReviewHealth::Success
+}
 
 #[derive(Clone)]
 struct SpecialistPrompt {
@@ -306,6 +319,12 @@ pub struct FileAggregateFinding {
 pub struct ReviewOutput {
     pub summary: String,
     pub findings: Vec<Finding>,
+    #[serde(default = "default_review_health")]
+    pub health: ReviewHealth,
+    #[serde(default)]
+    pub warnings: usize,
+    #[serde(default)]
+    pub provider_failures: usize,
 }
 
 /// Best-effort JSON extraction from an LLM response. Strips ``` fences and
@@ -685,6 +704,7 @@ fn build_review_guidance(
 
 #[allow(clippy::too_many_arguments)]
 async fn build_file_review_context(
+    app: &tauri::AppHandle,
     provider: &Arc<dyn AiProvider>,
     permits: &Semaphore,
     file: &FileInput,
@@ -693,7 +713,11 @@ async fn build_file_review_context(
     related_files: &[String],
     rule_context: Option<&str>,
     _retry_count: u32,
+    max_rounds: usize,
+    meter: &TokenMeter,
     diag: &crate::review::diagnostics::Diagnostics,
+    provider_failures: &AtomicUsize,
+    warning_count: &AtomicUsize,
 ) -> Result<Option<String>, AppError> {
     let changed_files: HashMap<String, (&FileInput, &[crate::diff::engine::DiffHunk])> =
         file_entries
@@ -713,16 +737,55 @@ async fn build_file_review_context(
     let tools = review_tool_definitions();
     let mut last_content = String::new();
 
-    for round in 0..4 {
+    for round in 0..max_rounds.max(1) {
         let started = std::time::Instant::now();
-        let response = match {
+        let chat = async {
             let _permit = acquire_permit(permits).await?;
             provider
                 .chat_with_tools(&messages, &tools, None, Some(crate::ai::MAX_TOKENS_CONTEXT))
                 .await
-        } {
-            Ok(response) => response,
+        };
+        let context_result = match tokio::time::timeout(
+            std::time::Duration::from_secs(CONTEXT_CALL_TIMEOUT_SECS),
+            chat,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                if diag.is_enabled() {
+                    diag.event(
+                        "file_context_plan",
+                        serde_json::json!({
+                            "filePath": file.path,
+                            "round": round,
+                            "latencyMs": started.elapsed().as_millis() as u64,
+                            "skipReason": "timeout",
+                            "detail": format!(
+                                "Optional context planning exceeded {CONTEXT_CALL_TIMEOUT_SECS}s; continuing without extra file context."
+                            ),
+                        }),
+                    );
+                }
+                return Ok(None);
+            }
+        };
+        let response = match context_result {
+            Ok(response) => {
+                meter.record("context", response.usage, diag);
+                response
+            }
             Err(e) => {
+                record_llm_warning(
+                    app,
+                    diag,
+                    provider_failures,
+                    warning_count,
+                    "file",
+                    "context",
+                    Some(&file.path),
+                    &e,
+                )?;
                 if diag.is_enabled() {
                     diag.event(
                         "file_context_plan",
@@ -1110,10 +1173,43 @@ fn provider_json_error_message(text: &str) -> Option<String> {
     }
 }
 
+fn strip_bracketed_labels(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_brackets = false;
+    for ch in text.chars() {
+        match ch {
+            '[' => in_brackets = true,
+            ']' if in_brackets => in_brackets = false,
+            _ if !in_brackets => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn is_no_issue_response(text: &str) -> bool {
+    let stripped = strip_bracketed_labels(text);
+    let words: Vec<String> = stripped
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    if words.is_empty() {
+        return true;
+    }
+    if words.len() % 3 != 0 {
+        return false;
+    }
+    words
+        .chunks(3)
+        .all(|chunk| chunk == ["no", "issues", "found"])
+}
+
 fn record_llm_warning(
     app: &tauri::AppHandle,
     diag: &Diagnostics,
     provider_failures: &AtomicUsize,
+    warning_count: &AtomicUsize,
     scope: &str,
     stage: &str,
     file_path: Option<&str>,
@@ -1121,6 +1217,7 @@ fn record_llm_warning(
 ) -> Result<(), AppError> {
     let raw = error.to_string();
     let message = provider_error_message(error).unwrap_or_else(|| raw.clone());
+    warning_count.fetch_add(1, Ordering::Relaxed);
     emit_warning(app, scope, stage, file_path, &message, Some(&raw));
     if diag.is_enabled() {
         diag.event(
@@ -1188,6 +1285,7 @@ struct ReviewRunCtx {
     app: tauri::AppHandle,
     cancel: Arc<AtomicBool>,
     provider_failures: Arc<AtomicUsize>,
+    warning_count: Arc<AtomicUsize>,
 }
 
 /// Review a single file end-to-end: gather context, run its hunks concurrently
@@ -1216,7 +1314,8 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
     let file_review_context = if ctx.mode == ReviewMode::Thorough
         && (hunk_changed_lines(hunks) >= 50 || hunks.len() > 3)
     {
-        build_file_review_context(
+        match build_file_review_context(
+            &ctx.app,
             &ctx.provider,
             &ctx.llm_permits,
             file,
@@ -1225,11 +1324,17 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
             &related,
             rule_context.as_deref(),
             ctx.retry_count,
+            if ctx.total_files > 50 { 1 } else { 4 },
+            &ctx.token_meter,
             &ctx.diag,
+            &ctx.provider_failures,
+            &ctx.warning_count,
         )
         .await
-        .ok()
-        .flatten()
+        {
+            Ok(context) => context,
+            Err(e) => return Err(e),
+        }
     } else {
         None
     };
@@ -1339,7 +1444,7 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
     for (hunk_idx, result) in hunk_results {
         match result {
             Ok(response) => {
-                if response.trim() != "No issues found." {
+                if !is_no_issue_response(&response) {
                     if ctx.diag.is_enabled() {
                         ctx.diag.event(
                             "hunk_candidate",
@@ -1358,6 +1463,7 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
                     &ctx.app,
                     &ctx.diag,
                     &ctx.provider_failures,
+                    &ctx.warning_count,
                     "file",
                     "hunk",
                     Some(&file.path),
@@ -1468,6 +1574,7 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
                             &message,
                             Some(&err),
                         );
+                        ctx.warning_count.fetch_add(1, Ordering::Relaxed);
                         if ctx.diag.is_enabled() {
                             ctx.diag.event(
                                 "review_warning",
@@ -1493,6 +1600,7 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
                     &ctx.app,
                     &ctx.diag,
                     &ctx.provider_failures,
+                    &ctx.warning_count,
                     "file",
                     "file-aggregate",
                     Some(&file.path),
@@ -1610,6 +1718,7 @@ pub async fn run_review(
     // Accumulates token usage across every LLM call in this run.
     let token_meter = Arc::new(TokenMeter::default());
     let provider_api_failures = Arc::new(AtomicUsize::new(0));
+    let warning_count = Arc::new(AtomicUsize::new(0));
 
     // Minimum confidence a finding must reach to survive the deterministic
     // guard applied after each file's adjudication. Resolved once per run.
@@ -1814,6 +1923,7 @@ pub async fn run_review(
             app: app.clone(),
             cancel: cancel.clone(),
             provider_failures: provider_api_failures.clone(),
+            warning_count: warning_count.clone(),
         });
 
         let mut joinset: tokio::task::JoinSet<Result<FileOutcome, AppError>> =
@@ -1985,6 +2095,7 @@ pub async fn run_review(
                     &app,
                     &diag,
                     &provider_api_failures,
+                    &warning_count,
                     "review",
                     "batch",
                     None,
@@ -2136,6 +2247,7 @@ pub async fn run_review(
                 &app,
                 &diag,
                 &provider_api_failures,
+                &warning_count,
                 "review",
                 "synthesis",
                 None,
@@ -2155,6 +2267,15 @@ pub async fn run_review(
     // no usage block (so the totals are a lower bound); printed even without
     // diagnostics enabled so cost is visible from the console.
     let (in_tokens, out_tokens, llm_calls, missing) = token_meter.snapshot();
+    let warning_total = warning_count.load(Ordering::Relaxed);
+    let provider_failure_total = provider_api_failures.load(Ordering::Relaxed);
+    let health = if !file_entries.is_empty() && llm_calls == 0 {
+        ReviewHealth::Failed
+    } else if warning_total > 0 || provider_failure_total > 0 {
+        ReviewHealth::Degraded
+    } else {
+        ReviewHealth::Success
+    };
     eprintln!(
         "[review] tokens — input: {in_tokens}, output: {out_tokens}, llm_calls: {llm_calls}{}",
         if missing > 0 {
@@ -2195,6 +2316,9 @@ pub async fn run_review(
                 "outputTokens": out_tokens,
                 "llmCalls": llm_calls,
                 "callsWithoutUsage": missing,
+                "health": health,
+                "warnings": warning_total,
+                "providerFailures": provider_failure_total,
             }),
         );
     }
@@ -2210,12 +2334,18 @@ pub async fn run_review(
             "inputTokens": in_tokens,
             "outputTokens": out_tokens,
             "llmCalls": llm_calls,
+            "health": health,
+            "warnings": warning_total,
+            "providerFailures": provider_failure_total,
         }),
     );
 
     Ok(ReviewOutput {
         summary: final_review,
         findings,
+        health,
+        warnings: warning_total,
+        provider_failures: provider_failure_total,
     })
 }
 
@@ -2287,7 +2417,7 @@ pub async fn review_single_file(
             diag.clone(),
         )
         .await?;
-        if response.trim() != "No issues found." {
+        if !is_no_issue_response(&response) {
             hunk_findings.push((idx + 1, response));
         }
     }
@@ -2533,7 +2663,7 @@ async fn review_single_hunk(
         for (_, (key, result)) in pass_results {
             match result {
                 Ok(r) => {
-                    if r.trim() != "No issues found." && !r.trim().is_empty() {
+                    if !is_no_issue_response(&r) {
                         outputs.push(format!("[{}]\n{}", key.specialist_label(), r.trim()));
                     }
                 }
@@ -3202,5 +3332,20 @@ mod tests {
                 "AI provider rejected reasoning.effort: Invalid option: expected one of \"none\"|\"minimal\"|\"low\"|\"medium\"|\"high\"|\"xhigh\""
             )
         );
+    }
+
+    #[test]
+    fn no_issue_response_allows_specialist_labels() {
+        assert!(is_no_issue_response("[design-principles]\nNo issues found"));
+        assert!(is_no_issue_response(
+            "[silent-failure-hunter] No issues found\n\n[code-reviewer] .No issues found."
+        ));
+    }
+
+    #[test]
+    fn no_issue_response_rejects_real_prose() {
+        assert!(!is_no_issue_response(
+            "[design-principles] No issues found, but this code may still throw on null input."
+        ));
     }
 }

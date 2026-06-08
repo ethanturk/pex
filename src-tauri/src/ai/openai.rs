@@ -46,6 +46,16 @@ impl OpenAiProvider {
             http,
         }
     }
+
+    fn reasoning_effort_for_request(&self) -> Option<&str> {
+        match self.reasoning_effort.as_deref() {
+            Some("none" | "minimal" | "low" | "medium" | "high" | "xhigh") => {
+                self.reasoning_effort.as_deref()
+            }
+            Some("max") => Some("xhigh"),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -146,6 +156,8 @@ struct OpenAiFunctionDefinition {
 #[derive(Deserialize)]
 struct OpenAiToolResponse {
     choices: Vec<OpenAiToolChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Deserialize)]
@@ -199,7 +211,7 @@ impl AiProvider for OpenAiProvider {
             model,
             messages: openai_messages,
             max_tokens,
-            reasoning_effort: self.reasoning_effort.as_deref(),
+            reasoning_effort: self.reasoning_effort_for_request(),
         };
 
         let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
@@ -262,7 +274,7 @@ impl AiProvider for OpenAiProvider {
                 })
                 .collect(),
             max_tokens,
-            reasoning_effort: self.reasoning_effort.clone(),
+            reasoning_effort: self.reasoning_effort_for_request().map(str::to_string),
         };
 
         let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
@@ -288,6 +300,10 @@ impl AiProvider for OpenAiProvider {
             .json()
             .await
             .map_err(|e| AppError::Ai(format!("Failed to parse OpenAI tool response: {}", e)))?;
+        let usage = parsed.usage.as_ref().map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+        });
         let message = parsed
             .choices
             .into_iter()
@@ -310,6 +326,7 @@ impl AiProvider for OpenAiProvider {
                         .unwrap_or_else(|_| serde_json::json!({ "raw": call.function.arguments })),
                 })
                 .collect(),
+            usage,
         })
     }
 }

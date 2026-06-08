@@ -94,13 +94,20 @@ async function runOne({ projectId, repoId, prId, prTitle }: QueueItem): Promise<
 
   try {
     const output = await startReview(projectId, repoId, prId, prTitle, mode);
-    updateReviewRun(prId, { status: "done", output, progress: null });
+    updateReviewRun(prId, {
+      status: output.health === "failed" ? "error" : "done",
+      error: output.health === "failed" ? "Review failed" : null,
+      output,
+      progress: null,
+    });
     // Earned autonomy: post only the highest-confidence blockers; the rest stay
     // for the human gate. No-op unless the user enabled auto-post.
-    try {
-      await autoPostReviewFindings(projectId, repoId, prId, output.findings);
-    } catch {
-      // best-effort; the findings remain in the sidebar to post manually
+    if (!output.health || output.health === "success") {
+      try {
+        await autoPostReviewFindings(projectId, repoId, prId, output.findings);
+      } catch {
+        // best-effort; the findings remain in the sidebar to post manually
+      }
     }
   } catch (e: unknown) {
     updateReviewRun(prId, { status: "error", error: String(e) });

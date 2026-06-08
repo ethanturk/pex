@@ -212,6 +212,9 @@ mod tests {
         ReviewOutput {
             summary: "looks good".into(),
             findings: vec![],
+            health: crate::review::engine::ReviewHealth::Success,
+            warnings: 0,
+            provider_failures: 0,
         }
     }
 

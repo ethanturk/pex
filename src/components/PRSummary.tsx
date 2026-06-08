@@ -1,4 +1,5 @@
 import { useState } from "preact/hooks";
+import { marked } from "marked";
 import type { PullRequest, PRCheck, Reviewer, VoteHistoryEntry, CommentThread } from "@/lib/api";
 import { prFiles } from "@/lib/signals";
 import { getPrCheckRollup } from "@/lib/prChecks";
@@ -36,6 +37,27 @@ function formatDate(value: string): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function escapeRawHtml(markdown: string): string {
+  return markdown.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderMarkdown(markdown: string): string {
+  return marked.parse(escapeRawHtml(markdown), {
+    async: false,
+    breaks: true,
+    gfm: true,
+  }) as string;
+}
+
+function MarkdownBody({ content }: { content: string }) {
+  return (
+    <div
+      class="pr-review-markdown text-sm text-gray-700 dark:text-gray-300 break-words"
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+    />
+  );
 }
 
 function sameIdentity(a: string, b: string): boolean {
@@ -146,6 +168,15 @@ function voteInfo(vote: number, provider: Provider) {
         className: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200",
       };
   }
+}
+
+function readableVoteComment(content: string, provider: Provider): string {
+  const match = content.match(/^(.+?)\s+voted\s+(-?\d+)\s*$/i);
+  if (!match) return content;
+  const [, name, rawVote] = match;
+  const vote = Number.parseInt(rawVote, 10);
+  if (!Number.isFinite(vote)) return content;
+  return `${name.trim()} voted ${voteInfo(vote, provider).label}`;
 }
 
 function votePriority(vote: number): number {
@@ -456,7 +487,7 @@ function ChecksSummary({
   );
 }
 
-function CommentsAccordion({ threads }: { threads: CommentThread[] }) {
+function CommentsAccordion({ threads, provider }: { threads: CommentThread[]; provider: Provider }) {
   const [expanded, setExpanded] = useState(false);
   const commentCount = threads.reduce((sum, thread) => sum + thread.comments.length, 0);
   const sortedThreads = [...threads].sort((a, b) => {
@@ -520,8 +551,12 @@ function CommentsAccordion({ threads }: { threads: CommentThread[] }) {
                             </span>
                           )}
                         </div>
-                        <div class="mt-1 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
-                          {comment.content || <span class="italic text-gray-400">(no content)</span>}
+                        <div class="mt-1">
+                          {comment.content ? (
+                            <MarkdownBody content={readableVoteComment(comment.content, provider)} />
+                          ) : (
+                            <span class="italic text-sm text-gray-400">(no content)</span>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -673,13 +708,11 @@ export function PRSummary({
         {pullRequest.description && (
           <section class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
             <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">Description</h2>
-            <div class="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
-              {pullRequest.description}
-            </div>
+            <MarkdownBody content={pullRequest.description} />
           </section>
         )}
 
-        <CommentsAccordion threads={commentThreads} />
+        <CommentsAccordion threads={commentThreads} provider={provider} />
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 import { signal } from "@preact/signals";
-import type { SyncStatus, StoredReview } from "@/lib/api";
+import type { ReviewOutput, SyncStatus, StoredReview } from "@/lib/api";
 
 // ---- Theme ----
 export type Theme = "system" | "light" | "dark";
@@ -339,19 +339,7 @@ export interface PRReviewRun {
   warnings?: ReviewWarning[];
   // Output of the latest completed run; preserved across "posting" so the
   // sidebar can keep showing the summary while we post to ADO.
-  output: {
-    summary: string;
-    findings: {
-      filePath: string;
-      severity: "critical" | "moderate" | "minor";
-      confidence: number;
-      tier: "blocking" | "should-fix" | "nit" | "fyi";
-      sources: string[];
-      lineStart: number | null;
-      lineEnd: number | null;
-      comment: string;
-    }[];
-  } | null;
+  output: ReviewOutput | null;
   error: string | null;
   // Set when this run was hydrated from a persisted (durable) review rather than
   // produced live this session. `undefined` for live runs. Drives the PR-list

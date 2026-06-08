@@ -98,12 +98,17 @@ export async function initReviewBus() {
   // `review-done` is informational — the awaited promise from `startReview`
   // is the authoritative source of the final ReviewOutput, so we only use
   // this event to surface an explicit failure flag if Rust ever sends one.
-  await listen<{ success: boolean; summary: string; findings: ReviewOutput["findings"] }>(
+  await listen<{
+    success: boolean;
+    summary: string;
+    findings: ReviewOutput["findings"];
+    health?: ReviewOutput["health"];
+  }>(
     "review-done",
     (e) => {
       const id = activeReviewPrId.value;
       if (id == null || e.payload.success) return;
-      updateReviewRun(id, { status: "error", error: "Review failed" });
+      updateReviewRun(id, { status: "error", error: "Review failed", output: e.payload as ReviewOutput });
     },
   );
 
@@ -149,7 +154,12 @@ export function startBackgroundReview(
   // the engine continues from saved progress only when the user chose to resume.
   startReview(projectId, repoId, prId, prTitle, mode, enabledSpecialists, resuming)
     .then((output) => {
-      updateReviewRun(prId, { status: "done", output, progress: null });
+      updateReviewRun(prId, {
+        status: output.health === "failed" ? "error" : "done",
+        error: output.health === "failed" ? "Review failed" : null,
+        output,
+        progress: null,
+      });
     })
     .catch((e: unknown) => {
       updateReviewRun(prId, { status: "error", error: String(e) });

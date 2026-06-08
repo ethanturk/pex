@@ -818,9 +818,12 @@ pub async fn start_review(
     let _ = app.emit(
         "review-done",
         serde_json::json!({
-            "success": true,
+            "success": output.health != crate::review::engine::ReviewHealth::Failed,
             "summary": output.summary,
             "findings": output.findings,
+            "health": output.health,
+            "warnings": output.warnings,
+            "providerFailures": output.provider_failures,
         }),
     );
 
@@ -910,6 +913,9 @@ pub async fn start_review_post(
     let output = engine::run_review(app.clone(), provider, input, &conn, cancel, diag, false)
         .await
         .map_err(|e| e.to_string())?;
+    if output.health == crate::review::engine::ReviewHealth::Failed {
+        return Err("Review failed; not posting findings.".to_string());
+    }
 
     // Record the baseline for the next incremental run.
     remember_reviewed_iteration(&state, &pr_key, reviewed_iteration).await;

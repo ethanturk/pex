@@ -98,12 +98,14 @@ pub struct ToolChatResponse {
     pub content: String,
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
+    #[serde(default)]
+    pub usage: Option<TokenUsage>,
 }
 
 /// Token accounting for a single LLM call, as reported by the provider.
 /// `None` on a `ChatResponse` means the provider didn't return usage stats
 /// (some OpenAI-compatible local servers omit the `usage` object).
-#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
     pub input_tokens: u32,
@@ -390,7 +392,7 @@ pub fn default_model_for_kind(kind: AiProviderKind) -> &'static str {
 pub fn normalize_reasoning_effort(value: Option<&str>) -> Option<String> {
     let effort = value?.trim().to_lowercase();
     match effort.as_str() {
-        "minimal" | "low" | "medium" | "high" | "xhigh" => Some(effort),
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => Some(effort),
         "max" => Some("xhigh".to_string()),
         _ => None,
     }

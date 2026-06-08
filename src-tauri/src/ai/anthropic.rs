@@ -216,6 +216,10 @@ impl AiProvider for AnthropicProvider {
 
         let response: AnthropicResponse = serde_json::from_str(&body)
             .map_err(|e| AppError::Ai(format!("Failed to parse Anthropic tool response: {}", e)))?;
+        let usage = response.usage.as_ref().map(|u| TokenUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+        });
 
         let mut content = String::new();
         let mut tool_calls = Vec::new();
@@ -236,6 +240,7 @@ impl AiProvider for AnthropicProvider {
         Ok(ToolChatResponse {
             content,
             tool_calls,
+            usage,
         })
     }
 }

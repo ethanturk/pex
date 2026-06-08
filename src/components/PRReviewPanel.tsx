@@ -586,7 +586,8 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
           <span class="text-xs text-gray-400">
             {run.status === "running" && "running"}
             {run.status === "posting" && "posting"}
-            {run.status === "done" && `${findingCount} findings`}
+            {run.status === "done" && run.output?.health === "degraded" && `degraded · ${findingCount} findings`}
+            {run.status === "done" && run.output?.health !== "degraded" && `${findingCount} findings`}
             {run.status === "posted" && "posted ✓"}
             {run.status === "error" && "error"}
           </span>
@@ -642,6 +643,13 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
 
       {run?.warnings && run.warnings.length > 0 && (
         <ReviewWarnings warnings={run.warnings} />
+      )}
+
+      {run?.output?.health === "degraded" && (!run.warnings || run.warnings.length === 0) && (
+        <div class="mx-4 mt-3 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 shrink-0 text-xs text-amber-900 dark:text-amber-100">
+          Review completed with degraded coverage
+          {run.output.warnings ? ` (${run.output.warnings} warning${run.output.warnings === 1 ? "" : "s"})` : ""}.
+        </div>
       )}
 
       {/* Sub-tabs: Summary and Findings live on separate panes so a long
