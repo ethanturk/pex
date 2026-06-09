@@ -9,7 +9,7 @@ use crate::review::state::{self, ReviewMode, ReviewState};
 use crate::AppError;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 use tokio::sync::Semaphore;
 
@@ -327,6 +327,24 @@ pub struct ReviewOutput {
     pub warnings: usize,
     #[serde(default)]
     pub provider_failures: usize,
+    #[serde(default)]
+    pub warning_summaries: Vec<ReviewWarningSummary>,
+}
+
+/// Grouped warning detail retained with a completed review. Live `review-warning`
+/// events are still more detailed, but this keeps degraded coverage explainable
+/// after the run has finished or been rehydrated from storage.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewWarningSummary {
+    pub scope: String,
+    pub stage: String,
+    pub message: String,
+    pub count: usize,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub sample_detail: Option<String>,
 }
 
 /// Best-effort JSON extraction from an LLM response. Strips ``` fences and
@@ -720,6 +738,7 @@ async fn build_file_review_context(
     diag: &crate::review::diagnostics::Diagnostics,
     provider_failures: &AtomicUsize,
     warning_count: &AtomicUsize,
+    warning_summaries: &WarningSummaryCollector,
 ) -> Result<Option<String>, AppError> {
     let changed_files: HashMap<String, (&FileInput, &[crate::diff::engine::DiffHunk])> =
         file_entries
@@ -783,6 +802,7 @@ async fn build_file_review_context(
                     diag,
                     provider_failures,
                     warning_count,
+                    warning_summaries,
                     "file",
                     "context",
                     Some(&file.path),
@@ -1291,11 +1311,74 @@ fn should_build_file_review_context(
         || hunks.len() > CONTEXT_HUNK_COUNT_THRESHOLD
 }
 
+#[derive(Default)]
+struct WarningSummaryCollector {
+    summaries: Mutex<Vec<ReviewWarningSummary>>,
+}
+
+impl WarningSummaryCollector {
+    fn record(
+        &self,
+        scope: &str,
+        stage: &str,
+        file_path: Option<&str>,
+        message: &str,
+        detail: Option<&str>,
+    ) {
+        let mut summaries = self.summaries.lock().unwrap_or_else(|e| e.into_inner());
+        let existing = summaries.iter_mut().find(|summary| {
+            summary.scope == scope && summary.stage == stage && summary.message == message
+        });
+        let summary = match existing {
+            Some(summary) => summary,
+            None => {
+                summaries.push(ReviewWarningSummary {
+                    scope: scope.to_string(),
+                    stage: stage.to_string(),
+                    message: message.to_string(),
+                    count: 0,
+                    files: Vec::new(),
+                    sample_detail: None,
+                });
+                summaries.last_mut().expect("just pushed warning summary")
+            }
+        };
+
+        summary.count += 1;
+        if let Some(path) = file_path.filter(|p| !p.trim().is_empty()) {
+            if summary.files.len() < 12 && !summary.files.iter().any(|p| p == path) {
+                summary.files.push(path.to_string());
+            }
+        }
+        if summary.sample_detail.is_none() {
+            summary.sample_detail = detail
+                .filter(|d| !d.trim().is_empty())
+                .map(|d| cap_tool_output(d.trim(), 1200));
+        }
+    }
+
+    fn snapshot(&self) -> Vec<ReviewWarningSummary> {
+        let mut summaries = self
+            .summaries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        summaries.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.stage.cmp(&b.stage))
+                .then_with(|| a.message.cmp(&b.message))
+        });
+        summaries
+    }
+}
+
 fn record_llm_warning(
     app: &tauri::AppHandle,
     diag: &Diagnostics,
     provider_failures: &AtomicUsize,
     warning_count: &AtomicUsize,
+    warning_summaries: &WarningSummaryCollector,
     scope: &str,
     stage: &str,
     file_path: Option<&str>,
@@ -1304,6 +1387,7 @@ fn record_llm_warning(
     let raw = error.to_string();
     let message = provider_error_message(error).unwrap_or_else(|| raw.clone());
     warning_count.fetch_add(1, Ordering::Relaxed);
+    warning_summaries.record(scope, stage, file_path, &message, Some(&raw));
     emit_warning(app, scope, stage, file_path, &message, Some(&raw));
     if diag.is_enabled() {
         diag.event(
@@ -1372,6 +1456,7 @@ struct ReviewRunCtx {
     cancel: Arc<AtomicBool>,
     provider_failures: Arc<AtomicUsize>,
     warning_count: Arc<AtomicUsize>,
+    warning_summaries: Arc<WarningSummaryCollector>,
 }
 
 /// Review a single file end-to-end: gather context, run its hunks concurrently
@@ -1414,6 +1499,7 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
                 &ctx.diag,
                 &ctx.provider_failures,
                 &ctx.warning_count,
+                &ctx.warning_summaries,
             )
             .await
             {
@@ -1549,6 +1635,7 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
                     &ctx.diag,
                     &ctx.provider_failures,
                     &ctx.warning_count,
+                    &ctx.warning_summaries,
                     "file",
                     "hunk",
                     Some(&file.path),
@@ -1660,6 +1747,13 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
                             Some(&err),
                         );
                         ctx.warning_count.fetch_add(1, Ordering::Relaxed);
+                        ctx.warning_summaries.record(
+                            "file",
+                            "file-aggregate",
+                            Some(&file.path),
+                            &message,
+                            Some(&err),
+                        );
                         if ctx.diag.is_enabled() {
                             ctx.diag.event(
                                 "review_warning",
@@ -1686,6 +1780,7 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
                     &ctx.diag,
                     &ctx.provider_failures,
                     &ctx.warning_count,
+                    &ctx.warning_summaries,
                     "file",
                     "file-aggregate",
                     Some(&file.path),
@@ -1804,6 +1899,7 @@ pub async fn run_review(
     let token_meter = Arc::new(TokenMeter::default());
     let provider_api_failures = Arc::new(AtomicUsize::new(0));
     let warning_count = Arc::new(AtomicUsize::new(0));
+    let warning_summaries = Arc::new(WarningSummaryCollector::default());
 
     // Minimum confidence a finding must reach to survive the deterministic
     // guard applied after each file's adjudication. Resolved once per run.
@@ -2009,6 +2105,7 @@ pub async fn run_review(
             cancel: cancel.clone(),
             provider_failures: provider_api_failures.clone(),
             warning_count: warning_count.clone(),
+            warning_summaries: warning_summaries.clone(),
         });
 
         let mut joinset: tokio::task::JoinSet<Result<FileOutcome, AppError>> =
@@ -2181,6 +2278,7 @@ pub async fn run_review(
                     &diag,
                     &provider_api_failures,
                     &warning_count,
+                    &warning_summaries,
                     "review",
                     "batch",
                     None,
@@ -2333,6 +2431,7 @@ pub async fn run_review(
                 &diag,
                 &provider_api_failures,
                 &warning_count,
+                &warning_summaries,
                 "review",
                 "synthesis",
                 None,
@@ -2353,6 +2452,7 @@ pub async fn run_review(
     // diagnostics enabled so cost is visible from the console.
     let (in_tokens, out_tokens, llm_calls, missing) = token_meter.snapshot();
     let warning_total = warning_count.load(Ordering::Relaxed);
+    let warning_summaries_snapshot = warning_summaries.snapshot();
     let provider_failure_total = provider_api_failures.load(Ordering::Relaxed);
     let health = if !file_entries.is_empty() && llm_calls == 0 {
         ReviewHealth::Failed
@@ -2404,6 +2504,7 @@ pub async fn run_review(
                 "health": health,
                 "warnings": warning_total,
                 "providerFailures": provider_failure_total,
+                "warningSummaries": warning_summaries_snapshot.clone(),
             }),
         );
     }
@@ -2422,6 +2523,7 @@ pub async fn run_review(
             "health": health,
             "warnings": warning_total,
             "providerFailures": provider_failure_total,
+            "warningSummaries": warning_summaries_snapshot.clone(),
         }),
     );
 
@@ -2431,6 +2533,7 @@ pub async fn run_review(
         health,
         warnings: warning_total,
         provider_failures: provider_failure_total,
+        warning_summaries: warning_summaries_snapshot,
     })
 }
 

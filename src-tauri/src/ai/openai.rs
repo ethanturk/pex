@@ -3,6 +3,7 @@ use crate::ai::{
     ToolDefinition,
 };
 use crate::AppError;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// OpenAI-compatible provider — hits any endpoint that speaks the OpenAI chat
@@ -56,6 +57,46 @@ impl OpenAiProvider {
             _ => None,
         }
     }
+}
+
+async fn parse_success_json<T: DeserializeOwned>(
+    response: reqwest::Response,
+    label: &str,
+) -> Result<T, AppError> {
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| AppError::Ai(format!("Failed to read {} response body: {}", label, e)))?;
+    serde_json::from_slice::<T>(&bytes).map_err(|e| {
+        AppError::Ai(format!(
+            "Failed to parse {} response: {}; body preview: {}",
+            label,
+            e,
+            response_body_preview(&bytes)
+        ))
+    })
+}
+
+fn response_body_preview(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let preview = cap_chars(text.trim(), 1200);
+    if preview.is_empty() {
+        "<empty>".to_string()
+    } else {
+        preview
+    }
+}
+
+fn cap_chars(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in text.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("...[truncated]");
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 #[derive(Serialize)]
@@ -233,10 +274,7 @@ impl AiProvider for OpenAiProvider {
             )));
         }
 
-        let parsed: OpenAiResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Ai(format!("Failed to parse OpenAI response: {}", e)))?;
+        let parsed: OpenAiResponse = parse_success_json(response, "OpenAI").await?;
 
         let usage = parsed.usage.as_ref().map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
@@ -296,10 +334,7 @@ impl AiProvider for OpenAiProvider {
             )));
         }
 
-        let parsed: OpenAiToolResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Ai(format!("Failed to parse OpenAI tool response: {}", e)))?;
+        let parsed: OpenAiToolResponse = parse_success_json(response, "OpenAI tool").await?;
         let usage = parsed.usage.as_ref().map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,

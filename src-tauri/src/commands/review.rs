@@ -862,6 +862,7 @@ pub async fn start_review(
             "health": output.health,
             "warnings": output.warnings,
             "providerFailures": output.provider_failures,
+            "warningSummaries": output.warning_summaries,
         }),
     );
 

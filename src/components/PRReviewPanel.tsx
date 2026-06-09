@@ -31,6 +31,7 @@ import {
   type Severity,
   type Tier,
   type ReviewState,
+  type ReviewWarningSummary,
 } from "@/lib/api";
 
 type Finding = NonNullable<PRReviewRun["output"]>["findings"][number];
@@ -646,10 +647,10 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
       )}
 
       {run?.output?.health === "degraded" && (!run.warnings || run.warnings.length === 0) && (
-        <div class="mx-4 mt-3 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 shrink-0 text-xs text-amber-900 dark:text-amber-100">
-          Review completed with degraded coverage
-          {run.output.warnings ? ` (${run.output.warnings} warning${run.output.warnings === 1 ? "" : "s"})` : ""}.
-        </div>
+        <ReviewWarningSummaries
+          count={run.output.warnings ?? 0}
+          summaries={run.output.warningSummaries ?? []}
+        />
       )}
 
       {/* Sub-tabs: Summary and Findings live on separate panes so a long
@@ -941,6 +942,53 @@ function ReviewWarnings({ warnings }: { warnings: ReviewWarning[] }) {
           </div>
         ))}
       </div>
+    </details>
+  );
+}
+
+function ReviewWarningSummaries({
+  count,
+  summaries,
+}: {
+  count: number;
+  summaries: ReviewWarningSummary[];
+}) {
+  const label = count
+    ? `${count} warning${count === 1 ? "" : "s"}`
+    : "warning details unavailable";
+  return (
+    <details class="mx-4 mt-3 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 shrink-0 text-xs text-amber-900 dark:text-amber-100">
+      <summary class="cursor-pointer font-semibold">
+        Review completed with degraded coverage ({label})
+      </summary>
+      {summaries.length > 0 ? (
+        <div class="mt-2 space-y-2 max-h-48 overflow-y-auto pr-1">
+          {summaries.map((summary, index) => (
+            <div key={`${summary.scope}-${summary.stage}-${summary.message}-${index}`} class="border-t border-amber-200 dark:border-amber-800 pt-2 first:border-t-0 first:pt-0">
+              <div class="font-medium">
+                {summary.stage} · {summary.count} occurrence{summary.count === 1 ? "" : "s"}
+              </div>
+              <div class="mt-0.5 whitespace-pre-wrap break-words">{summary.message}</div>
+              {summary.files && summary.files.length > 0 && (
+                <div class="mt-1 text-amber-800 dark:text-amber-200">
+                  Files: {summary.files.map(fileName).join(", ")}
+                  {summary.count > summary.files.length ? " ..." : ""}
+                </div>
+              )}
+              {summary.sampleDetail && (
+                <details class="mt-1">
+                  <summary class="cursor-pointer text-amber-700 dark:text-amber-300">Sample detail</summary>
+                  <pre class="mt-1 whitespace-pre-wrap break-words text-[11px]">{summary.sampleDetail}</pre>
+                </details>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div class="mt-2">
+          Warning details were not retained for this completed review.
+        </div>
+      )}
     </details>
   );
 }

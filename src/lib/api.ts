@@ -682,6 +682,16 @@ export interface ReviewOutput {
   health?: "success" | "degraded" | "failed";
   warnings?: number;
   providerFailures?: number;
+  warningSummaries?: ReviewWarningSummary[];
+}
+
+export interface ReviewWarningSummary {
+  scope: "file" | "review" | string;
+  stage: string;
+  message: string;
+  count: number;
+  files?: string[];
+  sampleDetail?: string | null;
 }
 
 export type ReviewSkipReason =

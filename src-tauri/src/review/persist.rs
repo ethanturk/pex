@@ -215,6 +215,7 @@ mod tests {
             health: crate::review::engine::ReviewHealth::Success,
             warnings: 0,
             provider_failures: 0,
+            warning_summaries: Vec::new(),
         }
     }
 

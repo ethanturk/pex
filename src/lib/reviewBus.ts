@@ -103,6 +103,9 @@ export async function initReviewBus() {
     summary: string;
     findings: ReviewOutput["findings"];
     health?: ReviewOutput["health"];
+    warnings?: ReviewOutput["warnings"];
+    providerFailures?: ReviewOutput["providerFailures"];
+    warningSummaries?: ReviewOutput["warningSummaries"];
   }>(
     "review-done",
     (e) => {
