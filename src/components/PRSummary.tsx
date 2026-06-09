@@ -118,7 +118,7 @@ function threadStatusClass(status: string | undefined): string {
 }
 
 function threadLocation(thread: CommentThread): string {
-  if (!thread.filePath) return "PR-level thread";
+  if (!thread.filePath) return "";
   if (thread.lineStart > 0) {
     const line =
       thread.lineStart === thread.lineEnd || thread.lineEnd <= 0
@@ -519,50 +519,55 @@ function CommentsAccordion({ threads, provider }: { threads: CommentThread[]; pr
         <div class="border-t border-gray-200 dark:border-gray-700">
           {sortedThreads.length > 0 ? (
             <div class="divide-y divide-gray-100 dark:divide-gray-800">
-              {sortedThreads.map((thread) => (
-                <article key={thread.id} class="p-4">
-                  <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                    <div class="min-w-0">
-                      <div class="text-xs font-mono text-gray-500 dark:text-gray-400 break-all">
-                        {threadLocation(thread)}
-                      </div>
-                      <div class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
-                        Thread #{thread.id}
-                      </div>
-                    </div>
-                    <span class={`shrink-0 self-start text-xs px-2 py-0.5 rounded-full font-medium ${threadStatusClass(thread.status)}`}>
-                      {threadStatusLabel(thread.status)}
-                    </span>
-                  </div>
-
-                  <div class="mt-3 space-y-3">
-                    {thread.comments.map((comment) => (
-                      <div
-                        key={comment.id}
-                        class="pl-3 border-l-2 border-gray-200 dark:border-gray-700"
-                      >
-                        <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
-                          <span class="font-medium text-gray-900 dark:text-gray-100">
-                            {comment.author || "Unknown author"}
+              {sortedThreads.map((thread) => {
+                const location = threadLocation(thread);
+                const hasThreadHeader = Boolean(location || thread.status);
+                return (
+                  <article key={thread.id} class="p-4">
+                    {hasThreadHeader && (
+                      <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        {location && (
+                          <div class="min-w-0 text-xs font-mono text-gray-500 dark:text-gray-400 break-all">
+                            {location}
+                          </div>
+                        )}
+                        {thread.status && (
+                          <span class={`shrink-0 self-start text-xs px-2 py-0.5 rounded-full font-medium ${threadStatusClass(thread.status)}`}>
+                            {threadStatusLabel(thread.status)}
                           </span>
-                          {comment.publishedDate && (
-                            <span class="text-gray-400 dark:text-gray-500">
-                              {formatDate(comment.publishedDate)}
-                            </span>
-                          )}
-                        </div>
-                        <div class="mt-1">
-                          {comment.content ? (
-                            <MarkdownBody content={readableVoteComment(comment.content, provider)} />
-                          ) : (
-                            <span class="italic text-sm text-gray-400">(no content)</span>
-                          )}
-                        </div>
+                        )}
                       </div>
-                    ))}
-                  </div>
-                </article>
-              ))}
+                    )}
+
+                    <div class={`${hasThreadHeader ? "mt-3 " : ""}space-y-3`}>
+                      {thread.comments.map((comment) => (
+                        <div
+                          key={comment.id}
+                          class="pl-3 border-l-2 border-gray-200 dark:border-gray-700"
+                        >
+                          <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                            <span class="font-medium text-gray-900 dark:text-gray-100">
+                              {comment.author || "Unknown author"}
+                            </span>
+                            {comment.publishedDate && (
+                              <span class="text-gray-400 dark:text-gray-500">
+                                {formatDate(comment.publishedDate)}
+                              </span>
+                            )}
+                          </div>
+                          <div class="mt-1">
+                            {comment.content ? (
+                              <MarkdownBody content={readableVoteComment(comment.content, provider)} />
+                            ) : (
+                              <span class="italic text-sm text-gray-400">(no content)</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           ) : (
             <div class="px-4 py-5 text-sm text-gray-500 dark:text-gray-400">

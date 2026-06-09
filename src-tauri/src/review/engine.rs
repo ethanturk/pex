@@ -14,7 +14,9 @@ use tauri::Emitter;
 use tokio::sync::Semaphore;
 
 const MAX_PROVIDER_API_FAILURES: usize = 3;
-const CONTEXT_CALL_TIMEOUT_SECS: u64 = 30;
+const CONTEXT_CALL_TIMEOUT_SECS: u64 = 15;
+const CONTEXT_CHANGED_LINES_THRESHOLD: usize = 50;
+const CONTEXT_HUNK_COUNT_THRESHOLD: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1197,12 +1199,96 @@ fn is_no_issue_response(text: &str) -> bool {
     if words.is_empty() {
         return true;
     }
-    if words.len() % 3 != 0 {
+    if no_issue_words_only(&words) {
+        return true;
+    }
+    let normalized = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = normalized
+        .trim_start_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+        .to_ascii_lowercase();
+    let Some(tail) = lower.strip_prefix("no issues found") else {
+        return false;
+    };
+    !has_issue_indicator(tail)
+}
+
+fn no_issue_words_only(words: &[String]) -> bool {
+    words.len() % 3 == 0
+        && words
+            .chunks(3)
+            .all(|chunk| chunk == ["no", "issues", "found"])
+}
+
+fn has_issue_indicator(text: &str) -> bool {
+    let lower = format!(" {} ", text.to_ascii_lowercase());
+    [
+        " but ",
+        " however",
+        " risk",
+        " risky",
+        " should ",
+        " missing",
+        " incorrect",
+        " invalid",
+        " bug",
+        " error",
+        " fail",
+        " throw",
+        " vulnerable",
+        " vulnerability",
+        " problem",
+        " concern",
+        " regression",
+        " violate",
+        " violation",
+        " may still",
+        " could still",
+        " can still",
+        " might still",
+        " potential",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn is_test_file_path(path: &str) -> bool {
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    let file_name = lower.rsplit('/').next().unwrap_or(&lower);
+    let stem = file_name.split('.').next().unwrap_or(file_name);
+
+    lower.contains("/test/")
+        || lower.contains("/tests/")
+        || lower.contains("/__tests__/")
+        || lower.contains("/spec/")
+        || lower.contains("/specs/")
+        || file_name.contains(".test.")
+        || file_name.contains(".spec.")
+        || stem == "test"
+        || stem == "tests"
+        || stem.starts_with("test_")
+        || stem.starts_with("test-")
+        || stem.ends_with("_test")
+        || stem.ends_with("-test")
+        || stem.ends_with("_tests")
+        || stem.ends_with("-tests")
+        || stem.ends_with("tests")
+        || stem.ends_with("_spec")
+        || stem.ends_with("-spec")
+}
+
+fn should_build_file_review_context(
+    path: &str,
+    hunks: &[crate::diff::engine::DiffHunk],
+    related: &[String],
+    mode: ReviewMode,
+) -> bool {
+    if mode != ReviewMode::Thorough || is_test_file_path(path) {
         return false;
     }
-    words
-        .chunks(3)
-        .all(|chunk| chunk == ["no", "issues", "found"])
+    !related.is_empty()
+        || hunk_changed_lines(hunks) >= CONTEXT_CHANGED_LINES_THRESHOLD
+        || hunks.len() > CONTEXT_HUNK_COUNT_THRESHOLD
 }
 
 fn record_llm_warning(
@@ -1311,33 +1397,32 @@ async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome,
         .cloned()
         .unwrap_or_default();
     let related_context = format_related_context(&related);
-    let file_review_context = if ctx.mode == ReviewMode::Thorough
-        && (hunk_changed_lines(hunks) >= 50 || hunks.len() > 3)
-    {
-        match build_file_review_context(
-            &ctx.app,
-            &ctx.provider,
-            &ctx.llm_permits,
-            file,
-            hunks,
-            &ctx.file_entries,
-            &related,
-            rule_context.as_deref(),
-            ctx.retry_count,
-            if ctx.total_files > 50 { 1 } else { 4 },
-            &ctx.token_meter,
-            &ctx.diag,
-            &ctx.provider_failures,
-            &ctx.warning_count,
-        )
-        .await
-        {
-            Ok(context) => context,
-            Err(e) => return Err(e),
-        }
-    } else {
-        None
-    };
+    let file_review_context =
+        if should_build_file_review_context(&file.path, hunks, &related, ctx.mode) {
+            match build_file_review_context(
+                &ctx.app,
+                &ctx.provider,
+                &ctx.llm_permits,
+                file,
+                hunks,
+                &ctx.file_entries,
+                &related,
+                rule_context.as_deref(),
+                ctx.retry_count,
+                if ctx.total_files > 50 { 1 } else { 4 },
+                &ctx.token_meter,
+                &ctx.diag,
+                &ctx.provider_failures,
+                &ctx.warning_count,
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(e) => return Err(e),
+            }
+        } else {
+            None
+        };
     let review_guidance = Arc::new(build_review_guidance(
         &ctx.standards,
         rule_context.as_deref(),
@@ -3346,6 +3431,60 @@ mod tests {
     fn no_issue_response_rejects_real_prose() {
         assert!(!is_no_issue_response(
             "[design-principles] No issues found, but this code may still throw on null input."
+        ));
+    }
+
+    #[test]
+    fn no_issue_response_allows_benign_explanation() {
+        assert!(is_no_issue_response(
+            "No issues found. The file correctly follows C# conventions and keeps the existing behavior intact."
+        ));
+    }
+
+    fn test_hunk(index: usize, changed_lines: usize) -> crate::diff::engine::DiffHunk {
+        crate::diff::engine::DiffHunk {
+            index,
+            header: format!("@@ -1,{} +1,{} @@", changed_lines, changed_lines),
+            old_start: 1,
+            old_count: changed_lines,
+            new_start: 1,
+            new_count: changed_lines,
+            lines: (0..changed_lines)
+                .map(|line| crate::diff::engine::HunkLine {
+                    kind: "+".to_string(),
+                    new_lineno: Some(line + 1),
+                    old_lineno: None,
+                    content: format!("line {}", line + 1),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn file_review_context_skips_small_files_without_related_context() {
+        let hunks = vec![test_hunk(0, 3)];
+        assert!(!should_build_file_review_context(
+            "src/service.rs",
+            &hunks,
+            &[],
+            ReviewMode::Thorough
+        ));
+        assert!(should_build_file_review_context(
+            "src/service.rs",
+            &hunks,
+            &["src/model.rs".to_string()],
+            ReviewMode::Thorough
+        ));
+    }
+
+    #[test]
+    fn file_review_context_skips_test_files_by_default() {
+        let hunks = vec![test_hunk(0, CONTEXT_CHANGED_LINES_THRESHOLD)];
+        assert!(!should_build_file_review_context(
+            "tests/service_tests.rs",
+            &hunks,
+            &["src/service.rs".to_string()],
+            ReviewMode::Thorough
         ));
     }
 }

@@ -170,6 +170,30 @@ async fn make_diagnostics(
     Diagnostics::create(&dir, &run_id)
 }
 
+fn emit_review_exit_diagnostic(
+    diag: &crate::review::diagnostics::Diagnostics,
+    cancel: &std::sync::atomic::AtomicBool,
+    error: &crate::AppError,
+) {
+    if !diag.is_enabled() {
+        return;
+    }
+    let message = error.to_string();
+    let cancelled = cancel.load(Ordering::SeqCst)
+        || message.to_ascii_lowercase().contains("cancelled")
+        || message.to_ascii_lowercase().contains("canceled");
+    diag.event(
+        if cancelled {
+            "run_cancelled"
+        } else {
+            "run_aborted"
+        },
+        serde_json::json!({
+            "message": message,
+        }),
+    );
+}
+
 async fn latest_iteration(
     client: &crate::provider::GitClient,
     project_id: &str,
@@ -789,9 +813,23 @@ pub async fn start_review(
 
     // Run review — the engine handles all the streaming
     let conn = state.db.conn();
-    let output = engine::run_review(app.clone(), provider, input, &conn, cancel, diag, resume)
-        .await
-        .map_err(|e| e.to_string())?;
+    let output = match engine::run_review(
+        app.clone(),
+        provider,
+        input,
+        &conn,
+        cancel.clone(),
+        diag.clone(),
+        resume,
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            emit_review_exit_diagnostic(&diag, cancel.as_ref(), &e);
+            return Err(e.to_string());
+        }
+    };
 
     // Record the baseline for the next incremental run.
     remember_reviewed_iteration(&state, &pr_key, reviewed_iteration).await;
@@ -910,9 +948,23 @@ pub async fn start_review_post(
     let cancel = state.review_cancel.clone();
     let conn = state.db.conn();
     // The post path runs a full, automated review — always start fresh.
-    let output = engine::run_review(app.clone(), provider, input, &conn, cancel, diag, false)
-        .await
-        .map_err(|e| e.to_string())?;
+    let output = match engine::run_review(
+        app.clone(),
+        provider,
+        input,
+        &conn,
+        cancel.clone(),
+        diag.clone(),
+        false,
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            emit_review_exit_diagnostic(&diag, cancel.as_ref(), &e);
+            return Err(e.to_string());
+        }
+    };
     if output.health == crate::review::engine::ReviewHealth::Failed {
         return Err("Review failed; not posting findings.".to_string());
     }
