@@ -155,7 +155,9 @@ export function AiSettings({ open, onClose, standalone }: Props) {
   const [testing, setTesting] = useState(false);
 
   // ---- Review preferences tab (autosaved) ----
+  const [fileConcurrency, setFileConcurrency] = useState(4);
   const [hunkConcurrency, setHunkConcurrency] = useState(1);
+  const [maxLlmCalls, setMaxLlmCalls] = useState(32);
   const [hunkMaxTokens, setHunkMaxTokens] = useState(768);
   const [aggregateMaxTokens, setAggregateMaxTokens] = useState(2048);
   const [standardsMaxChars, setStandardsMaxChars] = useState(String(DEFAULT_STANDARDS_MAX_CHARS));
@@ -276,7 +278,9 @@ export function AiSettings({ open, onClose, standalone }: Props) {
       setProviderModels({});
       setProviderModelsError(null);
       setProviderSaveStatus(null);
+      setFileConcurrency(settings.fileConcurrency || 4);
       setHunkConcurrency(settings.hunkConcurrency || 1);
+      setMaxLlmCalls(settings.maxLlmCalls || 32);
       setHunkMaxTokens(settings.hunkMaxTokens || 768);
       setAggregateMaxTokens(settings.aggregateMaxTokens || 2048);
       setStandardsMaxChars(String(settings.standardsMaxChars || DEFAULT_STANDARDS_MAX_CHARS));
@@ -349,7 +353,9 @@ export function AiSettings({ open, onClose, standalone }: Props) {
     const normalized = normalizeStandardsMaxChars(standardsMaxChars);
     let cancelled = false;
     saveAiPreferences({
+      fileConcurrency,
       hunkConcurrency,
+      maxLlmCalls,
       hunkMaxTokens,
       aggregateMaxTokens,
       standardsMaxChars: normalized,
@@ -373,7 +379,9 @@ export function AiSettings({ open, onClose, standalone }: Props) {
       cancelled = true;
     };
   }, [
+    fileConcurrency,
     hunkConcurrency,
+    maxLlmCalls,
     hunkMaxTokens,
     aggregateMaxTokens,
     standardsMaxChars,
@@ -1046,6 +1054,42 @@ export function AiSettings({ open, onClose, standalone }: Props) {
                   />
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Maximum number of hunks a PR review sends to the model at once. Default 1 = sequential. Increase only if your provider can handle parallel requests.
+                  </p>
+                </Field>
+
+                <Field label="File concurrency">
+                  <input
+                    type="number"
+                    min={1}
+                    max={12}
+                    value={fileConcurrency}
+                    onInput={(e) => {
+                      const n = parseInt(e.currentTarget.value, 10);
+                      setFileConcurrency(Number.isFinite(n) && n >= 1 ? Math.min(n, 12) : 1);
+                    }}
+                    placeholder="4"
+                    class={INPUT_CLASS}
+                  />
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Maximum number of files reviewed in parallel. Default <strong>4</strong>.
+                  </p>
+                </Field>
+
+                <Field label="Global LLM call cap">
+                  <input
+                    type="number"
+                    min={1}
+                    max={128}
+                    value={maxLlmCalls}
+                    onInput={(e) => {
+                      const n = parseInt(e.currentTarget.value, 10);
+                      setMaxLlmCalls(Number.isFinite(n) && n >= 1 ? Math.min(n, 128) : 1);
+                    }}
+                    placeholder="32"
+                    class={INPUT_CLASS}
+                  />
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Run-wide cap for simultaneous LLM requests across all review stages. Default <strong>32</strong>.
                   </p>
                 </Field>
 

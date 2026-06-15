@@ -41,6 +41,12 @@ function shortLabel(label: string): string {
   return label.replace(/^Multi-pass:\s*/i, "");
 }
 
+function deterministicRuleLabel(title: string | null): string {
+  if (!title) return "Deterministic path rule: default";
+  const normalized = title.replace(/\s+checklist$/i, "");
+  return `Deterministic path rule: ${normalized || title}`;
+}
+
 interface Props {
   initialMode: ReviewMode;
   projectId: string;
@@ -379,7 +385,7 @@ function PreflightRow({ file }: { file: ReviewPreview["files"][number] }) {
       <div class="mt-1 flex items-center gap-2 min-w-0 pl-[4.5rem]">
         {file.willReview ? (
           <span class="min-w-0 truncate text-[11px] text-gray-500 dark:text-gray-400">
-            {file.ruleTitle ?? "Default checklist"}
+            {deterministicRuleLabel(file.ruleTitle)}
             {file.relatedFiles.length > 0 && (
               <span class="text-gray-400"> · related: {file.relatedFiles.slice(0, 3).join(", ")}</span>
             )}

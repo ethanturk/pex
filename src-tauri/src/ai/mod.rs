@@ -192,6 +192,16 @@ pub const DEFAULT_HUNK_CONCURRENCY: u32 = 1;
 /// Hard cap to keep users from accidentally hammering the LLM.
 pub const MAX_HUNK_CONCURRENCY: u32 = 16;
 
+/// Default number of files that can be reviewed in parallel.
+pub const DEFAULT_FILE_CONCURRENCY: u32 = 4;
+/// Hard cap for file concurrency to prevent resource exhaustion.
+pub const MAX_FILE_CONCURRENCY: u32 = 12;
+
+/// Default global LLM call cap to prevent provider overload.
+pub const DEFAULT_MAX_LLM_CALLS: u32 = 32;
+/// Hard cap for global LLM calls to prevent abuse.
+pub const MAX_MAX_LLM_CALLS: u32 = 128;
+
 /// Default number of times the review engine retries a failed LLM call before
 /// giving up on that hunk. 1 = one extra attempt after the first failure.
 /// Set to 0 for local providers to avoid sending duplicate work to a slow
@@ -332,7 +342,9 @@ pub struct AiSettingsNoKey {
     /// Per-read stalled-stream budget in seconds. Does NOT bound total generation
     /// time — a slow model that keeps the connection alive will not be killed.
     pub read_timeout_secs: u64,
+    pub file_concurrency: u32,
     pub hunk_concurrency: u32,
+    pub max_llm_calls: u32,
     /// Output token cap for per-hunk passes (Fast / each Thorough specialist).
     pub hunk_max_tokens: u32,
     /// Output token cap for the aggregation stages (adjudicate + synthesis).
@@ -566,6 +578,46 @@ pub async fn read_hunk_concurrency(conn: &libsql::Connection) -> Result<u32, App
         .filter(|n| *n >= 1)
         .map(|n| n.min(MAX_HUNK_CONCURRENCY))
         .unwrap_or(DEFAULT_HUNK_CONCURRENCY))
+}
+
+/// Read the configured file concurrency (max parallel file reviews), clamped to a sane range.
+pub async fn read_file_concurrency(conn: &libsql::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_file_concurrency").await?;
+    Ok(raw
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|n| *n >= 1)
+        .map(|n| n.min(MAX_FILE_CONCURRENCY))
+        .unwrap_or(DEFAULT_FILE_CONCURRENCY))
+}
+
+/// Read the configured maximum LLM call cap, clamped to prevent abuse.
+pub async fn read_max_llm_calls(conn: &libsql::Connection) -> Result<u32, AppError> {
+    let raw = crate::cache::get_setting(conn, "ai_max_llm_calls").await?;
+    Ok(raw
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|n| *n >= 1)
+        .map(|n| n.min(MAX_MAX_LLM_CALLS))
+        .unwrap_or(DEFAULT_MAX_LLM_CALLS))
+}
+
+/// Write the configured file concurrency setting.
+pub async fn write_file_concurrency(conn: &libsql::Connection, value: u32) -> Result<(), AppError> {
+    let value = if value == 0 {
+        DEFAULT_FILE_CONCURRENCY
+    } else {
+        value.min(MAX_FILE_CONCURRENCY)
+    };
+    crate::cache::set_setting(conn, "ai_file_concurrency", &value.to_string()).await
+}
+
+/// Write the configured maximum LLM calls setting.
+pub async fn write_max_llm_calls(conn: &libsql::Connection, value: u32) -> Result<(), AppError> {
+    let value = if value == 0 {
+        DEFAULT_MAX_LLM_CALLS
+    } else {
+        value.min(MAX_MAX_LLM_CALLS)
+    };
+    crate::cache::set_setting(conn, "ai_max_llm_calls", &value.to_string()).await
 }
 
 /// Clamp a configured output-token cap to `[MIN_MAX_TOKENS, MAX_MAX_TOKENS]`,

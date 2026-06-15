@@ -47,6 +47,8 @@ export async function initReviewBus() {
       patch.fileDurations = {};
       patch.fileAnchors = {};
       patch.ruleTitles = p.ruleTitles ?? {};
+      patch.fileHunkCounts = p.hunkCounts ?? {};
+      patch.fileHunkProgress = {};
       patch.preCompletedCount = p.completedCount ?? 0;
       patch.activeFileIndices = [];
       patch.activeFileStartMs = {};
@@ -61,11 +63,30 @@ export async function initReviewBus() {
           [idx]: Date.now(),
         };
       }
+      patch.fileHunkProgress = {
+        ...(run?.fileHunkProgress ?? {}),
+        [idx]: Math.max(0, Math.min(p.hunk ?? 0, p.totalHunks ?? p.hunk ?? 0)),
+      };
     } else if (p.phase === "file-done" && typeof p.fileIndex === "number") {
       patch.fileDurations = {
         ...(run?.fileDurations ?? {}),
         [p.fileIndex]: p.durationMs ?? 0,
       };
+      const donePath = run?.fileList?.[p.fileIndex];
+      const doneHunks = donePath ? run?.fileHunkCounts?.[donePath] : undefined;
+      if (doneHunks != null) {
+        patch.fileHunkProgress = {
+          ...(run?.fileHunkProgress ?? {}),
+          [p.fileIndex]: doneHunks,
+        };
+      }
+      if (Array.isArray(p.findings)) {
+        const existing = run?.partialFindings ?? [];
+        const withoutThisFile = donePath
+          ? existing.filter((f) => f.filePath !== donePath)
+          : existing;
+        patch.partialFindings = [...withoutThisFile, ...p.findings];
+      }
       patch.fileAnchors = {
         ...(run?.fileAnchors ?? {}),
         [p.fileIndex]: {

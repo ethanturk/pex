@@ -283,8 +283,11 @@ export interface ReviewProgress {
   anchoredFindings?: number;
   droppedFindings?: number;
   deterministicFindings?: number;
+  findings?: ReviewOutput["findings"];
   // `plan` event: matched deterministic checklist title per file path.
   ruleTitles?: Record<string, string>;
+  // `plan` event: total hunk count per file path.
+  hunkCounts?: Record<string, number>;
 }
 
 export interface ReviewWarning {
@@ -323,6 +326,10 @@ export interface PRReviewRun {
   fileDurations?: Record<number, number>;
   /// Matched deterministic checklist title per file path (from the `plan` event).
   ruleTitles?: Record<string, string>;
+  /// Total hunk count per file path (from the `plan` event).
+  fileHunkCounts?: Record<string, number>;
+  /// Completed hunks per file index (from `hunk-review` events).
+  fileHunkProgress?: Record<number, number>;
   /// Per-file anchoring rollup, keyed by file index (from `file-done` events).
   fileAnchors?: Record<number, FileAnchorStats>;
   /// Files already finished before this session started (resumed runs).
@@ -337,6 +344,8 @@ export interface PRReviewRun {
   /// from `error`: a review may continue, but the user should still see that
   /// a file/stage degraded.
   warnings?: ReviewWarning[];
+  /// Findings from files already completed in the current in-flight review.
+  partialFindings?: ReviewOutput["findings"];
   // Output of the latest completed run; preserved across "posting" so the
   // sidebar can keep showing the summary while we post to ADO.
   output: ReviewOutput | null;

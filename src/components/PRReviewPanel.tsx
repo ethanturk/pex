@@ -183,8 +183,15 @@ function progressText(p: ReviewProgress | null): string {
     case "resume": return "Resuming from saved progress...";
     case "preflight": return p.detail;
     case "diff-fetch": return p.detail;
-    case "hunk-review": return `Reviewing ${p.detail} — hunk ${p.hunk}/${p.totalHunks}`;
-    case "file-aggregate":
+    case "hunk-review": {
+      const hunkText = p.hunk && p.totalHunks
+        ? `hunk ${p.hunk}/${p.totalHunks}`
+        : "starting hunks";
+      return `Step 1/4: AI reviewing hunks for ${p.detail} — ${hunkText}`;
+    }
+    case "file-aggregate": return `Step 2/4: AI adjudicating file findings — ${p.detail}`;
+    case "file-filter": return `Step 3/4: Filtering and anchoring findings — ${p.detail}`;
+    case "deterministic-checks": return `Step 4/4: Running deterministic AST checks — ${p.detail}`;
     case "batch-aggregate": return p.detail;
     case "synthesis": return "Producing final review summary...";
     case "posting": return "Posting findings to ADO...";
@@ -215,7 +222,13 @@ function progressPercent(p: ReviewProgress | null): number {
 function progressFileCount(p: ReviewProgress | null): string {
   if (!p?.totalFiles) return "";
   const fileNum = Math.min(p.fileNum ?? 0, p.totalFiles);
-  return `${fileNum}/${p.totalFiles}`;
+  return `File ${fileNum} of ${p.totalFiles}`;
+}
+
+function reviewRuleLabel(title: string | undefined): string {
+  if (!title) return "AI review: default checklist (deterministic path rule)";
+  const normalized = title.replace(/\s+checklist$/i, "");
+  return `AI review: ${normalized || title} (deterministic path rule)`;
 }
 
 type SubTab = "summary" | "findings";
@@ -407,8 +420,8 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
     startBackgroundReview(projectId, repoId, prId, prTitle, false, selectedMode, enabledSpecialists);
   };
 
-  const findings = run?.output?.findings ?? [];
-  const outputKey = run?.output ? findingsOutputKey(findings) : "";
+  const findings = run?.output?.findings ?? run?.partialFindings ?? [];
+  const outputKey = findings.length > 0 ? findingsOutputKey(findings) : "";
 
   // Selection + posted state is cached outside the component because this panel
   // unmounts when the user jumps from PR Review to a file diff and back.
@@ -608,7 +621,7 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
           <div class="flex items-center gap-2">
             <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full shrink-0" />
             <span class="text-xs font-semibold text-gray-700 dark:text-gray-200">
-              Review in Progress
+              AI Review in Progress
             </span>
             {progressFileCount(run.progress) && (
               <span class="ml-auto text-xs font-mono text-gray-500 dark:text-gray-400">
@@ -725,14 +738,41 @@ export function PRReviewPanel({ projectId, repoId, prId, prTitle }: Props) {
             </div>
           </div>
         ) : !run.output ? (
-          run.fileList && run.fileList.length > 0 ? (
-            <ReviewFileChecklist run={run} now={now} />
-          ) : (
-            <div class="flex items-center gap-2 text-gray-400 text-xs">
-              <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
-              {posting ? "Posting findings to ADO…" : "Preparing review…"}
-            </div>
-          )
+          <>
+            {run.fileList && run.fileList.length > 0 ? (
+              <ReviewFileChecklist run={run} now={now} />
+            ) : (
+              <div class="flex items-center gap-2 text-gray-400 text-xs">
+                <span class="animate-spin w-3 h-3 border-2 border-gray-300 border-t-accent rounded-full" />
+                {posting ? "Posting findings to ADO…" : "Preparing review…"}
+              </div>
+            )}
+            {findings.length > 0 && (
+              <div class="mt-4">
+                <div class="mb-2 flex items-center justify-between">
+                  <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                    Findings so far ({findings.length})
+                  </span>
+                </div>
+                <FindingsList
+                  projectId={projectId}
+                  repoId={repoId}
+                  prId={prId}
+                  findings={findings}
+                  selected={selected}
+                  posted={posted}
+                  dismissed={dismissed}
+                  onToggleSelected={toggleSelected}
+                  onPosted={markPosted}
+                  onDismiss={dismissFinding}
+                  onUndoDismiss={undoDismissFinding}
+                  allSelected={allSelected}
+                  anySelectable={selectableIndices.length > 0}
+                  onToggleSelectAll={toggleSelectAll}
+                />
+              </div>
+            )}
+          </>
         ) : subTab === "summary" ? (
           <>
             {run.output.summary ? (
@@ -1000,6 +1040,8 @@ function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
   const files = run.fileList ?? [];
   const durations = run.fileDurations ?? {};
   const ruleTitles = run.ruleTitles ?? {};
+  const hunkCounts = run.fileHunkCounts ?? {};
+  const hunkProgress = run.fileHunkProgress ?? {};
   const anchors = run.fileAnchors ?? {};
   const pre = run.preCompletedCount ?? 0;
   const isDone = (i: number) => durations[i] != null || i < pre;
@@ -1008,9 +1050,9 @@ function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
   return (
     <div>
       <div class="flex items-center justify-between mb-2">
-        <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">Files</span>
+        <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">AI file reviews</span>
         <span class="text-xs font-mono text-gray-400">
-          {completed}/{files.length}
+          {completed}/{files.length} done
         </span>
       </div>
       <ul class="flex flex-col gap-0.5">
@@ -1018,6 +1060,18 @@ function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
           const done = isDone(i);
           const active = !done && (run.activeFileIndices?.includes(i) ?? false);
           const startedMs = run.activeFileStartMs?.[i];
+          const totalHunks = hunkCounts[path] ?? 0;
+          const completedHunks = totalHunks > 0
+            ? done
+              ? totalHunks
+              : Math.min(hunkProgress[i] ?? 0, totalHunks)
+            : 0;
+          const hunkPercent = totalHunks > 0
+            ? Math.round((completedHunks / totalHunks) * 100)
+            : done
+              ? 100
+              : 0;
+          const hunkLabel = totalHunks > 0 ? `${completedHunks}/${totalHunks} hunks` : "";
           const elapsed =
             done && durations[i] != null
               ? formatDuration(durations[i])
@@ -1055,7 +1109,7 @@ function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
                 </span>
                 {(ruleTitles[path] || anchors[i]) && (
                   <span class="truncate text-[10px] text-gray-400 dark:text-gray-500">
-                    {ruleTitles[path] ?? "Review"}
+                    {reviewRuleLabel(ruleTitles[path])}
                     {anchors[i] && (
                       <>
                         {" · "}
@@ -1068,14 +1122,25 @@ function ReviewFileChecklist({ run, now }: { run: PRReviewRun; now: number }) {
                     )}
                   </span>
                 )}
+                <span class="mt-1 h-1 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                  <span
+                    class={`block h-full rounded-full transition-all duration-300 ${
+                      done ? "bg-green-500" : active ? "bg-accent" : "bg-gray-300 dark:bg-gray-600"
+                    }`}
+                    style={{ width: `${hunkPercent}%` }}
+                  />
+                </span>
               </span>
-              {elapsed && (
-                <span
-                  class={`shrink-0 font-mono tabular-nums ${
-                    active ? "text-accent" : "text-gray-400"
-                  }`}
-                >
-                  {elapsed}
+              {(hunkLabel || elapsed) && (
+                <span class="shrink-0 min-w-[5.5rem] flex flex-col items-end gap-0.5 font-mono tabular-nums">
+                  {hunkLabel && (
+                    <span class="text-[10px] text-gray-400 dark:text-gray-500">{hunkLabel}</span>
+                  )}
+                  {elapsed && (
+                    <span class={active ? "text-accent" : "text-gray-400"}>
+                      AI {elapsed}
+                    </span>
+                  )}
                 </span>
               )}
             </li>

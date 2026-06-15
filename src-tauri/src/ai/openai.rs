@@ -134,12 +134,85 @@ struct OpenAiUsage {
 #[derive(Deserialize)]
 struct OpenAiChoice {
     message: OpenAiResponseMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
+    #[serde(default)]
+    error: Option<OpenAiChoiceError>,
 }
 
 #[derive(Deserialize)]
 struct OpenAiResponseMessage {
     #[serde(default)]
-    content: String,
+    content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChoiceError {
+    #[serde(default)]
+    code: Option<serde_json::Value>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+fn openai_choice_content(
+    choice: OpenAiChoice,
+    model: &str,
+    max_tokens: Option<u32>,
+    usage: Option<TokenUsage>,
+) -> Result<String, AppError> {
+    if let Some(error) = choice.error {
+        let message = error
+            .message
+            .unwrap_or_else(|| "choice-level provider error".to_string());
+        let code = error.code.map(|c| format!(" ({})", c)).unwrap_or_default();
+        return Err(AppError::Ai(format!(
+            "OpenAI provider API error{} for model `{}` (max_tokens={}, usage={}): {}",
+            code,
+            model,
+            max_tokens_label(max_tokens),
+            usage_label(usage),
+            message
+        )));
+    }
+
+    let content = choice.message.content.unwrap_or_default();
+    if !content.trim().is_empty() {
+        return Ok(content);
+    }
+
+    let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
+    let reason = if choice
+        .message
+        .reasoning
+        .as_deref()
+        .is_some_and(|r| !r.trim().is_empty())
+    {
+        "reasoning was returned, but final content was empty"
+    } else {
+        "final content was empty"
+    };
+    Err(AppError::Ai(format!(
+        "OpenAI response finished with `{}` and no usable content for model `{}` (max_tokens={}, usage={}; {})",
+        finish_reason,
+        model,
+        max_tokens_label(max_tokens),
+        usage_label(usage),
+        reason
+    )))
+}
+
+fn max_tokens_label(max_tokens: Option<u32>) -> String {
+    max_tokens
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "provider-default".to_string())
+}
+
+fn usage_label(usage: Option<TokenUsage>) -> String {
+    usage
+        .map(|u| format!("input={}, output={}", u.input_tokens, u.output_tokens))
+        .unwrap_or_else(|| "unreported".to_string())
 }
 
 #[derive(Serialize)]
@@ -280,12 +353,12 @@ impl AiProvider for OpenAiProvider {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
         });
-        let content = parsed
+        let choice = parsed
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.content)
-            .unwrap_or_default();
+            .ok_or_else(|| AppError::Ai("OpenAI response contained no choices".into()))?;
+        let content = openai_choice_content(choice, model, max_tokens, usage)?;
 
         Ok(ChatResponse { content, usage })
     }

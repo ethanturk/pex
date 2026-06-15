@@ -25,7 +25,15 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         .or_else(|| providers.first())
         .ok_or_else(|| "AI provider list is empty.".to_string())?;
 
+    let file_concurrency = crate::ai::read_file_concurrency(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+
     let hunk_concurrency = crate::ai::read_hunk_concurrency(&conn)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+
+    let max_llm_calls = crate::ai::read_max_llm_calls(&conn)
         .await
         .map_err(|e: crate::AppError| e.to_string())?;
 
@@ -89,6 +97,8 @@ pub async fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsNoK
         hunk_max_tokens,
         aggregate_max_tokens,
         standards_max_chars,
+        file_concurrency,
+        max_llm_calls,
         retry_count,
         confidence_threshold,
         blocking_confidence,
@@ -442,7 +452,9 @@ pub async fn remove_ai_provider(
 #[allow(clippy::too_many_arguments)]
 pub async fn save_ai_preferences(
     state: State<'_, AppState>,
+    file_concurrency: u32,
     hunk_concurrency: u32,
+    max_llm_calls: u32,
     hunk_max_tokens: u32,
     aggregate_max_tokens: u32,
     standards_max_chars: u32,
@@ -472,6 +484,12 @@ pub async fn save_ai_preferences(
     };
 
     crate::cache::set_setting(&conn, "ai_hunk_concurrency", &concurrency.to_string())
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+    crate::ai::write_file_concurrency(&conn, file_concurrency)
+        .await
+        .map_err(|e: crate::AppError| e.to_string())?;
+    crate::ai::write_max_llm_calls(&conn, max_llm_calls)
         .await
         .map_err(|e: crate::AppError| e.to_string())?;
     // Output token caps: clamp to a sane range, falling back to the default for

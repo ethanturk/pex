@@ -316,6 +316,40 @@ pub struct FileAggregateFinding {
     pub sources: Vec<String>,
 }
 
+fn finding_for_file(
+    file_path: &str,
+    finding: &FileAggregateFinding,
+    blocking_confidence: u8,
+) -> Finding {
+    Finding {
+        file_path: file_path.to_string(),
+        severity: finding.severity,
+        confidence: finding.confidence,
+        tier: tier_for(
+            finding.severity,
+            finding.confidence,
+            finding.line_start,
+            blocking_confidence,
+        ),
+        sources: finding.sources.clone(),
+        line_start: finding.line_start,
+        line_end: finding.line_end,
+        comment: finding.comment.clone(),
+    }
+}
+
+fn findings_for_file(
+    file_path: &str,
+    aggregate: &FileAggregateResult,
+    blocking_confidence: u8,
+) -> Vec<Finding> {
+    aggregate
+        .findings
+        .iter()
+        .map(|finding| finding_for_file(file_path, finding, blocking_confidence))
+        .collect()
+}
+
 /// The complete review output.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReviewOutput {
@@ -1439,9 +1473,9 @@ struct ReviewRunCtx {
     hunk_max_tokens: u32,
     aggregate_max_tokens: u32,
     confidence_threshold: u8,
-    /// Doubles as the cap on how many files run at once and how many hunk tasks
-    /// a single file keeps in flight; the shared `llm_permits` semaphore is the
-    /// real limit on concurrent LLM calls across the whole run.
+    /// Maximum hunk tasks a single file keeps in flight. The shared
+    /// `llm_permits` semaphore is the real limit on concurrent LLM calls across
+    /// the whole run.
     hunk_concurrency: usize,
     llm_permits: Arc<Semaphore>,
     token_meter: Arc<TokenMeter>,
@@ -1465,8 +1499,8 @@ struct ReviewRunCtx {
 /// aggregate so the driver can checkpoint at file granularity.
 ///
 /// This is the unit the Phase-1 worker pool runs concurrently, which is what
-/// lets `hunkConcurrency` stay saturated across files instead of draining one
-/// file at a time.
+/// lets the global LLM call budget stay saturated across files instead of
+/// draining one file at a time.
 async fn process_file(idx: usize, ctx: Arc<ReviewRunCtx>) -> Result<FileOutcome, AppError> {
     cancelled(&ctx.cancel)?;
     let file_started = std::time::Instant::now();
@@ -1885,7 +1919,15 @@ pub async fn run_review(
         .await
         .unwrap_or(crate::ai::DEFAULT_HUNK_CONCURRENCY)
         .max(1) as usize;
-    let llm_permits = Arc::new(Semaphore::new(hunk_concurrency));
+    let file_concurrency = crate::ai::read_file_concurrency(conn)
+        .await
+        .unwrap_or(crate::ai::DEFAULT_FILE_CONCURRENCY)
+        .max(1) as usize;
+    let max_llm_calls = crate::ai::read_max_llm_calls(conn)
+        .await
+        .unwrap_or(crate::ai::DEFAULT_MAX_LLM_CALLS)
+        .max(1) as usize;
+    let llm_permits = Arc::new(Semaphore::new(max_llm_calls));
     // Output token caps, resolved once per run. The per-hunk cap is the main
     // lever on cost for verbose local models; the aggregate cap covers the
     // structured adjudication + synthesis stages.
@@ -1924,7 +1966,9 @@ pub async fn run_review(
                     "confidenceThreshold": confidence_threshold,
                     "blockingConfidence": blocking_confidence,
                     "retryCount": retry_count,
+                    "fileConcurrency": file_concurrency,
                     "hunkConcurrency": hunk_concurrency,
+                    "maxLlmCalls": max_llm_calls,
                 },
             }),
         );
@@ -2036,11 +2080,15 @@ pub async fn run_review(
     // Announce the full, ordered worklist up front so the UI can render every
     // file (and tick them off as they complete). `completedCount` lets a resumed
     // run mark already-finished files as done without re-emitting each one.
-    // `ruleTitles` carries the deterministic checklist each file matched so the
-    // matched rule is visible during the run, not just in the pre-run preview.
+    // `ruleTitles` and `hunkCounts` carry the per-file details the progress UI
+    // shows during the run, not just in the pre-run preview.
     let rule_titles: std::collections::HashMap<&str, &str> = file_paths
         .iter()
         .filter_map(|p| input.rules.get(p).map(|r| (p.as_str(), r.title.as_str())))
+        .collect();
+    let hunk_counts: std::collections::HashMap<&str, usize> = file_entries
+        .iter()
+        .map(|(f, hunks)| (f.path.as_str(), hunks.len()))
         .collect();
     emit_progress(
         &app,
@@ -2051,15 +2099,16 @@ pub async fn run_review(
             "totalFiles": file_entries.len(),
             "completedCount": state.current_file_idx,
             "ruleTitles": rule_titles,
+            "hunkCounts": hunk_counts,
         }),
     );
 
     // ---- Phase 1: Hunk Review (files reviewed concurrently) ----
-    // Files now overlap: a bounded pool keeps up to `hunk_concurrency` files in
-    // flight, and every LLM call they issue contends for the same `llm_permits`
-    // budget. Small files no longer leave that budget idle, and we never exceed
-    // the configured cap. Resume is file-level: `completed_files` is the source
-    // of truth, and any file not yet in it is reviewed from its first hunk.
+    // Files now overlap: a bounded pool keeps up to `file_concurrency` files in
+    // flight, and every LLM call they issue contends for the shared
+    // `llm_permits` budget. Resume is file-level: `completed_files` is the
+    // source of truth, and any file not yet in it is reviewed from its first
+    // hunk.
     let file_entries = Arc::new(file_entries);
 
     // Pre-seed results from files already adjudicated in a resumed run, then
@@ -2111,7 +2160,7 @@ pub async fn run_review(
         let mut joinset: tokio::task::JoinSet<Result<FileOutcome, AppError>> =
             tokio::task::JoinSet::new();
         let mut it = pending.into_iter();
-        for _ in 0..hunk_concurrency.max(1) {
+        for _ in 0..file_concurrency.max(1) {
             if let Some(file_idx) = it.next() {
                 joinset.spawn(process_file(file_idx, ctx.clone()));
             }
@@ -2137,13 +2186,16 @@ pub async fn run_review(
                 .filter_map(|(i, (f, _))| results[i].clone().map(|agg| (f.path.clone(), agg)))
                 .collect();
             state.current_file_idx = state.completed_files.len();
+            let file_path = &file_entries[file_idx].0.path;
+            let file_findings =
+                findings_for_file(file_path, &outcome.aggregate, blocking_confidence);
 
             emit_progress(
                 &app,
                 "file-done",
                 &format!(
                     "Reviewed {} — {} finding(s), {} anchored, {} dropped, {} deterministic",
-                    file_entries[file_idx].0.path,
+                    file_path,
                     outcome.kept,
                     outcome.anchored,
                     outcome.dropped,
@@ -2158,6 +2210,7 @@ pub async fn run_review(
                     "anchoredFindings": outcome.anchored,
                     "droppedFindings": outcome.dropped,
                     "deterministicFindings": outcome.deterministic,
+                    "findings": file_findings,
                 }),
             );
             save_state_to_db(conn, &state).await;
@@ -2317,18 +2370,7 @@ pub async fn run_review(
     let mut findings: Vec<Finding> = state
         .completed_files
         .iter()
-        .flat_map(|(file_path, agg)| {
-            agg.findings.iter().map(move |f| Finding {
-                file_path: file_path.clone(),
-                severity: f.severity,
-                confidence: f.confidence,
-                tier: tier_for(f.severity, f.confidence, f.line_start, blocking_confidence),
-                sources: f.sources.clone(),
-                line_start: f.line_start,
-                line_end: f.line_end,
-                comment: f.comment.clone(),
-            })
-        })
+        .flat_map(|(file_path, agg)| findings_for_file(file_path, agg, blocking_confidence))
         .collect();
     findings.sort_by(|a, b| {
         a.tier
@@ -2702,7 +2744,7 @@ fn strip_statistics_section(summary: &str) -> &str {
 /// semaphore to a clean error. Now that files are reviewed concurrently, every
 /// LLM-issuing stage (hunks, per-file context, aggregate, anchor relocation)
 /// acquires through here so real concurrent calls never exceed the configured
-/// `hunkConcurrency`, regardless of how many files are in flight.
+/// global LLM call cap, regardless of how many files are in flight.
 async fn acquire_permit(permits: &Semaphore) -> Result<tokio::sync::SemaphorePermit<'_>, AppError> {
     permits
         .acquire()

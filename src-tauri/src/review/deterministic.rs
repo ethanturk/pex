@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use ast_grep_config::{DeserializeEnv, RuleCore, SerializableRuleCore};
-use ast_grep_core::matcher::{PatternBuilder, PatternError};
+use ast_grep_core::matcher::{Matcher, MatcherExt, PatternBuilder, PatternError};
 use ast_grep_core::tree_sitter::{LanguageExt, StrDoc, TSLanguage};
 use ast_grep_core::{AstGrep, Language, Node};
 use serde::Deserialize;
@@ -413,42 +413,146 @@ pub fn check_file(
     let root = grep.root();
 
     let mut findings = Vec::new();
-    run_rules(BUILTIN.rules(lang), &root, &added, is_test, &mut findings);
+    let mut builtin_stats = RuleStats::default();
+    let mut added_sorted: Vec<usize> = added.into_iter().collect();
+    added_sorted.sort_unstable();
+    run_rules_with_stats(
+        BUILTIN.rules(lang),
+        &root,
+        &added_sorted,
+        is_test,
+        &mut findings,
+        &mut builtin_stats,
+    );
+    eprintln!(
+        "AST rules builtin: {} rules, {} matches, {} findings",
+        builtin_stats.total_rules, builtin_stats.total_matches, builtin_stats.total_findings
+    );
     if let Some(repo) = repo {
-        run_rules(repo.rules(lang), &root, &added, is_test, &mut findings);
+        let mut repo_stats = RuleStats::default();
+        run_rules_with_stats(
+            repo.rules(lang),
+            &root,
+            &added_sorted,
+            is_test,
+            &mut findings,
+            &mut repo_stats,
+        );
+        eprintln!(
+            "AST rules repo:    {} rules, {} matches, {} findings",
+            repo_stats.total_rules, repo_stats.total_matches, repo_stats.total_findings
+        );
     }
     findings
 }
 
-fn run_rules(
+/// Statistics collector for rule execution.
+struct RuleStats {
+    total_rules: usize,
+    total_matches: usize,
+    total_findings: usize,
+    /// Per-rule: (rule_id, total_matches, findings)
+    per_rule: Vec<(String, usize, usize)>,
+}
+
+impl RuleStats {
+    fn default() -> Self {
+        Self {
+            total_rules: 0,
+            total_matches: 0,
+            total_findings: 0,
+            per_rule: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, rule_id: &str, matches: usize, findings: usize) {
+        self.total_rules += 1;
+        self.total_matches += matches;
+        self.total_findings += findings;
+        self.per_rule.push((rule_id.to_string(), matches, findings));
+    }
+}
+
+/// Run rules with per-rule performance statistics collection.
+///
+/// Uses a shared DFS for the active rule set. This preserves `find_all()`
+/// semantics (`dfs` + `potential_kinds` + `match_node`) while avoiding one full
+/// tree walk per rule. The line filter is applied to the returned match span,
+/// not to the candidate node span, because ast-grep patterns can return a match
+/// whose range differs from the candidate node used during traversal.
+fn run_rules_with_stats(
     rules: &[CompiledRule],
     root: &Node<Doc>,
-    added: &HashSet<usize>,
+    added_sorted: &[usize],
     is_test: bool,
     out: &mut Vec<FileAggregateFinding>,
+    stats: &mut RuleStats,
 ) {
-    for cr in rules {
-        if cr.skip_in_tests && is_test {
-            continue;
-        }
-        for m in root.find_all(&cr.matcher) {
-            let start = m.start_pos().line() + 1;
-            let end = m.end_pos().line() + 1;
-            if !overlaps_added(start, end, added) {
-                continue;
+    let active_rules: Vec<_> = rules
+        .iter()
+        .filter(|cr| !(cr.skip_in_tests && is_test))
+        .map(|cr| (cr, cr.matcher.potential_kinds()))
+        .collect();
+    if active_rules.is_empty() {
+        return;
+    }
+
+    let mut counts = vec![(0usize, 0usize); active_rules.len()];
+    let mut nodes_visited = 0usize;
+    let mut candidate_tests = 0usize;
+
+    for node in root.dfs() {
+        nodes_visited += 1;
+        let kind_id: usize = node.kind_id().into();
+        for (idx, (cr, kinds)) in active_rules.iter().enumerate() {
+            if let Some(kinds) = kinds {
+                if !kinds.contains(kind_id) {
+                    continue;
+                }
             }
-            let snippet = m.text().lines().next().unwrap_or("").trim().to_string();
-            out.push(FileAggregateFinding {
-                severity: cr.severity,
-                confidence: 100,
-                line_start: Some(start),
-                line_end: Some(end),
-                comment: cr.message.clone(),
-                existing_code: Some(snippet),
-                evidence: None,
-                sources: vec![format!("deterministic:{}", cr.id)],
-            });
+            candidate_tests += 1;
+            if let Some(m) = cr.matcher.match_node(node.clone()) {
+                counts[idx].0 += 1;
+                let start = m.start_pos().line() + 1;
+                let end = m.end_pos().line() + 1;
+                if !range_overlaps_added(start, end, added_sorted) {
+                    continue;
+                }
+                counts[idx].1 += 1;
+                let snippet = m.text().lines().next().unwrap_or("").trim().to_string();
+                out.push(FileAggregateFinding {
+                    severity: cr.severity,
+                    confidence: 100,
+                    line_start: Some(start),
+                    line_end: Some(end),
+                    comment: cr.message.clone(),
+                    existing_code: Some(snippet),
+                    evidence: None,
+                    sources: vec![format!("deterministic:{}", cr.id)],
+                });
+            }
         }
+    }
+
+    for ((cr, _), (matches_count, findings_count)) in active_rules.iter().zip(counts) {
+        stats.record(&cr.id, matches_count, findings_count);
+        if matches_count > 0 {
+            eprintln!(
+                "  rule {}: {:?} -> {} matches, {} findings",
+                cr.id, cr.severity, matches_count, findings_count,
+            );
+        }
+    }
+    eprintln!(
+        "AST DFS stats: {} nodes visited, {} candidate rule checks",
+        nodes_visited, candidate_tests,
+    );
+}
+
+fn range_overlaps_added(start_line: usize, end_line: usize, added_sorted: &[usize]) -> bool {
+    match added_sorted.binary_search(&start_line) {
+        Ok(_) => true,
+        Err(insert_pos) => insert_pos < added_sorted.len() && added_sorted[insert_pos] <= end_line,
     }
 }
 
@@ -465,10 +569,6 @@ fn added_lines(hunks: &[DiffHunk]) -> HashSet<usize> {
         }
     }
     set
-}
-
-fn overlaps_added(start: usize, end: usize, added: &HashSet<usize>) -> bool {
-    (start..=end).any(|l| added.contains(&l))
 }
 
 fn is_test_file(path: &str) -> bool {

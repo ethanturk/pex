@@ -370,7 +370,9 @@ export interface AiSettingsNoKey {
   /// Does NOT bound total generation — a slow model that keeps the connection
   /// alive will be allowed to finish.
   readTimeoutSecs: number;
+  fileConcurrency: number;
   hunkConcurrency: number;
+  maxLlmCalls: number;
   /// Output token cap for per-hunk passes (the main lever on local-LLM cost).
   hunkMaxTokens: number;
   /// Output token cap for the aggregation stages (adjudicate + synthesis).
@@ -456,7 +458,9 @@ export async function testAiDefaults(
 /// Persist the review/automation preferences. Autosaved on change; never
 /// touches provider credentials.
 export async function saveAiPreferences(prefs: {
+  fileConcurrency: number;
   hunkConcurrency: number;
+  maxLlmCalls: number;
   hunkMaxTokens: number;
   aggregateMaxTokens: number;
   standardsMaxChars: number;
